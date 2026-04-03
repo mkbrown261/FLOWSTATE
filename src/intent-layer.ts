@@ -1,463 +1,570 @@
 /**
- * FLOWSTATE — INTENT LAYER v3
- * ============================
- * Single source of truth for ALL logic, routing, behavioral intelligence,
- * and integration orchestration. The Action Layer executes. It does not decide.
+ * FLOWSTATE ENTERPRISE — INTENT LAYER v4
+ * ========================================
+ * Single source of truth for ALL logic, routing, team intelligence,
+ * sprint health, FlowScore, onboarding, billing, and behavioral decisions.
  *
- * Architecture Law: Every new behavior starts here.
+ * ARCHITECTURE LAW: The Action Layer executes. It NEVER decides.
+ * Every condition, every routing rule, every team insight lives here.
  */
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ─── Core Types ───────────────────────────────────────────────────────────────
 
 export type SessionPhase = 'focus' | 'short_break' | 'long_break' | 'idle';
-export type ModelProvider = 'openai' | 'anthropic' | 'google' | 'xai' | 'mistral' | 'deepseek' | 'meta' | 'together';
+export type ModelProvider = 'openai' | 'anthropic' | 'google' | 'xai' | 'mistral' | 'deepseek' | 'meta';
 export type TaskCapability = 'code' | 'creative' | 'analysis' | 'quick' | 'vision' | 'reasoning' | 'realtime' | 'long_form' | 'math';
 export type ImageProvider = 'dalle3' | 'imagen3' | 'sd3' | 'flux_pro' | 'ideogram2';
 export type VideoProvider = 'veo2' | 'kling16' | 'runway_gen4' | 'pika20' | 'hailuo' | 'sora';
-export type TipCategory = 'posture' | 'hydration' | 'focus' | 'celebration' | 'break' | 'encouragement' | 'debugging';
-export type PremiumTier = 'free' | 'pro' | 'behavior';
+export type PremiumTier = 'free' | 'personal_pro' | 'team_starter' | 'team_growth' | 'enterprise';
+export type TeamRole = 'member' | 'senior_dev' | 'scrum_master' | 'admin';
 export type LearnCardType = 'language' | 'skill_tip' | 'did_you_know' | 'book_rec' | 'mental_model';
 export type RestoreMode = 'breathing' | 'quote' | 'body_reset' | 'gratitude' | 'micro_win';
+export type BurnoutLevel = 'green' | 'yellow' | 'red';
+export type OnboardingGoal = 'deep_focus' | 'team_collab' | 'health_energy' | 'creative' | 'learning' | 'financial';
+export type SessionContext = 'code' | 'writing' | 'design' | 'admin' | 'meeting' | 'learning' | 'general';
+export type IntegrationId = 'google_calendar' | 'notion' | 'slack' | 'github' | 'linear' | 'jira' | 'asana' | 'microsoft_teams' | 'oura' | 'whoop' | 'plaid' | 'notebooklm';
 
-// ── Model Registry ─────────────────────────────────────────────────────────────
+// ─── Model Registry ───────────────────────────────────────────────────────────
 
 export interface ModelSpec {
-  id: string;
-  name: string;
-  provider: ModelProvider;
-  providerLabel: string;
-  description: string;
-  capabilities: TaskCapability[];
-  apiEndpoint: string;
-  apiModel: string;
-  contextWindow: number;
-  streaming: boolean;
-  envKey: string;
-  badge?: string;
+  id: string; name: string; provider: ModelProvider; providerLabel: string;
+  description: string; capabilities: TaskCapability[]; apiEndpoint: string;
+  apiModel: string; contextWindow: number; streaming: boolean; envKey: string;
+  badge?: string; color?: string;
 }
 
 export const MODEL_REGISTRY: Record<string, ModelSpec> = {
   'gpt-4o': {
     id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', providerLabel: 'OpenAI',
-    description: 'Best for: fast Q&A, writing, vision',
-    capabilities: ['quick', 'creative', 'vision', 'code'],
-    apiEndpoint: 'https://api.openai.com/v1/chat/completions',
-    apiModel: 'gpt-4o', contextWindow: 128000, streaming: true, envKey: 'OPENAI_API_KEY',
+    description: 'Fast Q&A, writing, vision', capabilities: ['quick', 'creative', 'vision', 'code'],
+    apiEndpoint: 'https://api.openai.com/v1/chat/completions', apiModel: 'gpt-4o',
+    contextWindow: 128000, streaming: true, envKey: 'OPENAI_API_KEY', color: '#10b981',
   },
   'claude-3-7-sonnet': {
-    id: 'claude-3-7-sonnet', name: 'Claude 3.7 Sonnet', provider: 'anthropic', providerLabel: 'Anthropic',
-    description: 'Best for: analysis, reasoning, long documents',
-    capabilities: ['analysis', 'reasoning', 'long_form', 'code'],
-    apiEndpoint: 'https://api.anthropic.com/v1/messages',
-    apiModel: 'claude-3-5-sonnet-20241022', contextWindow: 200000, streaming: true, envKey: 'ANTHROPIC_API_KEY',
+    id: 'claude-3-7-sonnet', name: 'Claude 3.7', provider: 'anthropic', providerLabel: 'Anthropic',
+    description: 'Analysis, long docs, reasoning', capabilities: ['analysis', 'reasoning', 'long_form', 'code'],
+    apiEndpoint: 'https://api.anthropic.com/v1/messages', apiModel: 'claude-3-5-sonnet-20241022',
+    contextWindow: 200000, streaming: true, envKey: 'ANTHROPIC_API_KEY', color: '#f59e0b',
   },
   'gemini-2-flash': {
     id: 'gemini-2-flash', name: 'Gemini 2.0 Flash', provider: 'google', providerLabel: 'Google',
-    description: 'Best for: speed, multimodal, real-time',
-    capabilities: ['quick', 'realtime', 'vision', 'creative'],
+    description: 'Speed, multimodal, 1M context', capabilities: ['quick', 'realtime', 'vision', 'creative'],
     apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent',
-    apiModel: 'gemini-2.0-flash', contextWindow: 1000000, streaming: true, envKey: 'GOOGLE_AI_KEY',
+    apiModel: 'gemini-2.0-flash', contextWindow: 1000000, streaming: true, envKey: 'GOOGLE_AI_KEY', color: '#3b82f6',
   },
   'grok-3': {
     id: 'grok-3', name: 'Grok 3', provider: 'xai', providerLabel: 'xAI',
-    description: 'Best for: real-time web, humor, fearless takes',
-    capabilities: ['realtime', 'creative', 'quick', 'reasoning'],
-    apiEndpoint: 'https://api.x.ai/v1/chat/completions',
-    apiModel: 'grok-3', contextWindow: 131072, streaming: true, envKey: 'XAI_API_KEY',
+    description: 'Real-time web, fearless takes', capabilities: ['realtime', 'creative', 'quick', 'reasoning'],
+    apiEndpoint: 'https://api.x.ai/v1/chat/completions', apiModel: 'grok-3',
+    contextWindow: 131072, streaming: true, envKey: 'XAI_API_KEY', color: '#8b5cf6',
   },
   'mistral-large': {
     id: 'mistral-large', name: 'Mistral Large', provider: 'mistral', providerLabel: 'Mistral',
-    description: 'Best for: European data privacy, multilingual',
-    capabilities: ['code', 'analysis', 'reasoning', 'creative'],
-    apiEndpoint: 'https://api.mistral.ai/v1/chat/completions',
-    apiModel: 'mistral-large-latest', contextWindow: 128000, streaming: true, envKey: 'MISTRAL_API_KEY',
+    description: 'EU privacy, multilingual', capabilities: ['code', 'analysis', 'reasoning', 'creative'],
+    apiEndpoint: 'https://api.mistral.ai/v1/chat/completions', apiModel: 'mistral-large-latest',
+    contextWindow: 128000, streaming: true, envKey: 'MISTRAL_API_KEY', color: '#06b6d4',
   },
   'deepseek-r1': {
     id: 'deepseek-r1', name: 'DeepSeek R1', provider: 'deepseek', providerLabel: 'DeepSeek',
-    description: 'Best for: math, deep reasoning, code',
-    capabilities: ['math', 'reasoning', 'code', 'analysis'],
-    apiEndpoint: 'https://api.deepseek.com/v1/chat/completions',
-    apiModel: 'deepseek-reasoner', contextWindow: 64000, streaming: true, envKey: 'DEEPSEEK_API_KEY',
+    description: 'Math, deep reasoning, code', capabilities: ['math', 'reasoning', 'code', 'analysis'],
+    apiEndpoint: 'https://api.deepseek.com/v1/chat/completions', apiModel: 'deepseek-reasoner',
+    contextWindow: 64000, streaming: true, envKey: 'DEEPSEEK_API_KEY', color: '#a855f7',
   },
   'llama-3-3': {
     id: 'llama-3-3', name: 'Llama 3.3 70B', provider: 'meta', providerLabel: 'Meta',
-    description: 'Best for: open-source, privacy-sensitive tasks',
-    capabilities: ['code', 'creative', 'analysis', 'quick'],
-    apiEndpoint: 'https://api.together.xyz/v1/chat/completions',
-    apiModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', contextWindow: 131072, streaming: true, envKey: 'TOGETHER_API_KEY',
+    description: 'Open-source, privacy-first', capabilities: ['code', 'creative', 'analysis', 'quick'],
+    apiEndpoint: 'https://api.together.xyz/v1/chat/completions', apiModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+    contextWindow: 131072, streaming: true, envKey: 'TOGETHER_API_KEY', color: '#3b82f6',
   },
   'gpt-4o-mini': {
     id: 'gpt-4o-mini', name: 'GPT-4o mini', provider: 'openai', providerLabel: 'OpenAI',
-    description: 'Best for: fast, cheap, simple tasks',
-    capabilities: ['quick', 'creative'],
-    apiEndpoint: 'https://api.openai.com/v1/chat/completions',
-    apiModel: 'gpt-4o-mini', contextWindow: 128000, streaming: true, envKey: 'OPENAI_API_KEY',
-    badge: 'Free',
+    description: 'Fast, cheap, free tier', capabilities: ['quick', 'creative'],
+    apiEndpoint: 'https://api.openai.com/v1/chat/completions', apiModel: 'gpt-4o-mini',
+    contextWindow: 128000, streaming: true, envKey: 'OPENAI_API_KEY', badge: 'Free', color: '#10b981',
   },
 };
 
-// ── Image Model Registry ───────────────────────────────────────────────────────
+// ─── Image / Video Registries ─────────────────────────────────────────────────
 
 export interface ImageModelSpec {
-  id: ImageProvider;
-  name: string;
-  provider: string;
-  description: string;
-  apiEndpoint: string;
-  envKey: string;
-  maxWidth: number;
-  maxHeight: number;
-  styles?: string[];
+  id: ImageProvider; name: string; provider: string; description: string;
+  apiEndpoint: string; envKey: string;
+}
+export interface VideoModelSpec {
+  id: VideoProvider; name: string; provider: string; description: string;
+  apiEndpoint: string; envKey: string; maxDuration: number;
 }
 
 export const IMAGE_MODEL_REGISTRY: Record<ImageProvider, ImageModelSpec> = {
-  dalle3: {
-    id: 'dalle3', name: 'DALL·E 3', provider: 'OpenAI',
-    description: 'Best quality, great text rendering',
-    apiEndpoint: 'https://api.openai.com/v1/images/generations',
-    envKey: 'OPENAI_API_KEY', maxWidth: 1024, maxHeight: 1024,
-    styles: ['vivid', 'natural'],
-  },
-  imagen3: {
-    id: 'imagen3', name: 'Imagen 3', provider: 'Google',
-    description: 'Photorealistic, detail-rich images',
-    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict',
-    envKey: 'GOOGLE_AI_KEY', maxWidth: 1024, maxHeight: 1024,
-  },
-  sd3: {
-    id: 'sd3', name: 'Stable Diffusion 3', provider: 'Stability AI',
-    description: 'Open-source powerhouse, custom styles',
-    apiEndpoint: 'https://api.stability.ai/v2beta/stable-image/generate/sd3',
-    envKey: 'STABILITY_API_KEY', maxWidth: 1024, maxHeight: 1024,
-  },
-  flux_pro: {
-    id: 'flux_pro', name: 'FLUX Pro', provider: 'Black Forest Labs',
-    description: 'Ultra-fast, photorealistic generation',
-    apiEndpoint: 'https://api.bfl.ml/v1/flux-pro',
-    envKey: 'BFL_API_KEY', maxWidth: 1440, maxHeight: 1440,
-  },
-  ideogram2: {
-    id: 'ideogram2', name: 'Ideogram 2', provider: 'Ideogram',
-    description: 'Excellent text-in-image, design-forward',
-    apiEndpoint: 'https://api.ideogram.ai/generate',
-    envKey: 'IDEOGRAM_API_KEY', maxWidth: 1024, maxHeight: 1024,
-  },
+  dalle3: { id: 'dalle3', name: 'DALL-E 3', provider: 'OpenAI', description: 'Best quality, great text rendering', apiEndpoint: 'https://api.openai.com/v1/images/generations', envKey: 'OPENAI_API_KEY' },
+  imagen3: { id: 'imagen3', name: 'Imagen 3', provider: 'Google', description: 'Photorealistic, detail-rich', apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict', envKey: 'GOOGLE_AI_KEY' },
+  sd3: { id: 'sd3', name: 'Stable Diffusion 3', provider: 'Stability AI', description: 'Open-source powerhouse', apiEndpoint: 'https://api.stability.ai/v2beta/stable-image/generate/sd3', envKey: 'STABILITY_API_KEY' },
+  flux_pro: { id: 'flux_pro', name: 'FLUX Pro', provider: 'Black Forest Labs', description: 'Ultra-fast photorealistic', apiEndpoint: 'https://api.bfl.ml/v1/flux-pro', envKey: 'BFL_API_KEY' },
+  ideogram2: { id: 'ideogram2', name: 'Ideogram 2', provider: 'Ideogram', description: 'Text-in-image, design-forward', apiEndpoint: 'https://api.ideogram.ai/generate', envKey: 'IDEOGRAM_API_KEY' },
 };
-
-// ── Video Model Registry ───────────────────────────────────────────────────────
-
-export interface VideoModelSpec {
-  id: VideoProvider;
-  name: string;
-  provider: string;
-  description: string;
-  apiEndpoint: string;
-  envKey: string;
-  maxDuration: number;
-  resolution: string;
-}
 
 export const VIDEO_MODEL_REGISTRY: Record<VideoProvider, VideoModelSpec> = {
-  veo2: {
-    id: 'veo2', name: 'Veo 2', provider: 'Google DeepMind',
-    description: 'Cinematic quality, physics-aware',
-    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/veo-2.0-generate-001:predictLongRunning',
-    envKey: 'GOOGLE_AI_KEY', maxDuration: 8, resolution: '720p',
-  },
-  kling16: {
-    id: 'kling16', name: 'Kling 1.6', provider: 'Kuaishou',
-    description: 'Smooth motion, character consistency',
-    apiEndpoint: 'https://api.klingai.com/v1/videos/text2video',
-    envKey: 'KLING_API_KEY', maxDuration: 10, resolution: '1080p',
-  },
-  runway_gen4: {
-    id: 'runway_gen4', name: 'Runway Gen-4', provider: 'Runway ML',
-    description: 'Creative, film-quality generation',
-    apiEndpoint: 'https://api.runwayml.com/v1/image_to_video',
-    envKey: 'RUNWAY_API_KEY', maxDuration: 10, resolution: '1080p',
-  },
-  pika20: {
-    id: 'pika20', name: 'Pika 2.0', provider: 'Pika Labs',
-    description: 'Creative effects, fun motion',
-    apiEndpoint: 'https://api.pika.art/v2/generate',
-    envKey: 'PIKA_API_KEY', maxDuration: 10, resolution: '1080p',
-  },
-  hailuo: {
-    id: 'hailuo', name: 'Hailuo', provider: 'MiniMax',
-    description: 'Fast generation, good faces',
-    apiEndpoint: 'https://api.minimax.chat/v1/video/generation',
-    envKey: 'MINIMAX_API_KEY', maxDuration: 6, resolution: '720p',
-  },
-  sora: {
-    id: 'sora', name: 'Sora', provider: 'OpenAI',
-    description: 'Long-form, world models, simulation',
-    apiEndpoint: 'https://api.openai.com/v1/video/generations',
-    envKey: 'OPENAI_API_KEY', maxDuration: 60, resolution: '1080p',
-  },
+  veo2: { id: 'veo2', name: 'Veo 2', provider: 'Google', description: 'Cinematic, physics-aware', apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/veo-2.0-generate-001:predictLongRunning', envKey: 'GOOGLE_AI_KEY', maxDuration: 8 },
+  kling16: { id: 'kling16', name: 'Kling 1.6', provider: 'Kuaishou', description: 'Smooth motion, consistent', apiEndpoint: 'https://api.klingai.com/v1/videos/text2video', envKey: 'KLING_API_KEY', maxDuration: 10 },
+  runway_gen4: { id: 'runway_gen4', name: 'Runway Gen-4', provider: 'Runway ML', description: 'Film-quality creative', apiEndpoint: 'https://api.runwayml.com/v1/image_to_video', envKey: 'RUNWAY_API_KEY', maxDuration: 10 },
+  pika20: { id: 'pika20', name: 'Pika 2.0', provider: 'Pika Labs', description: 'Creative effects, fast', apiEndpoint: 'https://api.pika.art/v2/generate', envKey: 'PIKA_API_KEY', maxDuration: 10 },
+  hailuo: { id: 'hailuo', name: 'Hailuo', provider: 'MiniMax', description: 'Fast, good faces', apiEndpoint: 'https://api.minimax.chat/v1/video/generation', envKey: 'MINIMAX_API_KEY', maxDuration: 6 },
+  sora: { id: 'sora', name: 'Sora', provider: 'OpenAI', description: 'World models, long-form', apiEndpoint: 'https://api.openai.com/v1/video/generations', envKey: 'OPENAI_API_KEY', maxDuration: 60 },
 };
 
-// ── Session Intent ─────────────────────────────────────────────────────────────
+// ─── Intent Routing ───────────────────────────────────────────────────────────
 
 export interface SessionIntent {
-  message: string;
-  timestamp: number;
-  taskType: TaskCapability;
-  routedModel: string;
-  confidence: number;
-  reasoning: string;
-  fallbackModel: string;
-  systemPrompt: string;
+  message: string; timestamp: number; taskType: TaskCapability;
+  routedModel: string; confidence: number; reasoning: string;
+  fallbackModel: string; systemPrompt: string;
 }
 
-// ── Tip Intent ─────────────────────────────────────────────────────────────────
-
-export interface TipIntent {
-  category: TipCategory;
-  message: string;
-  emoji: string;
-  action?: string;
-  actionLabel?: string;
-  autoDismissMs: number;
-  priority: number;
-}
-
-// ── Celebration Intent ─────────────────────────────────────────────────────────
-
-export interface CelebrationIntent {
-  type: 'confetti' | 'spark' | 'star' | 'pulse' | 'aurora';
-  intensity: number;
-  message: string;
-  subMessage: string;
-  duration: number;
-  particleCount: number;
-}
-
-// ── Learn Card ────────────────────────────────────────────────────────────────
-
-export interface LearnCardIntent {
-  type: LearnCardType;
-  title: string;
-  content: string;
-  meta?: string;
-  action?: string;
-  actionLabel?: string;
-  emoji: string;
-  color: string;
-}
-
-// ── Restore Intent ────────────────────────────────────────────────────────────
-
-export interface RestoreIntent {
-  mode: RestoreMode;
-  title: string;
-  content: string;
-  duration?: number;
-  steps?: string[];
-  prompt?: string;
-  emoji: string;
-  bgColor: string;
-}
-
-// ── Behavior Data ─────────────────────────────────────────────────────────────
-
-export interface BehaviorData {
-  totalFocusSeconds: number;
-  sessionCount: number;
-  streak: number;
-  completionRate: number;
-  peakHour?: number;
-  calendarEvents?: number;
-  notionCards?: number;
-  steps?: number;
-  heartRate?: number;
-  sleepHours?: number;
-  hydrationGlasses?: number;
-  languageStreak?: number;
-  netWorthSnapshot?: number;
-  activeModel?: string;
-  imageGenerations?: number;
-  flowScore?: number;
-}
-
-// ── Google OAuth Intent ────────────────────────────────────────────────────────
-
-export interface GoogleOAuthIntent {
-  redirectPath: string;
-  scopes: string[];
-  stateParam: string;
-  accessType: 'offline';
-  prompt: 'consent';
-}
-
-export function declareGoogleOAuth(baseUrl: string): GoogleOAuthIntent {
-  return {
-    redirectPath: `${baseUrl}/api/auth/google/callback`,
-    scopes: [
-      'openid',
-      'profile',
-      'email',
-      'https://www.googleapis.com/auth/calendar.readonly',
-      'https://www.googleapis.com/auth/calendar.events',
-      'https://www.googleapis.com/auth/drive.readonly',
-    ],
-    stateParam: crypto.randomUUID(),
-    accessType: 'offline',
-    prompt: 'consent',
-  };
-}
-
-// ── Notion OAuth Intent ────────────────────────────────────────────────────────
-
-export interface NotionOAuthIntent {
-  authorizeUrl: string;
-  redirectUri: string;
-  stateParam: string;
-  responseType: 'code';
-}
-
-export function declareNotionOAuth(baseUrl: string, clientId: string): NotionOAuthIntent {
-  return {
-    authorizeUrl: `https://api.notion.com/v1/oauth/authorize?client_id=${clientId}&response_type=code&owner=user&redirect_uri=${encodeURIComponent(`${baseUrl}/api/auth/notion/callback`)}`,
-    redirectUri: `${baseUrl}/api/auth/notion/callback`,
-    stateParam: crypto.randomUUID(),
-    responseType: 'code',
-  };
-}
-
-// ── Model Routing ─────────────────────────────────────────────────────────────
-
-const ROUTING_RULES: Array<{
-  pattern: RegExp;
-  capability: TaskCapability;
-  preferredModel: string;
-  reason: string;
-}> = [
-  { pattern: /\b(code|function|bug|error|debug|script|algorithm|implement|fix|refactor)\b/i, capability: 'code', preferredModel: 'claude-3-7-sonnet', reason: 'Claude excels at complex code reasoning' },
-  { pattern: /\b(math|equation|calcul|integral|derivative|proof|statistic|formula|probability)\b/i, capability: 'math', preferredModel: 'deepseek-r1', reason: 'DeepSeek R1 leads on math benchmarks' },
-  { pattern: /\b(analyze|research|compare|evaluate|deep.?dive|thorough|comprehensive|explain why)\b/i, capability: 'analysis', preferredModel: 'claude-3-7-sonnet', reason: 'Claude\'s 200K context handles deep analysis' },
-  { pattern: /\b(write|story|poem|creative|blog|marketing|copy|brainstorm|character|narrative)\b/i, capability: 'creative', preferredModel: 'gpt-4o', reason: 'GPT-4o is the creative writing leader' },
-  { pattern: /\b(latest|news|today|current|recent|2024|2025|real.?time|trending)\b/i, capability: 'realtime', preferredModel: 'grok-3', reason: 'Grok has real-time web access' },
-  { pattern: /\b(image|picture|photo|diagram|chart|visual|see|look at)\b/i, capability: 'vision', preferredModel: 'gemini-2-flash', reason: 'Gemini 2.0 Flash has best multimodal performance' },
-  { pattern: /\b(long|document|pdf|book|article|essay|report|summarize)\b/i, capability: 'long_form', preferredModel: 'gemini-2-flash', reason: 'Gemini has 1M token context window' },
-  { pattern: /\b(reason|think|step.?by.?step|logic|infer|deduce|complex problem)\b/i, capability: 'reasoning', preferredModel: 'deepseek-r1', reason: 'DeepSeek R1 chain-of-thought reasoning' },
+const ROUTING_RULES: Array<{ pattern: RegExp; capability: TaskCapability; preferredModel: string; reason: string }> = [
+  { pattern: /\b(code|function|bug|debug|script|algorithm|implement|refactor|error|fix|typescript|javascript|python)\b/i, capability: 'code', preferredModel: 'claude-3-7-sonnet', reason: 'Claude leads on complex code reasoning' },
+  { pattern: /\b(math|equation|calcul|integral|derivative|proof|statistic|formula|algebra)\b/i, capability: 'math', preferredModel: 'deepseek-r1', reason: 'DeepSeek R1 tops math benchmarks' },
+  { pattern: /\b(analyze|research|compare|evaluate|deep.?dive|comprehensive|explain why|critique)\b/i, capability: 'analysis', preferredModel: 'claude-3-7-sonnet', reason: 'Claude 200K context for deep analysis' },
+  { pattern: /\b(write|story|poem|creative|blog|marketing|copy|brainstorm|narrative|essay)\b/i, capability: 'creative', preferredModel: 'gpt-4o', reason: 'GPT-4o leads creative writing' },
+  { pattern: /\b(latest|news|today|current|recent|2025|real.?time|trending|live)\b/i, capability: 'realtime', preferredModel: 'grok-3', reason: 'Grok has live web access' },
+  { pattern: /\b(image|picture|photo|diagram|visual|see|look at|screenshot)\b/i, capability: 'vision', preferredModel: 'gemini-2-flash', reason: 'Gemini 2.0 best multimodal' },
+  { pattern: /\b(long|document|pdf|book|summarize|article|report|transcript)\b/i, capability: 'long_form', preferredModel: 'gemini-2-flash', reason: 'Gemini 1M token context window' },
+  { pattern: /\b(reason|step.?by.?step|logic|infer|deduce|complex problem|think through)\b/i, capability: 'reasoning', preferredModel: 'deepseek-r1', reason: 'DeepSeek R1 chain-of-thought' },
 ];
 
 export function declareModelRouting(message: string, preferredModel?: string): SessionIntent {
   if (preferredModel && MODEL_REGISTRY[preferredModel]) {
     const spec = MODEL_REGISTRY[preferredModel];
     return {
-      message, timestamp: Date.now(),
-      taskType: spec.capabilities[0] as TaskCapability,
-      routedModel: preferredModel,
-      confidence: 1.0,
-      reasoning: 'User-selected model',
-      fallbackModel: 'gpt-4o-mini',
-      systemPrompt: buildSystemPrompt(spec.capabilities[0] as TaskCapability),
+      message, timestamp: Date.now(), taskType: spec.capabilities[0] as TaskCapability,
+      routedModel: preferredModel, confidence: 1.0, reasoning: 'User-selected model',
+      fallbackModel: 'gpt-4o-mini', systemPrompt: buildSystemPrompt(spec.capabilities[0] as TaskCapability),
     };
   }
-
   for (const rule of ROUTING_RULES) {
     if (rule.pattern.test(message)) {
       return {
-        message, timestamp: Date.now(),
-        taskType: rule.capability,
-        routedModel: rule.preferredModel,
-        confidence: 0.85,
-        reasoning: rule.reason,
-        fallbackModel: 'gpt-4o-mini',
+        message, timestamp: Date.now(), taskType: rule.capability, routedModel: rule.preferredModel,
+        confidence: 0.85, reasoning: rule.reason, fallbackModel: 'gpt-4o-mini',
         systemPrompt: buildSystemPrompt(rule.capability),
       };
     }
   }
-
   return {
-    message, timestamp: Date.now(),
-    taskType: 'quick',
-    routedModel: 'gpt-4o',
-    confidence: 0.7,
-    reasoning: 'Default: GPT-4o for general tasks',
-    fallbackModel: 'gpt-4o-mini',
-    systemPrompt: buildSystemPrompt('quick'),
+    message, timestamp: Date.now(), taskType: 'quick', routedModel: 'gpt-4o',
+    confidence: 0.7, reasoning: 'Default: GPT-4o for general tasks',
+    fallbackModel: 'gpt-4o-mini', systemPrompt: buildSystemPrompt('quick'),
   };
 }
 
 function buildSystemPrompt(capability: TaskCapability): string {
-  const base = 'You are FlowState AI, an intelligent assistant embedded in a personal productivity OS. You help users stay in flow, accomplish meaningful work, and grow continuously. Be concise, warm, and actionable.';
-  const suffixes: Partial<Record<TaskCapability, string>> = {
-    code: ' When writing code, explain briefly what it does. Always use markdown code blocks.',
-    math: ' Show your reasoning step by step. Use LaTeX notation when helpful.',
-    analysis: ' Structure your analysis clearly. Use headers and bullet points for long responses.',
-    creative: ' Be imaginative and original. Match the user\'s tone and energy.',
-    realtime: ' Note when your information might be outdated. Focus on verified facts.',
-    reasoning: ' Think step by step. Show your chain of reasoning explicitly.',
+  const base = 'You are FlowState AI, embedded in a personal and team productivity OS. Be concise, warm, and actionable. Help users stay in flow and do their best work.';
+  const extensions: Partial<Record<TaskCapability, string>> = {
+    code: ' Use markdown code blocks. Explain what code does briefly. Prefer working examples.',
+    math: ' Show step-by-step reasoning. Use clear notation. Confirm the answer at the end.',
+    analysis: ' Use headers and bullets for long responses. Cite reasoning.',
+    creative: ' Match the user tone and energy. Be imaginative and specific.',
+    realtime: ' Note that you have access to live web data. Be current and cite context.',
   };
-  return base + (suffixes[capability] || '');
+  return base + (extensions[capability] || '');
 }
 
-// ── Tip Bubbles ────────────────────────────────────────────────────────────────
+// ─── Session Context Detection ────────────────────────────────────────────────
+
+export interface SessionContextIntent {
+  context: SessionContext; ambientSound: string;
+  tipPersonality: string; celebrationStyle: string;
+  suggestedModel: string; systemPromptSuffix: string;
+}
+
+export function declareSessionContext(description: string): SessionContextIntent {
+  const d = description.toLowerCase();
+  if (/code|debug|build|implement|pr|commit|branch|test|typescript|javascript/.test(d))
+    return { context: 'code', ambientSound: 'forest', tipPersonality: 'developer', celebrationStyle: 'technical', suggestedModel: 'claude-3-7-sonnet', systemPromptSuffix: ' This user is in a coding session.' };
+  if (/write|draft|blog|article|copy|essay|content|newsletter/.test(d))
+    return { context: 'writing', ambientSound: 'cafe', tipPersonality: 'writer', celebrationStyle: 'creative', suggestedModel: 'gpt-4o', systemPromptSuffix: ' This user is in a writing session.' };
+  if (/design|figma|ui|ux|wireframe|prototype|visual|brand/.test(d))
+    return { context: 'design', ambientSound: 'rain', tipPersonality: 'designer', celebrationStyle: 'visual', suggestedModel: 'gpt-4o', systemPromptSuffix: ' This user is in a design session.' };
+  if (/meeting|call|zoom|presentation|prep|slides|standup/.test(d))
+    return { context: 'meeting', ambientSound: 'silence', tipPersonality: 'communicator', celebrationStyle: 'social', suggestedModel: 'gpt-4o', systemPromptSuffix: ' This user is preparing for a meeting.' };
+  if (/learn|study|read|course|tutorial|research|book/.test(d))
+    return { context: 'learning', ambientSound: 'ocean', tipPersonality: 'learner', celebrationStyle: 'educational', suggestedModel: 'gemini-2-flash', systemPromptSuffix: ' This user is in a learning session.' };
+  if (/email|slack|admin|plan|schedule|organize|inbox/.test(d))
+    return { context: 'admin', ambientSound: 'cafe', tipPersonality: 'organizer', celebrationStyle: 'efficient', suggestedModel: 'gpt-4o-mini', systemPromptSuffix: ' This user is doing administrative work.' };
+  return { context: 'general', ambientSound: 'forest', tipPersonality: 'balanced', celebrationStyle: 'universal', suggestedModel: 'gpt-4o', systemPromptSuffix: '' };
+}
+
+// ─── Onboarding Intent ────────────────────────────────────────────────────────
+
+export interface OnboardingIntent {
+  goals: OnboardingGoal[]; focusDuration: number;
+  workHoursStart: string; workHoursEnd: string; timezone: string;
+  seedIntegrations: IntegrationId[];
+  personalizedGreeting: string; firstSessionSuggestion: string;
+}
+
+export function declareOnboardingIntent(
+  goals: OnboardingGoal[], focusDuration: number,
+  workHours: { start: string; end: string }, timezone: string,
+): OnboardingIntent {
+  const seedIntegrations: IntegrationId[] = [];
+  if (goals.includes('deep_focus')) seedIntegrations.push('google_calendar');
+  if (goals.includes('team_collab')) { seedIntegrations.push('slack'); seedIntegrations.push('notion'); }
+  if (goals.includes('health_energy')) { seedIntegrations.push('oura'); }
+  if (goals.includes('creative')) seedIntegrations.push('notion');
+  if (goals.includes('learning')) seedIntegrations.push('notebooklm');
+  if (goals.includes('financial')) seedIntegrations.push('plaid');
+
+  const GOAL_LABELS: Record<OnboardingGoal, string> = {
+    deep_focus: 'deep focus', team_collab: 'team collaboration',
+    health_energy: 'health and energy', creative: 'creative output',
+    learning: 'continuous learning', financial: 'financial clarity',
+  };
+  const goalStr = goals.slice(0, 2).map(g => GOAL_LABELS[g]).join(' and ');
+
+  return {
+    goals, focusDuration, workHoursStart: workHours.start, workHoursEnd: workHours.end,
+    timezone, seedIntegrations,
+    personalizedGreeting: 'FlowState is configured for ' + goalStr + '. Your workspace is ready.',
+    firstSessionSuggestion: 'Start with a ' + focusDuration + '-minute focus session. What are you working on right now?',
+  };
+}
+
+// ─── Team Role Capabilities ────────────────────────────────────────────────────
+
+export interface TeamRoleIntent {
+  role: TeamRole;
+  canSeeTeamPulse: boolean; canSeeSprintHealth: boolean;
+  canSeeIndividualSummaries: boolean; canAssignCards: boolean;
+  canManageWorkspace: boolean; canSendSlackAnnouncements: boolean;
+  canViewBurnoutIndicators: boolean; canScheduleCeremonies: boolean;
+  canManageBilling: boolean; canManageRoles: boolean;
+  canInviteMembers: boolean;
+}
+
+export function declareTeamRoleCapabilities(role: TeamRole): TeamRoleIntent {
+  const base: TeamRoleIntent = {
+    role, canSeeTeamPulse: false, canSeeSprintHealth: false,
+    canSeeIndividualSummaries: false, canAssignCards: false,
+    canManageWorkspace: false, canSendSlackAnnouncements: false,
+    canViewBurnoutIndicators: false, canScheduleCeremonies: false,
+    canManageBilling: false, canManageRoles: false, canInviteMembers: false,
+  };
+  if (role === 'member') return { ...base, canSeeTeamPulse: true };
+  if (role === 'senior_dev') return { ...base, canSeeTeamPulse: true, canSeeIndividualSummaries: true, canAssignCards: true };
+  if (role === 'scrum_master') return {
+    ...base, canSeeTeamPulse: true, canSeeSprintHealth: true,
+    canSeeIndividualSummaries: true, canAssignCards: true,
+    canSendSlackAnnouncements: true, canViewBurnoutIndicators: true,
+    canScheduleCeremonies: true,
+  };
+  // admin
+  return {
+    role: 'admin', canSeeTeamPulse: true, canSeeSprintHealth: true,
+    canSeeIndividualSummaries: true, canAssignCards: true, canManageWorkspace: true,
+    canSendSlackAnnouncements: true, canViewBurnoutIndicators: true,
+    canScheduleCeremonies: true, canManageBilling: true, canManageRoles: true,
+    canInviteMembers: true,
+  };
+}
+
+// ─── Burnout Detection ────────────────────────────────────────────────────────
+
+export interface BurnoutIntent {
+  level: BurnoutLevel; indicators: string[];
+  recommendation: string; shouldNotifyLead: boolean; score: number;
+}
+
+export interface MemberActivityData {
+  userId: string; name: string;
+  sessionCount7d: number; avgSessionLength: number;
+  breakComplianceRate: number; cardVelocity7d: number;
+  lastActiveHoursAgo: number; silentDays: number;
+  overtimeSessionsPercent: number;
+}
+
+export function declareBurnoutRisk(data: MemberActivityData): BurnoutIntent {
+  const indicators: string[] = [];
+  let score = 0;
+  if (data.silentDays >= 3) { indicators.push('Silent for ' + data.silentDays + ' days'); score += 35; }
+  if (data.overtimeSessionsPercent > 0.4) { indicators.push(Math.round(data.overtimeSessionsPercent * 100) + '% of sessions run overtime'); score += 20; }
+  if (data.breakComplianceRate < 0.4) { indicators.push('Skipping most breaks'); score += 25; }
+  if (data.cardVelocity7d < 2 && data.sessionCount7d > 5) { indicators.push('Low card output despite active sessions'); score += 15; }
+  if (data.lastActiveHoursAgo > 48) { indicators.push('No activity in 48+ hours'); score += 20; }
+  if (data.avgSessionLength > 90) { indicators.push('Running sessions over 90 minutes'); score += 10; }
+
+  const level: BurnoutLevel = score >= 50 ? 'red' : score >= 25 ? 'yellow' : 'green';
+  const REC: Record<BurnoutLevel, string> = {
+    green: 'Team member is healthy and on pace.',
+    yellow: 'Consider checking in with ' + data.name + '. Patterns suggest early stress.',
+    red: 'Recommend direct conversation with ' + data.name + '. Multiple burnout signals present.',
+  };
+  return { level, indicators, recommendation: REC[level], shouldNotifyLead: level === 'red', score };
+}
+
+// ─── Sprint Health ────────────────────────────────────────────────────────────
+
+export interface SprintCard {
+  id: string; title: string; assignee?: string;
+  status: 'todo' | 'inprogress' | 'done';
+  lastMovedAt?: string; storyPoints?: number;
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+  tags?: string[];
+}
+
+export interface SprintHealthIntent {
+  sprintName: string; totalCards: number; completedCards: number;
+  inProgressCards: number; todoCards: number;
+  completionPercent: number; expectedPercent: number;
+  pace: 'ahead' | 'on_track' | 'at_risk' | 'critical';
+  atRiskCards: SprintCard[]; deadlineAssessment: string;
+  teamFocusHours: number; suggestedActions: string[]; daysRemaining: number;
+}
+
+export function declareSprintHealth(
+  cards: SprintCard[], sprintStartDate: string,
+  sprintEndDate: string, teamFocusHours: number,
+): SprintHealthIntent {
+  const now = new Date();
+  const start = new Date(sprintStartDate);
+  const end = new Date(sprintEndDate);
+  const totalDays = Math.max(1, (end.getTime() - start.getTime()) / 86400000);
+  const elapsedDays = Math.max(0, (now.getTime() - start.getTime()) / 86400000);
+  const daysRemaining = Math.max(0, Math.ceil((end.getTime() - now.getTime()) / 86400000));
+
+  const total = cards.length;
+  const done = cards.filter(c => c.status === 'done').length;
+  const inProg = cards.filter(c => c.status === 'inprogress').length;
+  const todo = cards.filter(c => c.status === 'todo').length;
+  const completionPct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const expectedPct = Math.min(100, Math.round((elapsedDays / totalDays) * 100));
+
+  const fortyEightHoursAgo = new Date(now.getTime() - 172800000).toISOString();
+  const atRisk = cards.filter(c => c.status !== 'done' && c.lastMovedAt && c.lastMovedAt < fortyEightHoursAgo);
+
+  let pace: SprintHealthIntent['pace'] = 'on_track';
+  if (completionPct >= expectedPct + 10) pace = 'ahead';
+  else if (completionPct < expectedPct - 20) pace = 'critical';
+  else if (completionPct < expectedPct - 10) pace = 'at_risk';
+
+  const remaining = total - done;
+  const dailyVelocity = elapsedDays > 0 ? done / elapsedDays : 0;
+
+  let deadlineAssessment = '';
+  if (pace === 'ahead') deadlineAssessment = 'Strong pace. On track to complete well before sprint end.';
+  else if (pace === 'on_track') deadlineAssessment = 'Completing at expected pace. ' + remaining + ' cards remaining over ' + daysRemaining + ' days.';
+  else if (pace === 'at_risk') deadlineAssessment = 'At current velocity, ' + Math.max(0, remaining - Math.round(dailyVelocity * daysRemaining)) + ' cards may slip past ' + end.toLocaleDateString() + '.';
+  else deadlineAssessment = 'Critical: ' + (expectedPct - completionPct) + '% behind expected pace. Immediate re-scoping recommended.';
+
+  const actions: string[] = [];
+  if (atRisk.length > 0) actions.push('Unblock ' + atRisk.length + ' card' + (atRisk.length > 1 ? 's' : '') + ' stalled for 48+ hours');
+  if (pace === 'at_risk' || pace === 'critical') actions.push('Hold a quick sync to re-scope or reassign');
+  if (teamFocusHours < daysRemaining * 2) actions.push('Encourage focused work blocks — focus time is below sprint pace');
+  if (inProg > total * 0.4) actions.push('Too many cards in-progress — finish before starting new work');
+
+  return {
+    sprintName: 'Current Sprint', totalCards: total, completedCards: done,
+    inProgressCards: inProg, todoCards: todo, completionPercent: completionPct,
+    expectedPercent: expectedPct, pace, atRiskCards: atRisk,
+    deadlineAssessment, teamFocusHours, suggestedActions: actions, daysRemaining,
+  };
+}
+
+// ─── Deadline Intelligence ────────────────────────────────────────────────────
+
+export interface DeadlineAlertIntent {
+  hoursUntilDeadline: number; urgencyLevel: 'watch' | 'warning' | 'critical';
+  incompleteCards: SprintCard[]; aiAssessment: string;
+  memberMessages: Record<string, string>; shouldNotifySlack: boolean;
+}
+
+export function declareDeadlineAlert(
+  cards: SprintCard[], deadlineDate: string,
+  memberCardMap: Record<string, string[]>,
+): DeadlineAlertIntent {
+  const hours = Math.max(0, (new Date(deadlineDate).getTime() - Date.now()) / 3600000);
+  const incomplete = cards.filter(c => c.status !== 'done');
+  const urgency: DeadlineAlertIntent['urgencyLevel'] = hours <= 24 ? 'critical' : hours <= 48 ? 'warning' : 'watch';
+
+  let assessment = '';
+  if (urgency === 'critical') assessment = 'Sprint closes in ' + Math.round(hours) + ' hours. ' + incomplete.length + ' cards incomplete. Recommend immediate team sync and re-scope.';
+  else if (urgency === 'warning') assessment = '48 hours to deadline. ' + incomplete.length + ' cards not done. At current pace, some may slip.';
+  else assessment = 'Sprint deadline approaching. ' + incomplete.length + ' cards remaining. Team should plan final push.';
+
+  const memberMessages: Record<string, string> = {};
+  for (const [member, cardIds] of Object.entries(memberCardMap)) {
+    const memberCards = incomplete.filter(c => cardIds.includes(c.id));
+    if (memberCards.length === 0) continue;
+    if (urgency === 'critical') {
+      memberMessages[member] = 'Sprint closes in ' + Math.round(hours) + ' hours. You have ' + memberCards.length + ' card' + (memberCards.length > 1 ? 's' : '') + ' remaining. A focused session now puts you in the best position.';
+    } else {
+      memberMessages[member] = 'Sprint wraps in ' + Math.round(hours / 24) + ' days. You have ' + memberCards.length + ' card' + (memberCards.length > 1 ? 's' : '') + ' left. A solid session this afternoon keeps you on track.';
+    }
+  }
+  return { hoursUntilDeadline: hours, urgencyLevel: urgency, incompleteCards: incomplete, aiAssessment: assessment, memberMessages, shouldNotifySlack: urgency !== 'watch' };
+}
+
+// ─── FlowScore ────────────────────────────────────────────────────────────────
+
+export interface FlowScoreData {
+  focusMinutes: number; targetFocusMinutes: number;
+  breaksCompleted: number; expectedBreaks: number;
+  breathingSessions: number; gratitudeEntries: number;
+  sessionsCompleted: number; streakDays: number;
+  sleepHours?: number; stepsToday?: number; hydrationGlasses?: number;
+}
+
+export interface FlowScoreIntent {
+  score: number; label: string; explanation: string;
+  breakdown: { focusOutput: number; restoreBalance: number; consistency: number; healthBonus: number };
+  tomorrow: string;
+}
+
+export function declareFlowScore(data: FlowScoreData): FlowScoreIntent {
+  const focusRatio = Math.min(1, data.focusMinutes / Math.max(1, data.targetFocusMinutes));
+  const breakRatio = Math.min(1, data.breaksCompleted / Math.max(1, data.expectedBreaks));
+  const restoreBonus = (data.breathingSessions > 0 ? 5 : 0) + (data.gratitudeEntries > 0 ? 5 : 0);
+  const consistencyBonus = Math.min(10, data.streakDays * 2);
+  const healthBonus = (data.sleepHours && data.sleepHours >= 7 ? 5 : 0)
+    + (data.stepsToday && data.stepsToday >= 8000 ? 5 : 0)
+    + (data.hydrationGlasses && data.hydrationGlasses >= 6 ? 5 : 0);
+
+  const focusOutput = Math.round(focusRatio * 50);
+  const restoreBalance = Math.round(breakRatio * 25) + restoreBonus;
+  const consistency = consistencyBonus;
+  const score = Math.min(100, focusOutput + restoreBalance + consistency + healthBonus);
+
+  const label = score >= 85 ? 'Peak Flow' : score >= 70 ? 'Strong' : score >= 55 ? 'Solid' : score >= 40 ? 'Building' : 'Rest Day';
+
+  let explanation = '';
+  if (score >= 85) explanation = 'Exceptional balance of output and restoration. ' + data.focusMinutes + ' min deep work, breaks honored.';
+  else if (score >= 70) explanation = 'Strong session. ' + data.focusMinutes + ' min focused. ' + (breakRatio < 0.7 ? 'Consider more breaks tomorrow.' : 'Good break rhythm.');
+  else if (score >= 55) explanation = 'Solid progress. ' + (data.breaksCompleted < data.expectedBreaks ? 'Skipped some breaks — that costs more than it saves.' : 'Break rhythm is working.');
+  else if (score >= 40) explanation = 'Building momentum. ' + data.focusMinutes + ' focus minutes today. Consistency compounds.';
+  else explanation = 'Light day. Rest is valid. Come back tomorrow with intention.';
+
+  const tomorrowTips: string[] = [];
+  if (breakRatio < 0.6) tomorrowTips.push('honor your breaks — they are the system, not optional');
+  if (data.sleepHours && data.sleepHours < 7) tomorrowTips.push('prioritize sleep — cognitive performance drops 25% under 7 hours');
+  if (!data.stepsToday || data.stepsToday < 5000) tomorrowTips.push('add a short walk — movement resets cortisol and sharpens focus');
+  const tomorrow = tomorrowTips.length > 0
+    ? 'Tomorrow: ' + tomorrowTips[0] + '.'
+    : 'Tomorrow: continue the pattern. Consistency is the compounding factor.';
+
+  return { score, label, explanation, breakdown: { focusOutput, restoreBalance, consistency, healthBonus }, tomorrow };
+}
+
+// ─── Invite Loop ──────────────────────────────────────────────────────────────
+
+export interface InviteIntent {
+  inviteCode: string; inviterReward: string; inviteeReward: string;
+  shareText: string; shareUrl: string;
+}
+
+export function declareInviteIntent(inviterName: string, baseUrl: string): InviteIntent {
+  const code = 'FS-' + Math.random().toString(36).slice(2, 8).toUpperCase();
+  return {
+    inviteCode: code,
+    inviterReward: '14 days free on your next billing cycle',
+    inviteeReward: '30-day free trial of Personal Pro',
+    shareText: inviterName + ' invited you to FlowState — the productivity OS that actually respects your focus. Get a free 30-day trial.',
+    shareUrl: baseUrl + '/join?ref=' + code,
+  };
+}
+
+// ─── Mindful Minimum ──────────────────────────────────────────────────────────
+
+export interface MindfulMinimumIntent {
+  policyActive: boolean; minBreaksPerSession: number;
+  breakDurationMinutes: number; slackCelebrate: boolean;
+  warningMessage: string; enforcementLevel: 'suggest' | 'warn' | 'block';
+}
+
+export function declareMindfulMinimum(tier: PremiumTier): MindfulMinimumIntent {
+  if (tier === 'free' || tier === 'personal_pro') {
+    return { policyActive: false, minBreaksPerSession: 1, breakDurationMinutes: 5, slackCelebrate: false, warningMessage: 'Taking breaks is part of the system.', enforcementLevel: 'suggest' };
+  }
+  return {
+    policyActive: true, minBreaksPerSession: 1, breakDurationMinutes: 5,
+    slackCelebrate: true, warningMessage: 'Team Mindful Minimum: everyone takes their break. No exceptions.',
+    enforcementLevel: tier === 'enterprise' ? 'warn' : 'suggest',
+  };
+}
+
+// ─── Celebration Engine ───────────────────────────────────────────────────────
+
+export interface CelebrationIntent {
+  type: 'confetti' | 'spark' | 'pulse'; intensity: number;
+  message: string; subMessage: string; duration: number; particleCount: number;
+  badge?: string;
+}
+
+const CELEB_DATA = [
+  ['Session Complete', 'One step closer to your goals.'],
+  ['Flow Achieved', 'You were in the zone. That is rare.'],
+  ['Deep Work Done', 'Your future self is grateful.'],
+  ['On Fire', 'Four sessions. Championship-level focus.'],
+  ['Flow Master', 'You make it look effortless.'],
+];
+
+const MILESTONE_BADGES: Record<number, string> = {
+  10: 'Consistent 10',
+  25: 'Focus 25',
+  50: 'Deep Worker',
+  100: 'Flow Master',
+};
+
+export function declareCelebration(sessionNumber: number, totalLifetimeSessions?: number): CelebrationIntent {
+  const idx = Math.min(sessionNumber - 1, CELEB_DATA.length - 1);
+  const [msg, sub] = CELEB_DATA[Math.max(0, idx)];
+  const intensity = Math.min(1, 0.4 + sessionNumber * 0.15);
+  const badge = totalLifetimeSessions ? MILESTONE_BADGES[totalLifetimeSessions] : undefined;
+  return {
+    type: sessionNumber >= 4 ? 'confetti' : sessionNumber >= 2 ? 'spark' : 'pulse',
+    intensity, message: msg, subMessage: sub,
+    duration: 3500 + sessionNumber * 300,
+    particleCount: Math.floor(30 + sessionNumber * 20),
+    badge,
+  };
+}
+
+// ─── Tip Bubbles ──────────────────────────────────────────────────────────────
+
+export interface TipIntent { category: string; message: string; emoji: string; autoDismissMs: number; }
 
 const TIP_LIBRARY: TipIntent[] = [
-  { category: 'posture', message: 'Shoulders back, chin level. Roll them twice.', emoji: '🧘', autoDismissMs: 12000, priority: 1 },
-  { category: 'hydration', message: 'Water check! Aim for a glass every 45 minutes.', emoji: '💧', autoDismissMs: 10000, priority: 2 },
-  { category: 'focus', message: 'One tab, one task. Close everything else.', emoji: '🎯', autoDismissMs: 12000, priority: 3 },
-  { category: 'break', message: 'Look 20 feet away for 20 seconds. Eye care matters.', emoji: '👁️', autoDismissMs: 15000, priority: 2 },
-  { category: 'encouragement', message: 'Every session is a vote for the person you\'re becoming.', emoji: '⚡', autoDismissMs: 10000, priority: 4 },
-  { category: 'debugging', message: 'Stuck? Explain it to a rubber duck. Seriously.', emoji: '🦆', autoDismissMs: 12000, priority: 3 },
-  { category: 'focus', message: 'The Pomodoro technique trains your brain like intervals train muscles.', emoji: '🍅', autoDismissMs: 12000, priority: 3 },
-  { category: 'hydration', message: 'Dehydration reduces cognitive performance by 10-15%. Drink up!', emoji: '🫗', autoDismissMs: 10000, priority: 2 },
-  { category: 'posture', message: 'Wrists neutral, elbows at 90°. Your future self thanks you.', emoji: '🖐️', autoDismissMs: 12000, priority: 1 },
-  { category: 'break', message: 'Stand up, shake it out. Movement resets cortisol levels.', emoji: '🏃', autoDismissMs: 10000, priority: 2 },
-  { category: 'encouragement', message: 'Deep work is a superpower. You\'re building it right now.', emoji: '🦅', autoDismissMs: 10000, priority: 4 },
-  { category: 'focus', message: 'Multitasking is a myth. Serial focus is the real skill.', emoji: '🔮', autoDismissMs: 12000, priority: 3 },
+  { category: 'posture', emoji: '🧘', message: 'Shoulders back, chin level. Roll them twice.', autoDismissMs: 12000 },
+  { category: 'hydration', emoji: '💧', message: 'Water check. One glass every 45 minutes keeps the brain sharp.', autoDismissMs: 10000 },
+  { category: 'focus', emoji: '🎯', message: 'One tab, one task. Close everything else.', autoDismissMs: 12000 },
+  { category: 'break', emoji: '👁️', message: 'Look 20 feet away for 20 seconds. Eye care is brain care.', autoDismissMs: 15000 },
+  { category: 'encouragement', emoji: '⚡', message: 'Every session is a vote for the person you are becoming.', autoDismissMs: 10000 },
+  { category: 'debugging', emoji: '🦆', message: 'Stuck? Explain it out loud. The words reveal the answer.', autoDismissMs: 12000 },
+  { category: 'focus', emoji: '🍅', message: '25 minutes trains focus the way intervals train muscles.', autoDismissMs: 12000 },
+  { category: 'hydration', emoji: '🫗', message: 'Dehydration cuts cognitive performance by 10-15%.', autoDismissMs: 10000 },
+  { category: 'break', emoji: '🏃', message: 'Stand up. Shake it out. Movement resets cortisol.', autoDismissMs: 10000 },
+  { category: 'encouragement', emoji: '🦅', message: 'Deep work is a superpower. You are building it right now.', autoDismissMs: 10000 },
 ];
 
 export function declareTipIntent(context: { minutesElapsed: number; phase: SessionPhase; lastTipAt: number }): TipIntent | null {
-  const { minutesElapsed, phase, lastTipAt } = context;
-  const cooldownMet = Date.now() - lastTipAt > 5 * 60 * 1000;
-  if (!cooldownMet || phase !== 'focus') return null;
-
-  if (minutesElapsed >= 45) return TIP_LIBRARY.find(t => t.category === 'posture') || null;
-  if (minutesElapsed >= 60) return TIP_LIBRARY.find(t => t.category === 'hydration') || null;
-
-  const pool = TIP_LIBRARY.filter(t => t.priority <= 3);
+  const cooldown = Date.now() - context.lastTipAt > 5 * 60 * 1000;
+  if (!cooldown || context.phase !== 'focus') return null;
+  if (context.minutesElapsed >= 60) return TIP_LIBRARY.find(t => t.category === 'hydration') || null;
+  if (context.minutesElapsed >= 45) return TIP_LIBRARY.find(t => t.category === 'posture') || null;
+  const pool = TIP_LIBRARY.filter(t => t.category !== 'posture');
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-// ── Celebrations ──────────────────────────────────────────────────────────────
+// ─── Behavior Insight ─────────────────────────────────────────────────────────
 
-const CELEBRATION_MESSAGES = [
-  ['Session Complete! 🎉', 'One step closer to your goals.'],
-  ['Flow Achieved! ⚡', 'You were in the zone. That\'s rare.'],
-  ['Deep Work Done! 🧠', 'Your future self is grateful.'],
-  ['On Fire! 🔥', 'Four sessions = championship-level focus.'],
-  ['Flow Master! 👑', 'You make it look effortless.'],
-  ['Unstoppable! 🚀', 'The streak continues. Keep going.'],
-];
-
-export function declareCelebration(sessionNumber: number): CelebrationIntent {
-  const idx = Math.min(sessionNumber - 1, CELEBRATION_MESSAGES.length - 1);
-  const [message, subMessage] = CELEBRATION_MESSAGES[Math.max(0, idx)];
-  const intensity = Math.min(1, 0.4 + sessionNumber * 0.15);
-  return {
-    type: sessionNumber >= 4 ? 'confetti' : sessionNumber >= 2 ? 'spark' : 'pulse',
-    intensity,
-    message,
-    subMessage,
-    duration: 3500 + sessionNumber * 300,
-    particleCount: Math.floor(30 + sessionNumber * 20),
-  };
+export interface BehaviorData {
+  totalFocusSeconds: number; sessionCount: number; streak: number; completionRate: number;
+  calendarEvents?: number; notionCards?: number; steps?: number; heartRate?: number;
+  sleepHours?: number; hydrationGlasses?: number; languageStreak?: number;
+  netWorthSnapshot?: number; activeModel?: string;
 }
 
-// ── Behavior Insight ──────────────────────────────────────────────────────────
-
 export interface BehaviorInsight {
-  headline: string;
-  detail: string;
-  recommendation: string;
-  sources: string[];
-  flowScore: number;
-  dataPoints: number;
-  isPremium: boolean;
+  headline: string; detail: string; recommendation: string;
+  sources: string[]; flowScore: number; dataPoints: number; isPremium: boolean;
 }
 
 export function declareBehaviorInsight(data: BehaviorData): BehaviorInsight {
@@ -472,149 +579,133 @@ export function declareBehaviorInsight(data: BehaviorData): BehaviorInsight {
   if (data.netWorthSnapshot !== undefined) sources.push('Finance');
 
   const focusHours = Math.round(data.totalFocusSeconds / 3600 * 10) / 10;
-  const flowScore = calculateFlowScore(data);
+  const score = Math.min(100, 50
+    + (data.totalFocusSeconds > 7200 ? 15 : 0)
+    + (data.completionRate > 0.8 ? 10 : 0)
+    + (data.streak > 3 ? 10 : 0)
+    + (data.sleepHours && data.sleepHours >= 7 ? 10 : 0)
+    + (data.steps && data.steps >= 8000 ? 5 : 0));
 
   let headline = 'Building momentum';
-  let detail = 'Keep going — consistency is the foundation.';
-  let recommendation = 'Complete your next Pomodoro session to strengthen your habit.';
+  let detail = 'Consistency is the foundation. Keep going.';
+  let recommendation = 'Complete your next session to strengthen the habit.';
 
   if (data.sessionCount >= 4 && data.completionRate > 0.8) {
-    headline = 'Elite focus pattern detected';
-    detail = `${focusHours}h of deep work logged. Completion rate: ${Math.round(data.completionRate * 100)}%.`;
-    recommendation = 'Your peak appears to be in the morning. Schedule your hardest work then.';
+    headline = 'Elite focus pattern';
+    detail = focusHours + 'h deep work. ' + Math.round(data.completionRate * 100) + '% completion.';
+    recommendation = 'Your peak is likely mornings. Schedule hard work there.';
   } else if (data.steps && data.steps > 8000 && data.sleepHours && data.sleepHours > 7) {
     headline = 'Optimal performance conditions';
-    detail = 'Movement and sleep are aligned. Cognitive performance is likely elevated.';
-    recommendation = 'This is a great day for creative or analytical deep work.';
-  } else if (data.languageStreak && data.languageStreak > 7) {
-    headline = 'Consistency hero';
-    detail = `${data.languageStreak}-day language streak shows exceptional habit formation.`;
-    recommendation = 'Apply this consistency pattern to your top professional goal.';
+    detail = 'Movement and sleep are aligned. Cognitive performance is elevated.';
+    recommendation = 'Great day for creative or analytical deep work.';
   }
 
-  return {
-    headline, detail, recommendation, sources,
-    flowScore, dataPoints: sources.length, isPremium: sources.length >= 3,
-  };
+  return { headline, detail, recommendation, sources, flowScore: score, dataPoints: sources.length, isPremium: sources.length >= 3 };
 }
 
-function calculateFlowScore(data: BehaviorData): number {
-  let score = 50;
-  if (data.totalFocusSeconds > 7200) score += 15;
-  if (data.completionRate > 0.8) score += 10;
-  if (data.streak > 3) score += 10;
-  if (data.sleepHours && data.sleepHours >= 7) score += 10;
-  if (data.steps && data.steps >= 8000) score += 5;
-  return Math.min(100, score);
+// ─── Learn Cards ──────────────────────────────────────────────────────────────
+
+export interface LearnCardIntent {
+  type: LearnCardType; title: string; content: string;
+  meta?: string; actionLabel?: string; emoji: string; color: string;
 }
-
-// ── Learn Cards ────────────────────────────────────────────────────────────────
-
-const LANGUAGE_CARDS: LearnCardIntent[] = [
-  { type: 'language', title: 'Japanese N5', content: '集中 (しゅうちゅう)', meta: 'shuuchuu — concentration, focus', emoji: '🇯🇵', color: '#ff6b6b', action: 'Practice', actionLabel: 'Open Anki' },
-  { type: 'language', title: 'Spanish B1', content: 'La concentración', meta: 'la concentración — focus, concentration', emoji: '🇪🇸', color: '#ffd93d', action: 'Practice', actionLabel: 'Duolingo' },
-  { type: 'language', title: 'Mandarin HSK3', content: '专注 (zhuān zhù)', meta: 'zhuān zhù — to concentrate, focus', emoji: '🇨🇳', color: '#ee4b2b', action: 'Practice', actionLabel: 'HelloChinese' },
-  { type: 'language', title: 'French A2', content: 'La productivité', meta: 'la productivité — productivity', emoji: '🇫🇷', color: '#4ecdc4', action: 'Practice', actionLabel: 'Babbel' },
-];
-
-const SKILL_TIPS: LearnCardIntent[] = [
-  { type: 'skill_tip', title: 'The 2-Minute Rule', content: 'If it takes less than 2 minutes, do it now. David Allen\'s most powerful productivity principle.', emoji: '⏱️', color: '#a8e6cf', action: 'Apply', actionLabel: 'Check Inbox' },
-  { type: 'skill_tip', title: 'Spaced Repetition', content: 'Review material at increasing intervals: 1 day, 3 days, 1 week, 1 month. Beats cramming by 200%.', emoji: '🧠', color: '#ffd93d', action: 'Learn', actionLabel: 'Try Anki' },
-  { type: 'skill_tip', title: 'The Feynman Technique', content: 'Explain it to a child. If you can\'t, you don\'t understand it yet. The gap is your study list.', emoji: '🔬', color: '#dda0dd', action: 'Practice', actionLabel: 'Write It Out' },
-  { type: 'skill_tip', title: 'Eat the Frog', content: 'Do your most dreaded task first. Everything after feels easy, and your willpower is highest in the morning.', emoji: '🐸', color: '#98d8c8', action: 'Apply Now', actionLabel: 'Open Board' },
-];
-
-const DID_YOU_KNOW: LearnCardIntent[] = [
-  { type: 'did_you_know', title: 'Flow State Science', content: 'Mihaly Csikszentmihalyi found that flow states increase productivity by up to 500%. FlowState is built around this.', emoji: '🌊', color: '#74b9ff' },
-  { type: 'did_you_know', title: 'The Pomodoro Origin', content: 'Francesco Cirillo invented the Pomodoro Technique in the 1980s using a tomato-shaped kitchen timer. Pomodoro means tomato in Italian.', emoji: '🍅', color: '#ff7675' },
-  { type: 'did_you_know', title: 'Sleep & Memory', content: 'During sleep, the hippocampus replays the day\'s learning, transferring it to long-term memory. 8 hours can boost recall by 40%.', emoji: '😴', color: '#a29bfe' },
-  { type: 'did_you_know', title: 'Cold Start Problem', content: 'The hardest moment is starting. Commit to just 2 minutes. The brain\'s reward system kicks in at start, not completion.', emoji: '🚀', color: '#fdcb6e' },
-];
-
-const BOOK_RECS: LearnCardIntent[] = [
-  { type: 'book_rec', title: 'Deep Work', content: '"The ability to perform deep work is becoming increasingly rare at exactly the same time it is becoming increasingly valuable." — Cal Newport', emoji: '📖', color: '#6c5ce7', meta: 'Cal Newport · Productivity · ★★★★★' },
-  { type: 'book_rec', title: 'Flow', content: '"The best moments usually occur when a person\'s body or mind is stretched to its limits." — Mihaly Csikszentmihalyi', emoji: '📚', color: '#00cec9', meta: 'Mihaly Csikszentmihalyi · Psychology · ★★★★★' },
-  { type: 'book_rec', title: 'Atomic Habits', content: '"You do not rise to the level of your goals. You fall to the level of your systems." — James Clear', emoji: '⚛️', color: '#e17055', meta: 'James Clear · Habits · ★★★★★' },
-  { type: 'book_rec', title: 'The Phoenix Project', content: 'A novel about DevOps, but really about flow, constraints, and systems thinking in any knowledge work.', emoji: '🔥', color: '#ff9f43', meta: 'Gene Kim · Tech/Business · ★★★★☆' },
-];
-
-const MENTAL_MODELS: LearnCardIntent[] = [
-  { type: 'mental_model', title: 'First Principles', content: 'Break down problems to their fundamental truths, then reason back up. Musk uses this for rockets. You can use it for code.', emoji: '🔭', color: '#74b9ff' },
-  { type: 'mental_model', title: 'Inversion', content: 'Instead of asking "how do I succeed?", ask "what would guarantee failure?" Then avoid those things.', emoji: '🔄', color: '#a29bfe' },
-  { type: 'mental_model', title: 'Second-Order Thinking', content: 'Consider the consequences of consequences. The immediate result is first order; what happens next is second.', emoji: '♟️', color: '#55efc4' },
-  { type: 'mental_model', title: 'Opportunity Cost', content: 'Every choice eliminates alternatives. The true cost of any decision includes what you give up by not choosing something else.', emoji: '⚖️', color: '#fdcb6e' },
-];
-
-const ALL_LEARN_CARDS: LearnCardIntent[] = [
-  ...LANGUAGE_CARDS, ...SKILL_TIPS, ...DID_YOU_KNOW, ...BOOK_RECS, ...MENTAL_MODELS,
-];
 
 export function declareLearnCards(): LearnCardIntent[] {
-  return [...ALL_LEARN_CARDS].sort(() => Math.random() - 0.5);
+  const cards: LearnCardIntent[] = [
+    { type: 'language', title: 'Japanese N5', content: 'Shuuchuu (集中) — concentration, focus. Used in sports, study, and meditation contexts.', meta: 'Focus vocabulary', emoji: '🇯🇵', color: '#ff6b6b' },
+    { type: 'skill_tip', title: '2-Minute Rule', content: 'If it takes under 2 minutes, do it now. David Allen said it first. It still works.', emoji: '⏱️', color: '#a8e6cf' },
+    { type: 'did_you_know', title: 'Flow State Science', content: 'Csikszentmihalyi found flow states increase productivity by up to 500%. This app is built around that finding.', emoji: '🌊', color: '#74b9ff' },
+    { type: 'book_rec', title: 'Deep Work', content: 'The ability to perform deep work is becoming rare at exactly the time it is becoming valuable.', meta: 'Cal Newport', emoji: '📖', color: '#6c5ce7' },
+    { type: 'mental_model', title: 'First Principles', content: 'Break problems to fundamental truths. Reason back up. Musk uses it for rockets. Use it for everything.', emoji: '🔭', color: '#74b9ff' },
+    { type: 'skill_tip', title: 'Spaced Repetition', content: 'Review at increasing intervals: 1 day, 3 days, 1 week, 1 month. Beats cramming by 200%.', emoji: '🧠', color: '#ffd93d' },
+    { type: 'did_you_know', title: 'Pomodoro Origin', content: 'Francesco Cirillo invented the technique in the 1980s using a tomato-shaped kitchen timer. Pomodoro means tomato.', emoji: '🍅', color: '#ff7675' },
+    { type: 'book_rec', title: 'Atomic Habits', content: 'You do not rise to your goals. You fall to the level of your systems.', meta: 'James Clear', emoji: '⚛️', color: '#e17055' },
+    { type: 'mental_model', title: 'Inversion', content: 'Instead of asking how to succeed, ask what guarantees failure. Then avoid those things. Charlie Munger.', emoji: '🔄', color: '#a29bfe' },
+    { type: 'skill_tip', title: 'Eat the Frog', content: 'Do the most dreaded task first. Everything after feels easy. Willpower is highest in the morning.', emoji: '🐸', color: '#98d8c8' },
+    { type: 'language', title: 'Spanish B1', content: 'La concentracion — focus and concentration. Core to any professional or academic pursuit.', meta: 'Focus vocabulary', emoji: '🇪🇸', color: '#ffd93d' },
+    { type: 'mental_model', title: 'Second-Order Thinking', content: 'Consider the consequences of consequences. The immediate result is first order. What happens next is second.', emoji: '♟️', color: '#55efc4' },
+    { type: 'book_rec', title: 'The Great Work of Your Life', content: 'Everyone has a dharma — a calling. The tragedy is not failing. It is succeeding at the wrong thing.', meta: 'Stephen Cope', emoji: '🌟', color: '#fd79a8' },
+    { type: 'skill_tip', title: 'Implementation Intentions', content: 'Instead of "I will exercise", say "I will exercise at 7am on Monday, Wednesday, Friday in my living room." Specificity triples follow-through.', emoji: '📅', color: '#81ecec' },
+    { type: 'did_you_know', title: 'The 90-Min Ultradian Rhythm', content: 'Your brain cycles through alertness and rest every 90 minutes. Working in 90-min blocks aligns with your natural biology.', emoji: '⏰', color: '#a29bfe' },
+  ];
+  return cards.sort(() => Math.random() - 0.5);
 }
 
-// ── Restore Intents ────────────────────────────────────────────────────────────
+// ─── Restore Intents ──────────────────────────────────────────────────────────
 
-const RESTORE_LIBRARY: RestoreIntent[] = [
-  {
-    mode: 'breathing', title: '4-7-8 Breathing', emoji: '🫁',
-    content: 'Activate the parasympathetic nervous system. Inhale 4s, hold 7s, exhale 8s.',
-    steps: ['Inhale through nose...', 'Hold your breath...', 'Exhale through mouth...'],
-    duration: 19, bgColor: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)',
-  },
-  {
-    mode: 'quote', title: 'Words for the Moment', emoji: '💬',
-    content: '"The present moment is the only time over which we have dominion." — Thich Nhat Hanh',
-    bgColor: 'linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%)',
-  },
-  {
-    mode: 'body_reset', title: 'Body Reset Protocol', emoji: '🧘',
-    content: 'Micro-movement sequence to release tension and restore posture.',
-    steps: ['Roll shoulders back 3× slowly', 'Tilt head side to side', 'Stretch arms above head', 'Take 3 deep belly breaths', 'Set intention for next session'],
-    bgColor: 'linear-gradient(135deg, #134e5e 0%, #71b280 100%)',
-  },
-  {
-    mode: 'gratitude', title: 'Gratitude Pulse', emoji: '💙',
-    content: 'Name one thing you\'re genuinely grateful for right now. This moment.',
-    prompt: 'Type your gratitude moment...',
-    bgColor: 'linear-gradient(135deg, #1a1a2e 0%, #4a0072 100%)',
-  },
-  {
-    mode: 'micro_win', title: 'Celebrate Your Win', emoji: '🏆',
-    content: 'You completed a focus session. That\'s 25 minutes of undivided attention — something most people never achieve.',
-    bgColor: 'linear-gradient(135deg, #f7971e 0%, #ffd200 100%)',
-  },
-  {
-    mode: 'quote', title: 'Stillness is Power', emoji: '🌙',
-    content: '"In the middle of difficulty lies opportunity." — Albert Einstein\n\nYour break is not wasted time. It\'s consolidation.',
-    bgColor: 'linear-gradient(135deg, #141e30 0%, #243b55 100%)',
-  },
-  {
-    mode: 'breathing', title: 'Box Breathing', emoji: '📦',
-    content: 'Navy SEALs use this to maintain calm under pressure. In 4, hold 4, out 4, hold 4.',
-    steps: ['Inhale 4 counts...', 'Hold 4 counts...', 'Exhale 4 counts...', 'Hold 4 counts...'],
-    duration: 16, bgColor: 'linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%)',
-  },
-  {
-    mode: 'body_reset', title: 'Eye Care Reset', emoji: '👁️',
-    content: 'The 20-20-20 rule: every 20 minutes, look at something 20 feet away for 20 seconds.',
-    steps: ['Find a point 20 feet away', 'Focus softly on that point', 'Blink slowly several times', 'Close eyes for 10 seconds', 'Return to work refreshed'],
-    bgColor: 'linear-gradient(135deg, #1d4350 0%, #a43931 100%)',
-  },
-];
+export interface RestoreIntent {
+  mode: RestoreMode; title: string; content: string;
+  emoji: string; bgGradient: string;
+  steps?: string[]; prompt?: string;
+}
 
 export function declareRestoreIntent(): RestoreIntent {
-  const idx = Math.floor(Date.now() / 30000) % RESTORE_LIBRARY.length;
-  return RESTORE_LIBRARY[idx];
+  const restores: RestoreIntent[] = [
+    { mode: 'breathing', title: '4-7-8 Breathing', emoji: '🫁', content: 'Activate your parasympathetic nervous system in 60 seconds.', steps: ['Inhale through nose — 4 counts', 'Hold your breath — 7 counts', 'Exhale through mouth — 8 counts'], bgGradient: '135deg, #1a1a2e 0%, #0f3460 100%' },
+    { mode: 'quote', title: 'Words for the Moment', emoji: '💬', content: 'The present moment is the only time over which we have dominion.', bgGradient: '135deg, #0f0c29 0%, #302b63 100%' },
+    { mode: 'body_reset', title: 'Body Reset', emoji: '🧘', content: 'Micro-movement to release tension and restore posture.', steps: ['Roll shoulders back 3 times', 'Tilt head gently side to side', 'Stretch arms above your head', 'Take 3 deep belly breaths', 'Set your intention for next session'], bgGradient: '135deg, #134e5e 0%, #71b280 100%' },
+    { mode: 'gratitude', title: 'Gratitude Pulse', emoji: '💙', content: 'Name one thing genuinely worth being grateful for right now.', prompt: 'I am grateful for...', bgGradient: '135deg, #1a1a2e 0%, #4a0072 100%' },
+    { mode: 'micro_win', title: 'Celebrate Your Win', emoji: '🏆', content: 'You finished a focus session. 25 minutes of undivided attention is rare. Most people never get there today.', bgGradient: '135deg, #f7971e 0%, #ffd200 100%' },
+    { mode: 'breathing', title: 'Box Breathing', emoji: '📦', content: 'Used by Navy SEALs to maintain calm under pressure. Four equal sides.', steps: ['Inhale — 4 counts', 'Hold — 4 counts', 'Exhale — 4 counts', 'Hold — 4 counts'], bgGradient: '135deg, #0f2027 0%, #2c5364 100%' },
+  ];
+  return restores[Math.floor(Date.now() / 30000) % restores.length];
 }
 
-// ── Session Blocking ──────────────────────────────────────────────────────────
+// ─── Billing Tiers ────────────────────────────────────────────────────────────
+
+export interface TierIntent {
+  tier: PremiumTier; monthlyPrice: number; seats: number;
+  features: string[]; modelRoutingActive: boolean; behaviorSystemActive: boolean;
+  teamFeaturesActive: boolean; sprintHealthActive: boolean; slackActive: boolean;
+  imageGenActive: boolean; videoGenActive: boolean; availableModels: string[];
+  stripeProductId?: string; annualDiscount?: number;
+}
+
+export function declareTierCapabilities(tier: PremiumTier): TierIntent {
+  const allModels = Object.keys(MODEL_REGISTRY);
+  const freeModels = ['gpt-4o-mini'];
+  switch (tier) {
+    case 'free':
+      return { tier, monthlyPrice: 0, seats: 1, features: ['Pomodoro timer', 'GPT-4o-mini chat', 'Manual Kanban', 'Basic metrics', 'Learn + Restore tabs'], modelRoutingActive: false, behaviorSystemActive: false, teamFeaturesActive: false, sprintHealthActive: false, slackActive: false, imageGenActive: false, videoGenActive: false, availableModels: freeModels };
+    case 'personal_pro':
+      return { tier, monthlyPrice: 12, seats: 1, annualDiscount: 20, features: ['All 7 AI models + smart routing', 'Google Calendar + Notion sync', 'Image generation (5 models)', 'AI Tip Bubbles + FlowScore', 'Full celebrations + NotebookLM', 'Behavior Intelligence'], modelRoutingActive: true, behaviorSystemActive: true, teamFeaturesActive: false, sprintHealthActive: false, slackActive: false, imageGenActive: true, videoGenActive: false, availableModels: allModels, stripeProductId: 'price_personal_pro' };
+    case 'team_starter':
+      return { tier, monthlyPrice: 49, seats: 5, annualDiscount: 20, features: ['Everything in Personal Pro', 'Team Hub + Pulse presence', 'Shared Kanban (Notion/Linear/Jira)', 'Slack bidirectional sync', 'Team AI Chat (shared, searchable)', 'Up to 5 seats'], modelRoutingActive: true, behaviorSystemActive: true, teamFeaturesActive: true, sprintHealthActive: false, slackActive: true, imageGenActive: true, videoGenActive: false, availableModels: allModels, stripeProductId: 'price_team_starter' };
+    case 'team_growth':
+      return { tier, monthlyPrice: 149, seats: 20, annualDiscount: 20, features: ['Everything in Team Starter', 'Sprint Health Dashboard', 'Deadline Intelligence AI (48h + 24h)', 'Burnout risk indicators', 'Video generation (6 models)', 'Mindful Minimum policy', 'Ceremony scheduling', 'Up to 20 seats'], modelRoutingActive: true, behaviorSystemActive: true, teamFeaturesActive: true, sprintHealthActive: true, slackActive: true, imageGenActive: true, videoGenActive: true, availableModels: allModels, stripeProductId: 'price_team_growth' };
+    case 'enterprise':
+      return { tier, monthlyPrice: 0, seats: 9999, features: ['Everything in Team Growth', 'SSO / SAML', 'Custom integrations', 'SLA guarantee', 'Dedicated success manager', 'Custom AI routing policy', 'Unlimited seats', 'Priority support'], modelRoutingActive: true, behaviorSystemActive: true, teamFeaturesActive: true, sprintHealthActive: true, slackActive: true, imageGenActive: true, videoGenActive: true, availableModels: allModels };
+  }
+}
+
+// ─── Slack Intents ────────────────────────────────────────────────────────────
+
+export interface SlackMessageIntent {
+  channel: string; text: string; blocks?: object[];
+  threadTs?: string; isPinnedAnnouncement: boolean; mentionUsers?: string[];
+}
+
+export function declareSlackSprintUpdate(health: SprintHealthIntent, channelId: string): SlackMessageIntent {
+  const paceEmoji = { ahead: '🟢', on_track: '🔵', at_risk: '🟡', critical: '🔴' }[health.pace];
+  const text = paceEmoji + ' *Sprint Update* — ' + health.completionPercent + '% complete (' + health.completedCards + '/' + health.totalCards + ' cards)\n' + health.deadlineAssessment;
+  return { channel: channelId, text, isPinnedAnnouncement: false };
+}
+
+export function declareSlackCelebration(memberName: string, achievement: string, channelId: string): SlackMessageIntent {
+  return { channel: channelId, text: '🎉 *' + memberName + '* just ' + achievement + '! FlowState is celebrating. Keep it going.', isPinnedAnnouncement: false };
+}
+
+export function declareSlackStandupPrompt(memberIds: string[], questions: string[]): SlackMessageIntent[] {
+  return memberIds.map(memberId => ({
+    channel: memberId, isPinnedAnnouncement: false,
+    text: 'Good morning! FlowState standup:\n' + questions.map((q, i) => (i + 1) + '. ' + q).join('\n') + '\nReply in thread and I will compile your team summary.',
+  }));
+}
+
+// ─── Session Blocking ─────────────────────────────────────────────────────────
 
 export interface SessionBlockingIntent {
-  shouldBlock: boolean;
-  reason?: string;
-  conflictingEvent?: string;
-  suggestedTime?: string;
+  shouldBlock: boolean; reason?: string; suggestedTime?: string;
 }
 
 export function declareSessionBlocking(
@@ -623,107 +714,94 @@ export function declareSessionBlocking(
 ): SessionBlockingIntent {
   const now = new Date();
   const sessionEnd = new Date(now.getTime() + sessionDurationMinutes * 60000);
-
   for (const event of events) {
-    const eventStart = new Date(event.start);
-    const eventEnd = new Date(event.end);
-    if (
-      (now >= eventStart && now <= eventEnd) ||
-      (sessionEnd >= eventStart && now <= eventStart)
-    ) {
-      const minutesUntil = Math.max(0, Math.round((eventStart.getTime() - now.getTime()) / 60000));
+    const eStart = new Date(event.start);
+    const eEnd = new Date(event.end);
+    if ((now >= eStart && now <= eEnd) || (sessionEnd >= eStart && now <= eStart)) {
+      const mins = Math.max(0, Math.round((eStart.getTime() - now.getTime()) / 60000));
       return {
         shouldBlock: true,
-        reason: minutesUntil === 0 ? `"${event.summary}" is happening now` : `"${event.summary}" starts in ${minutesUntil} min`,
-        conflictingEvent: event.summary,
-        suggestedTime: eventEnd.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        reason: mins === 0 ? '"' + event.summary + '" is happening now' : '"' + event.summary + '" starts in ' + mins + ' min',
+        suggestedTime: eEnd.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
     }
   }
-
   return { shouldBlock: false };
 }
 
-// ── Tier Capabilities ─────────────────────────────────────────────────────────
+// ─── OAuth Intents ────────────────────────────────────────────────────────────
 
-export interface TierIntent {
-  tier: PremiumTier;
-  features: string[];
-  behaviorSystemActive: boolean;
-  modelRoutingActive: boolean;
-  availableModels: string[];
-  integrationsUnlocked: string[];
-  aiTipBubblesActive: boolean;
-  celebrationFullActive: boolean;
-  weeklyDigestActive: boolean;
-  flowScoreActive: boolean;
-  imageGenActive: boolean;
-  videoGenActive: boolean;
-  restoreTabActive: boolean;
+export interface GoogleOAuthIntent { redirectPath: string; scopes: string[]; stateParam: string; }
+export function declareGoogleOAuth(baseUrl: string): GoogleOAuthIntent {
+  return {
+    redirectPath: baseUrl + '/api/auth/google/callback',
+    stateParam: crypto.randomUUID(),
+    scopes: [
+      'openid', 'profile', 'email',
+      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/drive.readonly',
+    ],
+  };
 }
 
-export function declareTierCapabilities(tier: PremiumTier): TierIntent {
-  switch (tier) {
-    case 'free':
-      return {
-        tier, features: ['Pomodoro timer', 'GPT-4o-mini chat', 'Manual Kanban', 'Basic metrics', 'Learn tab', 'Restore tab'],
-        behaviorSystemActive: false, modelRoutingActive: false,
-        availableModels: ['gpt-4o-mini'],
-        integrationsUnlocked: [], aiTipBubblesActive: false,
-        celebrationFullActive: false, weeklyDigestActive: false,
-        flowScoreActive: false, imageGenActive: false,
-        videoGenActive: false, restoreTabActive: true,
-      };
-    case 'pro':
-      return {
-        tier, features: ['Everything in Free', 'All 7 AI models', 'Smart routing', 'Google Calendar', 'Notion sync', 'AI Tip Bubbles', 'FlowScore', 'Image generation (5 models)', 'Full celebrations', 'NotebookLM bridge'],
-        behaviorSystemActive: false, modelRoutingActive: true,
-        availableModels: Object.keys(MODEL_REGISTRY),
-        integrationsUnlocked: ['google_calendar', 'notion', 'notebooklm'],
-        aiTipBubblesActive: true, celebrationFullActive: true,
-        weeklyDigestActive: false, flowScoreActive: true,
-        imageGenActive: true, videoGenActive: false, restoreTabActive: true,
-      };
-    case 'behavior':
-      return {
-        tier, features: ['Everything in Pro', 'Behavior Intelligence System', 'Health & life metrics sync', 'Video generation (6 models)', 'Weekly digest email', 'Smart session blocking', 'FlowScore AI coaching', 'ElevenLabs voice restore'],
-        behaviorSystemActive: true, modelRoutingActive: true,
-        availableModels: Object.keys(MODEL_REGISTRY),
-        integrationsUnlocked: ['google_calendar', 'notion', 'notebooklm', 'health', 'elevenlabs', 'finance'],
-        aiTipBubblesActive: true, celebrationFullActive: true,
-        weeklyDigestActive: true, flowScoreActive: true,
-        imageGenActive: true, videoGenActive: true, restoreTabActive: true,
-      };
-  }
+export interface NotionOAuthIntent { authorizeUrl: string; redirectUri: string; stateParam: string; }
+export function declareNotionOAuth(baseUrl: string, clientId: string): NotionOAuthIntent {
+  const redirectUri = baseUrl + '/api/auth/notion/callback';
+  return {
+    authorizeUrl: 'https://api.notion.com/v1/oauth/authorize?client_id=' + clientId + '&response_type=code&owner=user&redirect_uri=' + encodeURIComponent(redirectUri),
+    redirectUri,
+    stateParam: crypto.randomUUID(),
+  };
 }
 
-// ── Credential Table (for user-facing display) ─────────────────────────────────
+export interface SlackOAuthIntent { authorizeUrl: string; redirectUri: string; stateParam: string; }
+export function declareSlackOAuth(baseUrl: string, clientId: string): SlackOAuthIntent {
+  const scopes = ['channels:read', 'channels:history', 'chat:write', 'users:read', 'im:write', 'im:read', 'team:read'];
+  const redirectUri = baseUrl + '/api/auth/slack/callback';
+  return {
+    authorizeUrl: 'https://slack.com/oauth/v2/authorize?client_id=' + clientId + '&scope=' + scopes.join(',') + '&redirect_uri=' + encodeURIComponent(redirectUri),
+    redirectUri,
+    stateParam: crypto.randomUUID(),
+  };
+}
+
+// ─── Credential Table ─────────────────────────────────────────────────────────
 
 export interface CredentialEntry {
-  service: string;
-  purpose: string;
-  envKey: string;
-  howToGet: string;
-  url: string;
-  required: 'core' | 'recommended' | 'optional';
-  tier: PremiumTier;
+  service: string; purpose: string; envKey: string;
+  url: string; required: 'core' | 'recommended' | 'optional'; tier: PremiumTier;
 }
 
 export const CREDENTIAL_TABLE: CredentialEntry[] = [
-  { service: 'Google OAuth', purpose: 'Calendar read/write, Drive access, user identity', envKey: 'GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET', howToGet: 'Google Cloud Console → APIs & Services → Credentials → OAuth 2.0', url: 'https://console.cloud.google.com', required: 'core', tier: 'pro' },
-  { service: 'Notion OAuth', purpose: 'Read/write databases, Kanban sync', envKey: 'NOTION_CLIENT_ID + NOTION_CLIENT_SECRET', howToGet: 'Notion → My integrations → New integration (OAuth public)', url: 'https://www.notion.so/profile/integrations', required: 'core', tier: 'pro' },
-  { service: 'OpenAI', purpose: 'GPT-4o, GPT-4o-mini, DALL·E 3, Sora video', envKey: 'OPENAI_API_KEY', howToGet: 'platform.openai.com → API keys', url: 'https://platform.openai.com/api-keys', required: 'core', tier: 'free' },
-  { service: 'Anthropic', purpose: 'Claude 3.7 Sonnet — code, analysis, long docs', envKey: 'ANTHROPIC_API_KEY', howToGet: 'console.anthropic.com → API keys', url: 'https://console.anthropic.com', required: 'recommended', tier: 'pro' },
-  { service: 'Google AI (Gemini)', purpose: 'Gemini 2.0 Flash, Imagen 3, Veo 2 video', envKey: 'GOOGLE_AI_KEY', howToGet: 'aistudio.google.com → Get API key', url: 'https://aistudio.google.com/app/apikey', required: 'recommended', tier: 'pro' },
-  { service: 'xAI', purpose: 'Grok 3 — real-time web, live data', envKey: 'XAI_API_KEY', howToGet: 'console.x.ai → API keys', url: 'https://console.x.ai', required: 'optional', tier: 'pro' },
-  { service: 'Mistral AI', purpose: 'Mistral Large — multilingual, EU data privacy', envKey: 'MISTRAL_API_KEY', howToGet: 'console.mistral.ai → API keys', url: 'https://console.mistral.ai', required: 'optional', tier: 'pro' },
-  { service: 'DeepSeek', purpose: 'DeepSeek R1 — math, deep reasoning', envKey: 'DEEPSEEK_API_KEY', howToGet: 'platform.deepseek.com → API keys', url: 'https://platform.deepseek.com', required: 'optional', tier: 'pro' },
-  { service: 'Together AI', purpose: 'Llama 3.3 70B — open-source model hosting', envKey: 'TOGETHER_API_KEY', howToGet: 'api.together.xyz → API keys', url: 'https://api.together.xyz', required: 'optional', tier: 'pro' },
-  { service: 'Runway ML', purpose: 'Runway Gen-4 video generation', envKey: 'RUNWAY_API_KEY', howToGet: 'app.runwayml.com → My Account → API', url: 'https://app.runwayml.com', required: 'optional', tier: 'behavior' },
-  { service: 'Kling AI', purpose: 'Kling 1.6 video generation', envKey: 'KLING_API_KEY', howToGet: 'klingai.com → Developer → API keys', url: 'https://klingai.com', required: 'optional', tier: 'behavior' },
-  { service: 'Pika Labs', purpose: 'Pika 2.0 video generation', envKey: 'PIKA_API_KEY', howToGet: 'pika.art → Settings → Developer', url: 'https://pika.art', required: 'optional', tier: 'behavior' },
-  { service: 'ElevenLabs', purpose: 'Voice-guided breathing in Restore tab', envKey: 'ELEVENLABS_API_KEY', howToGet: 'elevenlabs.io → Profile → API key', url: 'https://elevenlabs.io', required: 'optional', tier: 'behavior' },
-  { service: 'Stability AI', purpose: 'Stable Diffusion 3 image generation', envKey: 'STABILITY_API_KEY', howToGet: 'platform.stability.ai → API keys', url: 'https://platform.stability.ai', required: 'optional', tier: 'pro' },
-  { service: 'Black Forest Labs', purpose: 'FLUX Pro image generation', envKey: 'BFL_API_KEY', howToGet: 'api.bfl.ml → Account → API keys', url: 'https://api.bfl.ml', required: 'optional', tier: 'pro' },
-  { service: 'Ideogram', purpose: 'Ideogram 2 — text-in-image, design assets', envKey: 'IDEOGRAM_API_KEY', howToGet: 'ideogram.ai → API → Generate key', url: 'https://ideogram.ai', required: 'optional', tier: 'pro' },
+  { service: 'Google OAuth 2.0', purpose: 'Auth, Calendar, Drive, Gmail scopes', envKey: 'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET', url: 'https://console.cloud.google.com', required: 'core', tier: 'free' },
+  { service: 'Notion OAuth', purpose: 'Kanban sync, pages, databases', envKey: 'NOTION_CLIENT_ID, NOTION_CLIENT_SECRET', url: 'https://notion.so/my-integrations', required: 'core', tier: 'personal_pro' },
+  { service: 'Slack OAuth', purpose: 'Team comms, bidirectional sync, standups', envKey: 'SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_BOT_TOKEN', url: 'https://api.slack.com/apps', required: 'core', tier: 'team_starter' },
+  { service: 'Stripe', purpose: 'Subscription billing, seat management, webhooks', envKey: 'STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE_KEY', url: 'https://dashboard.stripe.com', required: 'core', tier: 'personal_pro' },
+  { service: 'OpenAI', purpose: 'GPT-4o, GPT-4o-mini, DALL-E 3, Sora, TTS', envKey: 'OPENAI_API_KEY', url: 'https://platform.openai.com/api-keys', required: 'core', tier: 'free' },
+  { service: 'Anthropic', purpose: 'Claude 3.7 Sonnet — code, analysis, long docs', envKey: 'ANTHROPIC_API_KEY', url: 'https://console.anthropic.com', required: 'recommended', tier: 'personal_pro' },
+  { service: 'Google AI Studio', purpose: 'Gemini 2.0 Flash, Imagen 3, Veo 2', envKey: 'GOOGLE_AI_KEY', url: 'https://aistudio.google.com/app/apikey', required: 'recommended', tier: 'personal_pro' },
+  { service: 'xAI (Grok)', purpose: 'Grok 3 — real-time web, live data', envKey: 'XAI_API_KEY', url: 'https://console.x.ai', required: 'optional', tier: 'personal_pro' },
+  { service: 'Mistral AI', purpose: 'Mistral Large — multilingual, EU data privacy', envKey: 'MISTRAL_API_KEY', url: 'https://console.mistral.ai', required: 'optional', tier: 'personal_pro' },
+  { service: 'DeepSeek', purpose: 'DeepSeek R1 — math, deep reasoning', envKey: 'DEEPSEEK_API_KEY', url: 'https://platform.deepseek.com', required: 'optional', tier: 'personal_pro' },
+  { service: 'Together AI', purpose: 'Llama 3.3 70B open-source hosting', envKey: 'TOGETHER_API_KEY', url: 'https://api.together.xyz', required: 'optional', tier: 'personal_pro' },
+  { service: 'Microsoft OAuth', purpose: 'Teams integration, Outlook Calendar', envKey: 'MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET', url: 'https://portal.azure.com', required: 'optional', tier: 'team_starter' },
+  { service: 'GitHub OAuth', purpose: 'Commit activity, PR status, Issues sync', envKey: 'GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET', url: 'https://github.com/settings/developers', required: 'optional', tier: 'team_starter' },
+  { service: 'Linear API', purpose: 'Sprint board sync', envKey: 'LINEAR_API_KEY', url: 'https://linear.app/settings/api', required: 'optional', tier: 'team_starter' },
+  { service: 'Jira OAuth', purpose: 'Issue tracking sync', envKey: 'JIRA_CLIENT_ID, JIRA_CLIENT_SECRET', url: 'https://developer.atlassian.com', required: 'optional', tier: 'team_starter' },
+  { service: 'Asana OAuth', purpose: 'Task board sync', envKey: 'ASANA_CLIENT_ID, ASANA_CLIENT_SECRET', url: 'https://app.asana.com/0/my-apps', required: 'optional', tier: 'team_starter' },
+  { service: 'Runway ML', purpose: 'Gen-4 video generation', envKey: 'RUNWAY_API_KEY', url: 'https://dev.runwayml.com', required: 'optional', tier: 'team_growth' },
+  { service: 'Kling / Kuaishou', purpose: 'Kling 1.6 video generation', envKey: 'KLING_API_KEY', url: 'https://klingai.com/dev', required: 'optional', tier: 'team_growth' },
+  { service: 'Pika Labs', purpose: 'Pika 2.0 video generation', envKey: 'PIKA_API_KEY', url: 'https://pika.art/api', required: 'optional', tier: 'team_growth' },
+  { service: 'ElevenLabs', purpose: 'Voice-guided breathing, Restore audio', envKey: 'ELEVENLABS_API_KEY', url: 'https://elevenlabs.io/api', required: 'optional', tier: 'team_growth' },
+  { service: 'Stability AI', purpose: 'Stable Diffusion 3 image generation', envKey: 'STABILITY_API_KEY', url: 'https://platform.stability.ai', required: 'optional', tier: 'personal_pro' },
+  { service: 'Black Forest Labs', purpose: 'FLUX Pro image generation', envKey: 'BFL_API_KEY', url: 'https://api.bfl.ml', required: 'optional', tier: 'personal_pro' },
+  { service: 'Ideogram', purpose: 'Ideogram 2 — text-in-image', envKey: 'IDEOGRAM_API_KEY', url: 'https://ideogram.ai/api', required: 'optional', tier: 'personal_pro' },
+  { service: 'Plaid', purpose: 'Read-only financial account snapshots', envKey: 'PLAID_CLIENT_ID, PLAID_SECRET', url: 'https://dashboard.plaid.com', required: 'optional', tier: 'team_growth' },
+  { service: 'Oura', purpose: 'Sleep, HRV, readiness score', envKey: 'OURA_CLIENT_ID, OURA_CLIENT_SECRET', url: 'https://cloud.ouraring.com/oauth/applications', required: 'optional', tier: 'team_growth' },
+  { service: 'Whoop', purpose: 'Recovery, strain, sleep data', envKey: 'WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET', url: 'https://api.prod.whoop.com/developer', required: 'optional', tier: 'team_growth' },
+  { service: 'SendGrid / Resend', purpose: 'Transactional email, magic links, weekly digest', envKey: 'RESEND_API_KEY', url: 'https://resend.com', required: 'core', tier: 'free' },
+  { service: 'Supabase', purpose: 'Team database, auth, real-time presence', envKey: 'SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY', url: 'https://supabase.com', required: 'core', tier: 'team_starter' },
+  { service: 'Upstash Redis', purpose: 'Session cache, rate limiting, presence indicators', envKey: 'UPSTASH_REDIS_URL, UPSTASH_REDIS_TOKEN', url: 'https://upstash.com', required: 'recommended', tier: 'team_starter' },
+  { service: 'Beehiiv / ConvertKit', purpose: 'Weekly digest newsletter, onboarding emails', envKey: 'BEEHIIV_API_KEY', url: 'https://beehiiv.com', required: 'optional', tier: 'team_growth' },
 ];
