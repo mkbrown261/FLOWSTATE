@@ -394,7 +394,20 @@ app.post('/api/invite/generate', async (c) => {
 
 // ─── FlowScore ────────────────────────────────────────────────────────────────
 app.post('/api/flowscore', async (c) => {
-  const data = await c.req.json()
+  const raw = await c.req.json()
+  // Normalize: frontend sends totalFocusSeconds/sessionCount, intent-layer expects focusMinutes etc.
+  const data = {
+    focusMinutes: Math.floor((raw.totalFocusSeconds || raw.focusMinutes || 0) / 60),
+    targetFocusMinutes: (raw.targetFocusMinutes || raw.sessionCount * 25 || 100),
+    breaksCompleted: raw.breaksCompleted || raw.sessionCount || 0,
+    expectedBreaks: raw.expectedBreaks || Math.max(1, raw.sessionCount || 1),
+    breathingSessions: raw.breathingExercises || raw.breathingSessions || 0,
+    gratitudeEntries: raw.gratitudeEntries || 0,
+    streakDays: raw.streak || raw.streakDays || 0,
+    sleepHours: raw.sleepHours,
+    stepsToday: raw.steps || raw.stepsToday,
+    hydrationGlasses: raw.hydrationGlasses,
+  }
   return c.json(declareFlowScore(data))
 })
 
@@ -936,6 +949,7 @@ em{color:var(--accent);font-style:italic}
     <span style="color:var(--text-m);font-size:10px">·</span>
     <span class="dt-time" id="dt-time">—</span>
   </div>
+  <div id="fs-score-badge" onclick="switchTab('metrics')" style="font-size:11px;font-weight:700;color:var(--accent);cursor:pointer;padding:4px 10px;border:1px solid rgba(168,85,247,.25);border-radius:8px;background:rgba(168,85,247,.08);display:none">⚡ —</div>
   <div id="user-area"></div>
 </header>
 
@@ -1428,11 +1442,19 @@ function tickTimer() {
       saveTimerState();
       updateStats();
       triggerCelebration(state.timer.sessions);
-      notify('Session complete! Take a break.', 'success');
-      setPhase(state.timer.sessions % 4 === 0 ? 'long_break' : 'short_break');
+      // Mindful Minimum: enforce break before next session
+      const nextPhase = state.timer.sessions % 4 === 0 ? 'long_break' : 'short_break';
+      notify('Session complete! Mindful Minimum: take your ' + (nextPhase === 'long_break' ? '15-min' : '5-min') + ' break.', 'success');
+      setPhase(nextPhase);
+      state.timer.mindfulBreakRequired = true;
+      // Auto-start break timer (Mindful Minimum policy)
+      setTimeout(() => { if (!state.timer.running) startTimer(); }, 1500);
     } else {
+      state.timer.mindfulBreakRequired = false;
       notify('Break over. Ready to focus?', 'info');
       setPhase('focus');
+      // Show pre-session intent prompt after break
+      setTimeout(() => maybeShowIntentPrompt(true), 500);
     }
   }
   updateTimerDisplay();
@@ -1454,6 +1476,19 @@ function updateStats() {
   document.getElementById('stat-focus').textContent = totalMin >= 60 ? Math.floor(totalMin/60) + 'h ' + (totalMin%60) + 'm' : totalMin + 'm';
   const streak = parseInt(localStorage.getItem('fs_streak') || '0');
   document.getElementById('stat-streak').textContent = '🔥 ' + streak;
+  // Update FlowScore in header/metrics
+  refreshFlowScore();
+}
+
+async function refreshFlowScore() {
+  try {
+    const streak = parseInt(localStorage.getItem('fs_streak') || '0');
+    const data = await fetch('/api/flowscore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ totalFocusSeconds: state.timer.totalFocusSec, sessionCount: state.timer.sessions, breaksCompleted: state.timer.sessions, breathingExercises: parseInt(localStorage.getItem('fs_breathing') || '0'), gratitudeEntries: parseInt(localStorage.getItem('fs_gratitude_count') || '0'), streak, sleepHours: 7, steps: 5000, hydrationGlasses: 6 }) }).then(r => r.json());
+    const scoreEl = document.getElementById('fs-score-badge');
+    if (scoreEl) { scoreEl.textContent = '⚡ ' + data.score + ' — ' + data.label; scoreEl.title = data.explanation + ' | ' + data.tomorrowTip; scoreEl.style.display = 'block'; }
+    const insScore = document.getElementById('ins-score');
+    if (insScore) insScore.textContent = data.score + ' / 100 — ' + data.label;
+  } catch {}
 }
 
 function saveTimerState() {
