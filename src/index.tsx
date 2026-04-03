@@ -1188,6 +1188,8 @@ em{color:var(--accent);font-style:italic}
 </div>
 
 <script>
+const Q = String.fromCharCode(39);
+
 const FS_USER = ${userJson};
 const FS_NOTION = ${notionJson};
 const FS_SLACK = ${slackJson};
@@ -1241,7 +1243,7 @@ function renderObStep(step) {
   const progress = '<div class="ob-progress">' + [1,2,3].map(i => '<div class="ob-dot ' + (i < step ? 'done' : i === step ? 'active' : '') + '"></div>').join('') + '</div>';
 
   if (step === 1) {
-    card.innerHTML = progress + '<div class="ob-logo">⚡</div><h2 class="ob-title">What are you here to improve?</h2><p class="ob-sub">Pick up to 3 goals. We\'ll personalize your workspace around them.</p><div class="ob-step">Step 1 of 3</div>' +
+    card.innerHTML = progress + '<div class="ob-logo">⚡</div><h2 class="ob-title">What are you here to improve?</h2><p class="ob-sub">Pick up to 3 goals. We&#39;ll personalize your workspace around them.</p><div class="ob-step">Step 1 of 3</div>' +
       '<div class="goal-grid">' +
       goalBtn('deep_focus','fas fa-bullseye','Deep Focus','Ship more, distract less') +
       goalBtn('team_collab','fas fa-users','Team Collab','Sync without overhead') +
@@ -1276,7 +1278,7 @@ function renderObStep(step) {
 }
 
 function goalBtn(id, icon, name, desc) {
-  return '<button class="goal-btn ' + (OB.goals.includes(id) ? 'sel' : '') + '" onclick="toggleGoal(\'' + id + '\',this)"><i class="' + icon + '"></i><div><div style="font-size:13px;font-weight:700">' + name + '</div><div style="font-size:11px;color:var(--text-m)">' + desc + '</div></div></button>';
+  return '<button class="goal-btn ' + (OB.goals.includes(id) ? 'sel' : '') + '" onclick="toggleGoal(" + Q + "' + id + '" + Q + ",this)"><i class="' + icon + '"></i><div><div style="font-size:13px;font-weight:700">' + name + '</div><div style="font-size:11px;color:var(--text-m)">' + desc + '</div></div></button>';
 }
 function integRow(id, icon, name, desc, action, connected) {
   return '<div class="integ-row"><div class="integ-left"><div class="integ-icon">' + icon + '</div><div><div class="integ-name">' + name + '</div><div class="integ-desc">' + desc + '</div></div></div><button class="btn-connect ' + (connected ? 'connected' : '') + '" onclick="' + action + '">' + (connected ? '✓ Connected' : 'Connect') + '</button></div>';
@@ -1505,7 +1507,7 @@ function maybeShowIntentPrompt(force) {
   overlay.className = 'intent-modal';
   overlay.id = 'intent-modal';
   overlay.innerHTML = '<div class="intent-card"><h2>What are you working on?</h2><p>FlowState will set your ambient, AI model, and tips based on your task.</p><input class="intent-input" id="intent-in" placeholder="e.g. debugging the auth flow, writing blog post, designing landing page..." autofocus><div class="intent-suggestions">' +
-    ['Coding / debugging','Writing / content','Design / Figma','Research / reading','Planning / admin','Team standup prep'].map(s => '<button class="intent-sug" onclick="setIntentSug(\'' + s + '\')">' + s + '</button>').join('') +
+    ['Coding / debugging','Writing / content','Design / Figma','Research / reading','Planning / admin','Team standup prep'].map(s => '<button class="intent-sug" onclick="setIntentSug(" + Q + "' + s + '" + Q + ")">' + s + '</button>').join('') +
     '</div><div style="display:flex;gap:8px"><button class="ob-btn" style="flex:1" onclick="submitIntent()">Set Intent</button><button class="ob-btn" style="flex:0 0 auto;background:var(--bg-card);color:var(--text-s);border:1px solid var(--border)" onclick="dismissIntent()">Skip</button></div></div>';
   document.body.appendChild(overlay);
   document.getElementById('intent-in').focus();
@@ -1540,7 +1542,7 @@ const MODELS = [
 function buildModelBar() {
   const bar = document.getElementById('model-bar');
   if (!bar) return;
-  bar.innerHTML = MODELS.map(m => '<button class="m-chip ' + (state.chat.model === m.id ? 'active' : '') + '" onclick="selectModel(\'' + m.id + '\')" style="border-color:' + m.color + '20">' +
+  bar.innerHTML = MODELS.map(m => '<button class="m-chip ' + (state.chat.model === m.id ? 'active' : '') + '" onclick="selectModel(" + Q + "' + m.id + '" + Q + ")" style="border-color:' + m.color + '20">' +
     '<span style="width:6px;height:6px;border-radius:50%;background:' + m.color + ';flex-shrink:0;display:inline-block"></span>' +
     m.name + (m.badge ? ' <span class="badge">' + m.badge + '</span>' : '') + '</button>').join('') +
     '<div class="route-badge"><div class="r-dot"></div>Auto-routing</div>';
@@ -1598,9 +1600,9 @@ function removeTyping(id) { document.getElementById(id)?.remove(); }
 function formatMsg(text) {
   if (!text) return '';
   let t = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  t = t.replace(/\n/g, '<br>');
+  t = t.replace(new RegExp('[*][*]([^*]+)[*][*]', 'g'), '<strong>$1</strong>');
+  t = t.replace(new RegExp('[*]([^*]+)[*]', 'g'), '<em>$1</em>');
+  t = t.replace(new RegExp('\\n', 'g'), '<br>');
   return t;
 }
 
@@ -1660,7 +1662,7 @@ function renderEvents() {
   }
   list.innerHTML = state.calendar.events.slice(0, 8).map(e => {
     const t = e.allDay ? 'All day' : new Date(e.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    return '<div class="ev-item"><div class="ev-dot" style="background:' + e.color + '"></div><div class="ev-time">' + t + '</div><div class="ev-sum">' + e.summary + '</div><button class="btn-blk" onclick="blockAroundEvent(\'' + e.id + '\')"><i class="fas fa-lock"></i></button></div>';
+    return '<div class="ev-item"><div class="ev-dot" style="background:' + e.color + '"></div><div class="ev-time">' + t + '</div><div class="ev-sum">' + e.summary + '</div><button class="btn-blk" onclick="blockAroundEvent(" + Q + "' + e.id + '" + Q + ")"><i class="fas fa-lock"></i></button></div>';
   }).join('');
 }
 
@@ -1756,7 +1758,7 @@ async function loadNotionDbs() {
   try {
     const data = await fetch('/api/notion/databases').then(r => r.json());
     if (!data.databases?.length) { list.innerHTML = '<div class="empty"><p>No databases found in your Notion workspace.</p></div>'; return; }
-    list.innerHTML = data.databases.map(db => '<div class="notion-db ' + (state.kanban.notionDbId === db.id ? 'sel' : '') + '" onclick="selectNotionDb(\'' + db.id + '\',\'' + db.title.replace(/'/g,"\\'") + '\')">' + db.icon + ' <strong>' + db.title + '</strong></div>').join('');
+    list.innerHTML = data.databases.map(db => '<div class="notion-db ' + (state.kanban.notionDbId === db.id ? 'sel' : '') + '" onclick="selectNotionDb(" + Q + "' + db.id + '" + Q + "," + Q + "' + db.title.replace(/'/g,"\" + Q + "") + '" + Q + ")">' + db.icon + ' <strong>' + db.title + '</strong></div>').join('');
   } catch { list.innerHTML = '<div class="empty"><p>Could not load Notion databases.</p></div>'; }
 }
 
@@ -1785,10 +1787,10 @@ function renderKanban() {
   const cols = { todo: { label: 'To Do', color: '#888' }, inprogress: { label: 'In Progress', color: '#f59e0b' }, done: { label: 'Done', color: '#10b981' } };
   wrap.innerHTML = Object.entries(cols).map(([key, meta]) => {
     const cards = state.kanban.columns[key] || [];
-    return '<div class="k-col" id="col-' + key + '" ondragover="event.preventDefault()" ondrop="drop(event,\'' + key + '\')">' +
+    return '<div class="k-col" id="col-' + key + '" ondragover="event.preventDefault()" ondrop="drop(event," + Q + "' + key + '" + Q + ")">' +
       '<div class="k-col-hd"><div class="k-col-title" style="color:' + meta.color + '">' + meta.label + '</div><div class="k-count">' + cards.length + '</div></div>' +
       '<div class="k-cards" id="cards-' + key + '">' +
-      cards.map(card => '<div class="k-card" draggable="true" id="card-' + card.id + '" ondragstart="dragStart(event,\'' + card.id + '\',\'' + key + '\')">' +
+      cards.map(card => '<div class="k-card" draggable="true" id="card-' + card.id + '" ondragstart="dragStart(event," + Q + "' + card.id + '" + Q + "," + Q + "' + key + '" + Q + ")">' +
         '<div class="k-card-title">' + (card.icon || '📄') + ' ' + card.title + '</div>' +
         (card.tag ? '<span class="k-tag">' + card.tag + '</span>' : '') +
         '</div>').join('') +
@@ -1951,7 +1953,7 @@ function renderRestore(r) {
     inner += '<div class="breath-circ" id="breath-circ" onclick="toggleBreath(this)">Tap to start</div>';
   }
   scene.innerHTML = inner;
-  if (nav) nav.innerHTML = '<button class="r-btn" onclick="loadRestore()"><i class="fas fa-refresh"></i>&nbsp; Next</button><button class="r-btn" onclick="switchTab(\'focus\')">Back to Focus</button>';
+  if (nav) nav.innerHTML = '<button class="r-btn" onclick="loadRestore()"><i class="fas fa-refresh"></i>&nbsp; Next</button><button class="r-btn" onclick="switchTab(" + Q + "focus" + Q + ")">Back to Focus</button>';
 }
 
 let breathInterval = null;
@@ -2038,7 +2040,7 @@ function triggerCelebration(sessionNum) {
   const [title, sub, emoji] = msgs[Math.max(0, idx)];
   const ov = document.createElement('div');
   ov.className = 'celeb-ov';
-  ov.innerHTML = '<div class="celeb-card"><span class="celeb-emoji">' + emoji + '</span><div class="celeb-title">' + title + '</div><div class="celeb-sub">' + sub + '</div><button class="btn-sm" style="margin-top:14px" onclick="this.closest(\'.celeb-ov\').remove()">Keep going</button></div>';
+  ov.innerHTML = '<div class="celeb-card"><span class="celeb-emoji">' + emoji + '</span><div class="celeb-title">' + title + '</div><div class="celeb-sub">' + sub + '</div><button class="btn-sm" style="margin-top:14px" onclick="this.closest(" + Q + ".celeb-ov" + Q + ").remove()">Keep going</button></div>';
   document.body.appendChild(ov);
   if (sessionNum >= 2) spawnConfetti(Math.floor(30 + sessionNum * 20));
   setTimeout(() => ov.remove(), 5000);
@@ -2077,7 +2079,7 @@ function openPricingModal() {
     { id:'enterprise', name:'Enterprise', price:'Custom', per:'', color:'#f59e0b', features:['Unlimited seats','SSO / SAML','Custom integrations','Dedicated support'] },
   ];
   const html = '<p style="color:var(--text-s);font-size:13px;margin-bottom:14px">All keys managed server-side. Your data is never sold.</p><div class="tier-cards">' +
-    tiers.map(t => '<div class="t-card ' + (t.hi ? 'hi' : '') + '"><h3>' + t.name + '</h3><div class="price">' + t.price + '</div><div style="font-size:11px;color:var(--text-m);margin-bottom:8px">' + t.per + '</div><ul class="t-feats">' + t.features.map(f => '<li>' + f + '</li>').join('') + '</ul>' + (t.id === 'free' ? '<button class="btn-primary" style="width:100%;margin-top:12px;font-size:12px;padding:8px;opacity:.5" disabled>Current Plan</button>' : t.id === 'enterprise' ? '<button class="btn-primary" style="width:100%;margin-top:12px;font-size:12px;padding:8px" onclick="notify(\'Contact team@flowstate.ai for enterprise pricing\',\'info\')">Contact Sales</button>' : '<button class="btn-primary" style="width:100%;margin-top:12px;font-size:12px;padding:8px" onclick="startCheckout(\'' + t.id + '\')">Get Started</button>') + '</div>').join('') +
+    tiers.map(t => '<div class="t-card ' + (t.hi ? 'hi' : '') + '"><h3>' + t.name + '</h3><div class="price">' + t.price + '</div><div style="font-size:11px;color:var(--text-m);margin-bottom:8px">' + t.per + '</div><ul class="t-feats">' + t.features.map(f => '<li>' + f + '</li>').join('') + '</ul>' + (t.id === 'free' ? '<button class="btn-primary" style="width:100%;margin-top:12px;font-size:12px;padding:8px;opacity:.5" disabled>Current Plan</button>' : t.id === 'enterprise' ? '<button class="btn-primary" style="width:100%;margin-top:12px;font-size:12px;padding:8px" onclick="notify(" + Q + "Contact team@flowstate.ai for enterprise pricing" + Q + "," + Q + "info" + Q + ")">Contact Sales</button>' : '<button class="btn-primary" style="width:100%;margin-top:12px;font-size:12px;padding:8px" onclick="startCheckout(" + Q + "' + t.id + '" + Q + ")">Get Started</button>') + '</div>').join('') +
     '</div>';
   openModal('Upgrade FlowState', html);
 }
@@ -2107,7 +2109,7 @@ async function openCredsModal() {
 function openInviteModal() {
   if (!FS_USER) { notify('Sign in to get your invite link', 'info'); return; }
   fetch('/api/invite/generate', { method: 'POST' }).then(r => r.json()).then(invite => {
-    const html = '<div class="invite-box"><div style="font-size:14px;color:var(--text-s);margin-bottom:8px">Your invite link</div><div class="invite-code">' + invite.inviteCode + '</div><div style="font-size:13px;color:var(--text-s);margin-bottom:14px">' + invite.inviteeReward + '</div><div style="font-size:12px;color:var(--text-m);margin-bottom:14px">You get: ' + invite.inviterReward + '</div><button class="btn-primary" onclick="navigator.clipboard.writeText(\'' + invite.shareUrl + '\').then(()=>notify(\'Link copied!\',\'success\'))"><i class="fas fa-copy"></i>&nbsp; Copy Link</button></div>';
+    const html = '<div class="invite-box"><div style="font-size:14px;color:var(--text-s);margin-bottom:8px">Your invite link</div><div class="invite-code">' + invite.inviteCode + '</div><div style="font-size:13px;color:var(--text-s);margin-bottom:14px">' + invite.inviteeReward + '</div><div style="font-size:12px;color:var(--text-m);margin-bottom:14px">You get: ' + invite.inviterReward + '</div><button class="btn-primary" onclick="navigator.clipboard.writeText(" + Q + "' + invite.shareUrl + '" + Q + ").then(()=>notify(" + Q + "Link copied!" + Q + "," + Q + "success" + Q + "))"><i class="fas fa-copy"></i>&nbsp; Copy Link</button></div>';
     openModal('Invite a Colleague', html);
   }).catch(() => notify('Could not generate invite link', 'error'));
 }
