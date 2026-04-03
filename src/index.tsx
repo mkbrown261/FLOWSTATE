@@ -405,6 +405,75 @@ app.get('/api/behavior/insight', async (c) => {
   return c.json(declareBehaviorInsight(data))
 })
 
+// ─── Magic Link Auth ──────────────────────────────────────────────────────────
+app.post('/api/auth/magic-link', async (c) => {
+  const { email } = await c.req.json()
+  if (!email || !email.includes('@')) return c.json({ error: 'invalid_email' }, 400)
+  // In production: generate token, store in KV, send via Resend/SendGrid
+  // For now: auto-sign-in with email as identifier (demo mode)
+  const name = email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+  const session = { name, email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
+  setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
+  return c.json({ success: true, user: { name, email } })
+})
+
+// ─── Stripe Billing Stubs ─────────────────────────────────────────────────────
+app.post('/api/billing/checkout', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const { tier } = await c.req.json()
+  const priceMap: Record<string, string> = {
+    personal_pro: 'price_personal_pro_monthly',
+    team_starter: 'price_team_starter_monthly',
+    team_growth: 'price_team_growth_monthly',
+    enterprise: 'price_enterprise_custom',
+  }
+  const priceId = priceMap[tier]
+  if (!priceId) return c.json({ error: 'invalid_tier' }, 400)
+  if (!c.env?.STRIPE_SECRET_KEY) {
+    return c.json({ demo: true, message: 'Stripe not configured — add STRIPE_SECRET_KEY to activate billing', tier, redirectUrl: '/' })
+  }
+  // Real Stripe checkout session creation
+  const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${c.env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      'payment_method_types[]': 'card',
+      'mode': 'subscription',
+      'customer_email': session.email,
+      'line_items[0][price]': priceId,
+      'line_items[0][quantity]': '1',
+      'success_url': `${new URL(c.req.url).origin}/?billing=success&tier=${tier}`,
+      'cancel_url': `${new URL(c.req.url).origin}/?billing=cancelled`,
+    })
+  })
+  const stripeData: any = await stripeRes.json()
+  if (stripeData.error) return c.json({ error: stripeData.error.message }, 500)
+  return c.json({ checkoutUrl: stripeData.url })
+})
+
+app.post('/api/billing/portal', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  if (!c.env?.STRIPE_SECRET_KEY) return c.json({ demo: true, message: 'Stripe not configured' })
+  return c.json({ portalUrl: `https://billing.stripe.com/p/login/test_demo` })
+})
+
+app.post('/api/billing/webhook', async (c) => {
+  // Stripe webhook handler — verify signature and update user tier
+  const body = await c.req.text()
+  const sig = c.req.header('stripe-signature') || ''
+  if (!c.env?.STRIPE_WEBHOOK_SECRET) return c.json({ received: true })
+  // In production: verify Stripe webhook signature, update KV/D1 with new tier
+  return c.json({ received: true })
+})
+
+// ─── Mindful Minimum ──────────────────────────────────────────────────────────
+app.get('/api/mindful/policy', (c) => {
+  const tier = (c.req.query('tier') as any) || 'free'
+  return c.json(declareMindfulMinimum(tier))
+})
+
 // ─── Misc APIs ────────────────────────────────────────────────────────────────
 app.get('/api/health', (c) => c.json({ status: 'alive', version: '3.0.0', name: 'FlowState', phase: 'Phase 3 — Full Architecture' }))
 app.get('/api/learn/cards', (c) => c.json({ cards: declareLearnCards() }))
@@ -1136,7 +1205,12 @@ function showLogin() {
 function signInGoogle() { window.location.href = '/api/auth/google'; }
 function signInMagicLink() {
   const email = prompt('Enter your work email:');
-  if (email) notify('Magic link sent to ' + email + ' — check your inbox', 'info');
+  if (!email || !email.includes('@')) { notify('Enter a valid email address', 'warning'); return; }
+  fetch('/api/auth/magic-link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) })
+    .then(r => r.json()).then(data => {
+      if (data.success) { notify('Signed in as ' + data.user.name, 'success'); setTimeout(() => window.location.reload(), 1200); }
+      else notify('Could not sign in — check email format', 'error');
+    }).catch(() => notify('Network error — please try again', 'error'));
 }
 
 // ─── Onboarding ───────────────────────────────────────────────────────────────
@@ -1968,9 +2042,19 @@ function openPricingModal() {
     { id:'enterprise', name:'Enterprise', price:'Custom', per:'', color:'#f59e0b', features:['Unlimited seats','SSO / SAML','Custom integrations','Dedicated support'] },
   ];
   const html = '<p style="color:var(--text-s);font-size:13px;margin-bottom:14px">All keys managed server-side. Your data is never sold.</p><div class="tier-cards">' +
-    tiers.map(t => '<div class="t-card ' + (t.hi ? 'hi' : '') + '"><h3>' + t.name + '</h3><div class="price">' + t.price + '</div><div style="font-size:11px;color:var(--text-m);margin-bottom:8px">' + t.per + '</div><ul class="t-feats">' + t.features.map(f => '<li>' + f + '</li>').join('') + '</ul><button class="btn-primary" style="width:100%;margin-top:12px;font-size:12px;padding:8px" onclick="notify(\'Stripe billing coming soon\',\'info\')">Get Started</button></div>').join('') +
+    tiers.map(t => '<div class="t-card ' + (t.hi ? 'hi' : '') + '"><h3>' + t.name + '</h3><div class="price">' + t.price + '</div><div style="font-size:11px;color:var(--text-m);margin-bottom:8px">' + t.per + '</div><ul class="t-feats">' + t.features.map(f => '<li>' + f + '</li>').join('') + '</ul>' + (t.id === 'free' ? '<button class="btn-primary" style="width:100%;margin-top:12px;font-size:12px;padding:8px;opacity:.5" disabled>Current Plan</button>' : t.id === 'enterprise' ? '<button class="btn-primary" style="width:100%;margin-top:12px;font-size:12px;padding:8px" onclick="notify(\'Contact team@flowstate.ai for enterprise pricing\',\'info\')">Contact Sales</button>' : '<button class="btn-primary" style="width:100%;margin-top:12px;font-size:12px;padding:8px" onclick="startCheckout(\'' + t.id + '\')">Get Started</button>') + '</div>').join('') +
     '</div>';
   openModal('Upgrade FlowState', html);
+}
+
+async function startCheckout(tier) {
+  if (!FS_USER) { notify('Sign in first to upgrade', 'warning'); return; }
+  notify('Preparing checkout...', 'info');
+  const res = await fetch('/api/billing/checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tier }) }).then(r => r.json()).catch(() => null);
+  if (!res) { notify('Checkout error — try again', 'error'); return; }
+  if (res.demo) { notify('Stripe coming soon — add STRIPE_SECRET_KEY to activate', 'info'); return; }
+  if (res.checkoutUrl) window.open(res.checkoutUrl, '_blank');
+  else notify('Checkout error: ' + (res.error || 'unknown'), 'error');
 }
 
 async function openCredsModal() {
