@@ -5,7 +5,7 @@
 FlowState is an AI-native personal operating system built around a Pomodoro timer. It's not a productivity app — it's a digital companion that knows when you're in flow, when you're stuck, when you need a break, and when you deserve to celebrate.
 
 ## 🌐 Live URLs
-- **Production**: https://flowstate.pages.dev (deploy pending)
+- **Production**: https://flowstate-67g.pages.dev ✅ Live
 - **GitHub**: https://github.com/mkbrown261/pomodoro-timer-lab
 
 ## ✨ What's Built
