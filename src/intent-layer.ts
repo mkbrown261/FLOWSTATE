@@ -810,6 +810,15 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   { service: 'Cloudflare R2', purpose: '264 Pro: Store processed AI video outputs, export queue results, project backups', envKey: 'R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME', url: 'https://dash.cloudflare.com/?to=/:account/r2', required: 'optional', tier: 'personal_pro' },
   // ── Clawbot / ClawFlow ───────────────────────────────────────────────────────
   { service: 'Clawbot AI (ClawFlow)', purpose: 'Clawbot autonomous agent — walkthrough generation, agentic workflow assistance across 264 Pro, Flowstate Audio & Hub, API usage tracking, coin ledger', envKey: 'CLAWBOT_API_KEY', url: 'https://flowstatehub.com/clawflow', required: 'optional', tier: 'personal_pro' },
+  // ── FlowState Audio — Music AI APIs ─────────────────────────────────────────
+  { service: 'Suno AI', purpose: 'FlowState Audio: AI full-track & stem generation — songs, vocals, loops, instrumentals (ClawFlow required)', envKey: 'SUNO_API_KEY', url: 'https://suno.com/account', required: 'optional', tier: 'personal_pro' },
+  { service: 'MusicGen / AudioCraft (Meta)', purpose: 'FlowState Audio: AI melody, beat & instrumental composition via Replicate or HuggingFace endpoint (ClawFlow required)', envKey: 'MUSICGEN_API_KEY', url: 'https://replicate.com/meta/musicgen', required: 'optional', tier: 'personal_pro' },
+  { service: 'Udio', purpose: 'FlowState Audio: AI song generation alternative to Suno — high-quality AI vocals and full tracks (ClawFlow required)', envKey: 'UDIO_API_KEY', url: 'https://www.udio.com/api', required: 'optional', tier: 'personal_pro' },
+  { service: 'Loudme / Matchering', purpose: 'FlowState Audio: AI mastering — automatic loudness normalisation, reference-track matching, stem mastering', envKey: 'LOUDME_API_KEY', url: 'https://loudme.ai', required: 'optional', tier: 'personal_pro' },
+  { service: 'Moises AI', purpose: 'FlowState Audio: AI stem separation (vocals, drums, bass, keys, guitar), key & BPM detection', envKey: 'MOISES_API_KEY', url: 'https://developer.moises.ai', required: 'optional', tier: 'personal_pro' },
+  { service: 'ACRCloud', purpose: 'FlowState Audio: Audio fingerprinting, BPM detection, key detection, real-time pitch correction reference', envKey: 'ACRCLOUD_ACCESS_KEY, ACRCLOUD_ACCESS_SECRET', url: 'https://console.acrcloud.com', required: 'optional', tier: 'personal_pro' },
+  { service: 'Dolby.io Media APIs', purpose: 'FlowState Audio: AI noise suppression, speech enhancement, audio analysis, loudness correction', envKey: 'DOLBY_API_KEY', url: 'https://dashboard.dolby.io', required: 'optional', tier: 'personal_pro' },
+  { service: 'AudioShake', purpose: 'FlowState Audio: Professional stem separation for licensed music and original recordings', envKey: 'AUDIOSHAKE_API_KEY', url: 'https://app.audioshake.ai', required: 'optional', tier: 'team_growth' },
 ];
 
 // ─── Clawbot / ClawFlow ───────────────────────────────────────────────────────
@@ -1008,5 +1017,228 @@ export function declareClawFlowPromo(): {
       'Flowstate Audio deep integration',
     ],
     cta: 'Start ClawFlow — First Month $20',
+  };
+}
+
+// ─── FlowState Audio — Intent Layer ──────────────────────────────────────────
+
+export type AudioAiTool =
+  | 'generate_track'     // Suno / Udio full song
+  | 'generate_melody'    // MusicGen melody/instrumental
+  | 'generate_beat'      // MusicGen percussion/beat
+  | 'separate_stems'     // Moises stem separation
+  | 'master_track'       // Loudme AI mastering
+  | 'denoise'            // Dolby.io noise suppression
+  | 'enhance_vocals'     // Dolby.io speech enhancement
+  | 'detect_key_bpm'     // ACRCloud analysis
+  | 'pitch_correct'      // Real-time pitch correction
+  | 'suggest_arrangement'; // ClawBot arrangement AI
+
+export interface AudioGenerationRequest {
+  tool: AudioAiTool;
+  prompt: string;
+  style?: string;         // e.g. 'hip-hop', 'lo-fi', 'cinematic'
+  bpm?: number;
+  key?: string;           // e.g. 'C major', 'A minor'
+  durationSeconds?: number;
+  referenceTrackUrl?: string;
+  clawflowActive: boolean;
+}
+
+export interface AudioGenerationResponse {
+  id: string;
+  tool: AudioAiTool;
+  status: 'queued' | 'processing' | 'complete' | 'error';
+  audioUrl?: string;
+  waveformData?: number[];   // normalised 0-1 peak values for visualisation
+  durationSeconds?: number;
+  bpm?: number;
+  key?: string;
+  coinCost: number;
+  message: string;
+  requiresClawflow: boolean;
+}
+
+export interface AudioTrack {
+  id: string;
+  name: string;
+  type: 'audio' | 'midi' | 'ai_generated';
+  muted: boolean;
+  solo: boolean;
+  volume: number;    // 0-1
+  pan: number;       // -1 to 1
+  color: string;
+  clips: AudioClip[];
+  effects: AudioEffect[];
+  aiEnhanced: boolean;
+}
+
+export interface AudioClip {
+  id: string;
+  trackId: string;
+  startBeat: number;
+  durationBeats: number;
+  sourceUrl?: string;
+  waveformPeaks?: number[];
+  name: string;
+  aiGenerated: boolean;
+}
+
+export interface AudioEffect {
+  id: string;
+  type: 'eq' | 'compressor' | 'reverb' | 'delay' | 'limiter' | 'chorus' | 'distortion' | 'vst';
+  enabled: boolean;
+  params: Record<string, number>;
+  vstName?: string;
+}
+
+export interface AudioProject {
+  id: string;
+  name: string;
+  bpm: number;
+  key: string;
+  timeSignature: [number, number];
+  sampleRate: number;
+  tracks: AudioTrack[];
+  createdAt: number;
+  updatedAt: number;
+  clawbotAssisted: boolean;
+  coinSpent: number;
+}
+
+const AUDIO_COIN_COSTS: Record<AudioAiTool, number> = {
+  generate_track:      40,
+  generate_melody:     20,
+  generate_beat:       15,
+  separate_stems:      25,
+  master_track:        20,
+  denoise:             10,
+  enhance_vocals:      10,
+  detect_key_bpm:       2,
+  pitch_correct:        5,
+  suggest_arrangement: 10,
+};
+
+const CLAWFLOW_LOCKED_TOOLS: AudioAiTool[] = [
+  'generate_track',
+  'generate_melody',
+  'generate_beat',
+  'separate_stems',
+  'master_track',
+  'pitch_correct',
+  'suggest_arrangement',
+];
+
+export function declareAudioGeneration(req: AudioGenerationRequest): AudioGenerationResponse {
+  const coinCost = AUDIO_COIN_COSTS[req.tool] ?? 10;
+  const requiresClawflow = CLAWFLOW_LOCKED_TOOLS.includes(req.tool);
+
+  if (requiresClawflow && !req.clawflowActive) {
+    return {
+      id: crypto.randomUUID(),
+      tool: req.tool,
+      status: 'error',
+      coinCost: 0,
+      message: 'This feature requires an active ClawFlow subscription ($40/month). First month $20.',
+      requiresClawflow: true,
+    };
+  }
+
+  const toolLabels: Record<AudioAiTool, string> = {
+    generate_track:      'Full Track Generation',
+    generate_melody:     'Melody Generation',
+    generate_beat:       'Beat Generation',
+    separate_stems:      'Stem Separation',
+    master_track:        'AI Mastering',
+    denoise:             'Noise Suppression',
+    enhance_vocals:      'Vocal Enhancement',
+    detect_key_bpm:      'Key & BPM Detection',
+    pitch_correct:       'Pitch Correction',
+    suggest_arrangement: 'Arrangement Suggestion',
+  };
+
+  return {
+    id: crypto.randomUUID(),
+    tool: req.tool,
+    status: 'queued',
+    coinCost,
+    message: `${toolLabels[req.tool]} queued — "${req.prompt}". Estimated wait: 15–60 seconds.`,
+    requiresClawflow,
+    durationSeconds: req.durationSeconds ?? 30,
+    bpm: req.bpm,
+    key: req.key,
+  };
+}
+
+export function declareAudioProject(name: string, bpm = 120, key = 'C major'): AudioProject {
+  const trackColors = ['#a855f7','#ec4899','#3b82f6','#10b981','#f59e0b','#06b6d4','#ef4444','#8b5cf6'];
+  return {
+    id: crypto.randomUUID(),
+    name,
+    bpm,
+    key,
+    timeSignature: [4, 4],
+    sampleRate: 44100,
+    tracks: [
+      { id: crypto.randomUUID(), name: 'Track 1', type: 'audio', muted: false, solo: false, volume: 0.8, pan: 0, color: trackColors[0], clips: [], effects: [], aiEnhanced: false },
+      { id: crypto.randomUUID(), name: 'Track 2', type: 'audio', muted: false, solo: false, volume: 0.8, pan: 0, color: trackColors[1], clips: [], effects: [], aiEnhanced: false },
+      { id: crypto.randomUUID(), name: 'Drums',   type: 'audio', muted: false, solo: false, volume: 0.9, pan: 0, color: trackColors[2], clips: [], effects: [], aiEnhanced: false },
+      { id: crypto.randomUUID(), name: 'Bass',    type: 'audio', muted: false, solo: false, volume: 0.75, pan: 0, color: trackColors[3], clips: [], effects: [], aiEnhanced: false },
+    ],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    clawbotAssisted: false,
+    coinSpent: 0,
+  };
+}
+
+export function declareAudioArrangementSuggestion(style: string, bpm: number, key: string): {
+  arrangement: string[];
+  chordProgression: string;
+  suggestedTracks: string[];
+  productionTips: string[];
+} {
+  const progressions: Record<string, string> = {
+    'hip-hop':    'i – VI – III – VII (minor)',
+    'lo-fi':      'ii – V – I – VI (jazz-influenced)',
+    'cinematic':  'I – V – vi – IV (epic major)',
+    'pop':        'I – V – vi – IV',
+    'electronic': 'i – VII – VI – VII (driving minor)',
+    'r&b':        'ii7 – V7 – Imaj7 – vi7',
+  };
+
+  const arrangements: Record<string, string[]> = {
+    'hip-hop':    ['Intro (4 bars)','Verse 1 (16 bars)','Hook (8 bars)','Verse 2 (16 bars)','Hook (8 bars)','Bridge (8 bars)','Hook x2 (16 bars)','Outro (4 bars)'],
+    'lo-fi':      ['Intro (8 bars)','Main Loop A (16 bars)','Main Loop B (16 bars)','Break (8 bars)','Main Loop A (16 bars)','Outro fade (8 bars)'],
+    'cinematic':  ['Swell intro (8 bars)','Theme A (16 bars)','Build (8 bars)','Climax (16 bars)','Breakdown (8 bars)','Theme A reprise (16 bars)','Outro (8 bars)'],
+    'pop':        ['Intro (4 bars)','Verse 1 (8 bars)','Pre-chorus (4 bars)','Chorus (8 bars)','Verse 2 (8 bars)','Pre-chorus (4 bars)','Chorus (8 bars)','Bridge (8 bars)','Final chorus (8 bars)','Outro (4 bars)'],
+    'electronic': ['Drop intro (8 bars)','Build (8 bars)','Drop 1 (16 bars)','Break (8 bars)','Build (8 bars)','Drop 2 (16 bars)','Outro (8 bars)'],
+    'r&b':        ['Intro (4 bars)','Verse 1 (8 bars)','Pre-chorus (4 bars)','Chorus (8 bars)','Verse 2 (8 bars)','Chorus (8 bars)','Bridge (8 bars)','Final chorus (8 bars)','Outro (4 bars)'],
+  };
+
+  const trackSets: Record<string, string[]> = {
+    'hip-hop':    ['808 Bass','Boom Bap Drums','Sample Chops','Hi-Hat Pattern','Melody Lead','Vocal (AI or recorded)'],
+    'lo-fi':      ['Vinyl Crackle','Jazz Drums','Rhodes Piano','Upright Bass','Ambient Pad','Flute Melody'],
+    'cinematic':  ['Strings Section','Brass','Percussion','Synth Pad','Piano','Choir (AI)'],
+    'pop':        ['Kick & Snare','Bass Guitar','Acoustic Guitar','Synth Lead','Backing Vocals (AI)','Pad'],
+    'electronic': ['Kick','Bass Synth','Lead Synth','Arp','FX Layer','Vocal Chop'],
+    'r&b':        ['Drums','Bass','Electric Piano','Guitar','Strings','Lead Vocals (AI)','Backing Vocals (AI)'],
+  };
+
+  const tips: Record<string, string[]> = {
+    'hip-hop':    ['Side-chain compress the 808 to the kick','Use vinyl saturation on the sample for warmth','Automate hi-hat velocity for groove'],
+    'lo-fi':      ['Apply slight tape wobble for authenticity','Low-pass filter at 10kHz for that muffled feel','Add subtle reverb room to drums'],
+    'cinematic':  ['Layer strings with brass for impact','Use swell automation on the pads','Reverb tail of 3–4 seconds on the room'],
+    'pop':        ['Keep the mix bright — hi-shelf boost at 10kHz','Glue the mix with a light bus compressor','Parallel compress the drums for punch'],
+    'electronic': ['Side-chain everything to the kick','Use LFO automation on the filter cutoff','Stereo width on the lead synth'],
+    'r&b':        ['Warm the mix with slight tape saturation','Smooth transients on the drums','Lush reverb on backing vocals'],
+  };
+
+  const s = style.toLowerCase();
+  return {
+    arrangement: arrangements[s] ?? arrangements['pop'],
+    chordProgression: (progressions[s] ?? progressions['pop']) + ` in ${key} at ${bpm} BPM`,
+    suggestedTracks: trackSets[s] ?? trackSets['pop'],
+    productionTips: tips[s] ?? tips['pop'],
   };
 }
