@@ -1252,74 +1252,19 @@ em{color:var(--accent);font-style:italic}
 .form-row{display:flex;gap:8px;margin-bottom:8px}
 .form-row input,.form-row select{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:7px;color:var(--text-p);padding:8px 11px;font-size:13px;outline:none}
 .form-row input:focus,.form-row select:focus{border-color:var(--accent)}
-/* ── FlowState Audio ─────────────────────────────────────────── */
-.audio-wrap{display:flex;flex-direction:column;height:100%;gap:0}
-.audio-toolbar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--bg-panel);border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap}
-.audio-brand{font-size:14px;font-weight:900;background:linear-gradient(135deg,#10b981,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-right:6px}
-.audio-transport{display:flex;align-items:center;gap:6px}
-.abt{width:34px;height:34px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-s);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;transition:.2s}
-.abt:hover{border-color:var(--border-h);color:var(--text-p)}
-.abt.play-active{background:linear-gradient(135deg,#10b981,#06b6d4);border-color:transparent;color:#fff}
-.abt.rec{border-color:rgba(239,68,68,.4);color:var(--danger)}
-.abt.rec.active{background:var(--danger);border-color:var(--danger);color:#fff;animation:pulse 1s infinite}
-.audio-bpm{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-m)}
-.bpm-val{font-size:15px;font-weight:900;color:var(--text-p);font-variant-numeric:tabular-nums;cursor:pointer}
-.bpm-val:hover{color:var(--accent)}
-.audio-key{font-size:12px;color:var(--text-m);cursor:pointer;padding:4px 9px;border:1px solid var(--border);border-radius:7px;background:var(--bg-card)}
-.audio-key:hover{border-color:var(--border-h)}
-.audio-time{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--text-p);min-width:60px;text-align:center}
-.ai-slider-wrap{display:flex;align-items:center;gap:7px;margin-left:auto;font-size:11px;color:var(--text-m)}
-.ai-slider{width:90px;accent-color:#10b981}
-.ai-lvl-badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;background:rgba(16,185,129,.12);color:#10b981;white-space:nowrap}
-.audio-main{display:flex;flex:1;overflow:hidden}
-.audio-sidebar{width:200px;flex-shrink:0;background:var(--bg-panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
-.track-header{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border);height:68px;flex-shrink:0;position:relative}
-.track-color-bar{width:3px;height:40px;border-radius:2px;flex-shrink:0}
-.track-name-input{background:transparent;border:none;color:var(--text-p);font-size:12px;font-weight:700;outline:none;flex:1;min-width:0;cursor:text}
-.track-name-input:focus{background:rgba(168,85,247,.08);border-radius:4px;padding:2px 4px}
-.track-btns{display:flex;gap:3px}
-.track-btn{width:20px;height:20px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--text-m);cursor:pointer;font-size:9px;display:flex;align-items:center;justify-content:center;transition:.2s}
-.track-btn:hover{border-color:var(--border-h);color:var(--text-p)}
-.track-btn.muted{background:rgba(245,158,11,.15);border-color:var(--warn);color:var(--warn)}
-.track-btn.soloed{background:rgba(16,185,129,.15);border-color:var(--green);color:var(--green)}
-.track-vol{width:60px;accent-color:var(--accent)}
-.audio-timeline{flex:1;overflow-x:auto;overflow-y:hidden;display:flex;flex-direction:column;position:relative}
-.timeline-ruler{height:24px;background:rgba(26,26,46,.95);border-bottom:1px solid var(--border);flex-shrink:0;position:sticky;top:0;z-index:10;display:flex;align-items:flex-end;padding-bottom:3px;overflow:hidden}
-.ruler-tick{position:absolute;bottom:0;display:flex;flex-direction:column;align-items:center}
-.ruler-line{width:1px;background:var(--border)}
-.ruler-label{font-size:9px;color:var(--text-m);font-variant-numeric:tabular-nums;white-space:nowrap;margin-bottom:2px}
-.track-lane{height:68px;border-bottom:1px solid var(--border);position:relative;flex-shrink:0;background:var(--bg-base)}
-.track-lane:hover{background:rgba(168,85,247,.02)}
-.audio-clip{position:absolute;top:6px;bottom:6px;border-radius:6px;overflow:hidden;cursor:pointer;border:1px solid rgba(255,255,255,.15);transition:opacity .15s}
-.audio-clip:hover{border-color:rgba(255,255,255,.4)}
-.clip-label{font-size:10px;font-weight:700;color:#fff;padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px rgba(0,0,0,.5)}
-.clip-wave{position:absolute;inset:0;top:18px;opacity:.6}
-.playhead{position:absolute;top:0;bottom:0;width:2px;background:linear-gradient(180deg,#10b981,#06b6d4);pointer-events:none;z-index:20;box-shadow:0 0 8px rgba(16,185,129,.6)}
-.playhead-arrow{position:absolute;top:-1px;left:-5px;width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:8px solid #10b981}
-.audio-bottom{height:220px;flex-shrink:0;background:var(--bg-panel);border-top:1px solid var(--border);display:flex;overflow:hidden}
-.audio-mixer{flex:1;overflow-x:auto;display:flex;gap:0;padding:10px}
-.mixer-channel{display:flex;flex-direction:column;align-items:center;gap:5px;width:70px;flex-shrink:0;background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:8px 6px}
-.mixer-ch-name{font-size:10px;font-weight:700;color:var(--text-m);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:100%}
-.mixer-fader-wrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:80px}
-.mixer-fader{writing-mode:vertical-lr;direction:rtl;width:6px;height:80px;accent-color:var(--accent);cursor:pointer}
-.mixer-db{font-size:9px;color:var(--text-m);font-variant-numeric:tabular-nums}
-.mixer-pan{width:40px;accent-color:var(--accent);margin:2px 0}
-.mixer-mute{width:100%;padding:3px;border-radius:5px;border:1px solid var(--border);background:transparent;color:var(--text-m);font-size:9px;cursor:pointer;font-weight:700}
-.mixer-mute.muted{background:rgba(245,158,11,.15);border-color:var(--warn);color:var(--warn)}
-.audio-ai-panel{width:260px;border-left:1px solid var(--border);overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;flex-shrink:0}
-.ai-panel-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:4px;display:flex;align-items:center;gap:6px}
-.ai-gen-btn{width:100%;padding:8px;border-radius:9px;border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.08);color:#10b981;font-size:12px;font-weight:700;cursor:pointer;transition:.2s;display:flex;align-items:center;gap:7px;text-align:left}
-.ai-gen-btn:hover{background:rgba(16,185,129,.15);border-color:#10b981}
-.ai-gen-btn i{font-size:14px;flex-shrink:0}
-.ai-gen-btn .ai-cost{font-size:10px;font-weight:600;margin-left:auto;color:var(--text-m)}
-.ai-gen-btn.locked{opacity:.5;border-color:var(--border);color:var(--text-m);background:transparent}
-.ai-gen-btn.locked:hover{opacity:.7}
-.ai-prompt-area{display:flex;flex-direction:column;gap:6px;padding:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:9px}
-.ai-prompt-area textarea{background:transparent;border:none;color:var(--text-p);font-size:12px;font-family:inherit;resize:none;outline:none;min-height:52px}
-.ai-prompt-row{display:flex;gap:5px}
-.ai-prompt-row select{flex:1;background:var(--bg-panel);border:1px solid var(--border);border-radius:6px;color:var(--text-p);padding:4px 7px;font-size:11px}
-.audio-result-clip{display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--bg-card);border:1px solid rgba(16,185,129,.25);border-radius:8px;font-size:12px}
-.audio-result-clip i{color:#10b981}
+/* ── FlowState Audio download page ───────────────────────────── */
+.aud-dl-btn{display:inline-flex;align-items:center;gap:8px;padding:13px 22px;border-radius:12px;font-size:14px;font-weight:800;text-decoration:none;transition:.2s;border:1px solid transparent}
+.aud-dl-btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.3)}
+.aud-mac{background:linear-gradient(135deg,#10b981,#06b6d4);color:#fff}
+.aud-win{background:rgba(6,182,212,.12);color:#06b6d4;border-color:rgba(6,182,212,.3)}
+.aud-win:hover{background:rgba(6,182,212,.2)}
+.aud-linux{background:rgba(168,85,247,.1);color:#a855f7;border-color:rgba(168,85,247,.3)}
+.aud-linux:hover{background:rgba(168,85,247,.18)}
+.aud-feat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:18px;transition:.2s}
+.aud-feat-card:hover{border-color:var(--border-h);transform:translateY(-2px)}
+.aud-feat-icon{font-size:24px;margin-bottom:8px}
+.aud-feat-title{font-size:13px;font-weight:800;margin-bottom:5px}
+.aud-feat-desc{font-size:12px;color:var(--text-m);line-height:1.6}
 /* ── Clawbot ─────────────────────────────────────────────────── */
 .clawbot-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding:12px 16px;background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(6,182,212,.05));border:1px solid rgba(168,85,247,.2);border-radius:13px}
 .clawbot-title{display:flex;align-items:center;gap:11px}
@@ -1632,101 +1577,55 @@ em{color:var(--accent);font-style:italic}
   </div>
 </div>
 
-<!-- FLOWSTATE AUDIO TAB -->
-<div class="tab-pane" id="tab-pane-audio" style="display:none;padding:0">
-  <div class="audio-wrap" id="audio-wrap">
+<!-- FLOWSTATE AUDIO TAB — Download / Landing Page -->
+<div class="tab-pane" id="tab-pane-audio" style="display:none;padding:0;overflow-y:auto">
+  <div style="min-height:100%;background:linear-gradient(160deg,#0f0f1a 0%,#0d1a1f 50%,#0f0f1a 100%);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:48px 24px">
 
-    <!-- Toolbar -->
-    <div class="audio-toolbar">
-      <span class="audio-brand">&#127925; FlowState Audio</span>
-      <div class="audio-transport">
-        <button class="abt" id="aud-skip-back" title="Back to start"><i class="fas fa-backward-step"></i></button>
-        <button class="abt" id="aud-play" title="Play/Pause"><i class="fas fa-play" id="aud-play-icon"></i></button>
-        <button class="abt" id="aud-stop" title="Stop"><i class="fas fa-stop"></i></button>
-        <button class="abt rec" id="aud-rec" title="Record"><i class="fas fa-circle"></i></button>
-        <button class="abt" id="aud-loop" title="Loop"><i class="fas fa-repeat"></i></button>
+    <!-- Hero -->
+    <div style="text-align:center;max-width:700px;margin-bottom:52px">
+      <div style="font-size:64px;margin-bottom:12px">&#127925;</div>
+      <h1 style="font-size:48px;font-weight:900;margin:0 0 10px;background:linear-gradient(135deg,#10b981,#06b6d4,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1.1">Flowstate Audio</h1>
+      <p style="font-size:18px;color:var(--text-s);margin:0 0 8px;line-height:1.6">Professional DAW. AI-Powered. Yours.</p>
+      <p style="font-size:14px;color:var(--text-m);margin:0 0 32px">A standalone desktop application inspired by Logic Pro &mdash; multi-track recording, VST plugins, AI music generation, and Clawbot integration. Download and run it locally.</p>
+      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+        <a href="https://github.com/mkbrown261/FS-AUDIO/releases/latest/download/FlowstateAudio-mac.dmg" class="aud-dl-btn aud-mac"><i class="fab fa-apple"></i> Download for macOS</a>
+        <a href="https://github.com/mkbrown261/FS-AUDIO/releases/latest/download/FlowstateAudio-win.exe" class="aud-dl-btn aud-win"><i class="fab fa-windows"></i> Download for Windows</a>
+        <a href="https://github.com/mkbrown261/FS-AUDIO/releases/latest/download/FlowstateAudio-linux.AppImage" class="aud-dl-btn aud-linux"><i class="fab fa-linux"></i> Download for Linux</a>
       </div>
-      <span class="audio-time" id="aud-time">0:00.000</span>
-      <div class="audio-bpm">
-        <span>BPM</span>
-        <span class="bpm-val" id="aud-bpm" contenteditable="true">120</span>
-      </div>
-      <select class="audio-key fs-sel" id="aud-key">
-        <option>C major</option><option>C minor</option>
-        <option>D major</option><option>D minor</option>
-        <option>E major</option><option>E minor</option>
-        <option>F major</option><option>F minor</option>
-        <option>G major</option><option>G minor</option>
-        <option>A major</option><option>A minor</option>
-        <option>B major</option><option>B minor</option>
-      </select>
-      <button class="abt" id="aud-add-track" title="Add Track" style="width:auto;padding:0 10px;gap:5px"><i class="fas fa-plus"></i><span style="font-size:11px">Track</span></button>
-      <button class="abt" id="aud-new-project" title="New Project" style="width:auto;padding:0 10px;gap:5px"><i class="fas fa-file-audio"></i><span style="font-size:11px">New</span></button>
-      <div class="ai-slider-wrap">
-        <span>Manual</span>
-        <input type="range" class="ai-slider" id="aud-ai-level" min="0" max="100" value="50">
-        <span>AI</span>
-        <span class="ai-lvl-badge" id="aud-ai-badge">AI 50%</span>
-      </div>
-      <button class="abt" id="aud-export" style="width:auto;padding:0 10px;gap:5px;margin-left:4px"><i class="fas fa-download"></i><span style="font-size:11px">Export</span></button>
+      <div style="margin-top:16px;font-size:12px;color:var(--text-m)">Free to download &nbsp;&#xB7;&nbsp; ClawFlow subscription unlocks AI features &nbsp;&#xB7;&nbsp; <a href="https://github.com/mkbrown261/FS-AUDIO" target="_blank" style="color:var(--accent)">View on GitHub</a></div>
     </div>
 
-    <!-- Main area: sidebar + timeline -->
-    <div class="audio-main">
-
-      <!-- Track sidebar -->
-      <div class="audio-sidebar" id="aud-sidebar"></div>
-
-      <!-- Timeline -->
-      <div class="audio-timeline" id="aud-timeline">
-        <div class="timeline-ruler" id="aud-ruler"></div>
-        <div id="aud-lanes"></div>
-      </div>
-
+    <!-- Feature grid -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;max-width:860px;width:100%;margin-bottom:52px">
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#10b981"><i class="fas fa-layer-group"></i></div><div class="aud-feat-title">Multi-Track Recording</div><div class="aud-feat-desc">Unlimited audio &amp; MIDI tracks, punch recording, take folders, comping — just like Logic Pro.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#a855f7"><i class="fas fa-plug"></i></div><div class="aud-feat-title">VST / AU Plugins</div><div class="aud-feat-desc">Load your own VST3 and AU plugins. Built-in EQ, Compressor, Reverb, Delay, Limiter, Chorus, Distortion.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#06b6d4"><i class="fas fa-piano-keyboard"></i></div><div class="aud-feat-title">Piano Roll</div><div class="aud-feat-desc">Full MIDI editor with velocity editing, quantize, chord detection, and Hyper Draw automation.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#ec4899"><i class="fas fa-sliders"></i></div><div class="aud-feat-title">Mixer Console</div><div class="aud-feat-desc">Per-channel inserts, sends, pan, VU meters, grouping, automation — a full mixing console.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#f59e0b"><i class="fas fa-robot"></i></div><div class="aud-feat-title">Clawbot AI</div><div class="aud-feat-desc">Generate beats, melodies, full tracks via Suno &amp; MusicGen. AI mastering, stem separation, pitch correction.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#10b981"><i class="fas fa-waveform-lines"></i></div><div class="aud-feat-title">Flex Time &amp; Pitch</div><div class="aud-feat-desc">Non-destructive time stretching and pitch shifting. Quantize audio to a grid without artifacts.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#a855f7"><i class="fas fa-music"></i></div><div class="aud-feat-title">AI Music Generation</div><div class="aud-feat-desc">Full tracks, beats, melodies and stems generated by Suno AI, MusicGen, and Udio — ClawFlow required.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#06b6d4"><i class="fas fa-file-export"></i></div><div class="aud-feat-title">Pro Export</div><div class="aud-feat-desc">Bounce to WAV (16/24/32-bit), MP3, AAC, AIFF. Export individual tracks or full stems. LUFS normalisation.</div></div>
     </div>
 
-    <!-- Bottom: Mixer + AI panel -->
-    <div class="audio-bottom">
-
-      <!-- Mixer channels -->
-      <div class="audio-mixer" id="aud-mixer"></div>
-
-      <!-- AI generation panel -->
-      <div class="audio-ai-panel">
-        <div class="ai-panel-title"><i class="fas fa-robot" style="color:#10b981"></i> Clawbot Audio AI</div>
-
-        <div class="ai-prompt-area" id="aud-ai-prompt-area">
-          <textarea id="aud-ai-prompt" placeholder="Describe what you want to generate&#8230; e.g. 'dark trap beat 140 bpm' or 'lo-fi chill melody'"></textarea>
-          <div class="ai-prompt-row">
-            <select id="aud-ai-style">
-              <option value="hip-hop">Hip-Hop</option>
-              <option value="lo-fi">Lo-Fi</option>
-              <option value="pop">Pop</option>
-              <option value="r&b">R&amp;B</option>
-              <option value="electronic">Electronic</option>
-              <option value="cinematic">Cinematic</option>
-            </select>
-            <select id="aud-ai-dur">
-              <option value="15">15s</option>
-              <option value="30" selected>30s</option>
-              <option value="60">60s</option>
-              <option value="120">120s</option>
-            </select>
-          </div>
-        </div>
-
-        <button class="ai-gen-btn" id="aud-btn-full-track"><i class="fas fa-music"></i> Full Track <span class="ai-cost">40&#9889;</span></button>
-        <button class="ai-gen-btn" id="aud-btn-melody"><i class="fas fa-waveform-lines"></i> Melody / Instrumental <span class="ai-cost">20&#9889;</span></button>
-        <button class="ai-gen-btn" id="aud-btn-beat"><i class="fas fa-drum"></i> Beat / Drums <span class="ai-cost">15&#9889;</span></button>
-        <button class="ai-gen-btn" id="aud-btn-stems"><i class="fas fa-layer-group"></i> Separate Stems <span class="ai-cost">25&#9889;</span></button>
-        <button class="ai-gen-btn" id="aud-btn-master"><i class="fas fa-sliders"></i> AI Master Track <span class="ai-cost">20&#9889;</span></button>
-        <button class="ai-gen-btn" id="aud-btn-arrange"><i class="fas fa-list-music"></i> Suggest Arrangement <span class="ai-cost">10&#9889;</span></button>
-        <button class="ai-gen-btn" id="aud-btn-analyze"><i class="fas fa-chart-simple"></i> Analyze Key &amp; BPM <span class="ai-cost">2&#9889;</span></button>
-
-        <div id="aud-ai-results" style="display:flex;flex-direction:column;gap:6px;margin-top:4px"></div>
-      </div>
-
+    <!-- Clawbot / ClawFlow callout -->
+    <div style="max-width:680px;width:100%;background:linear-gradient(135deg,rgba(168,85,247,.1),rgba(6,182,212,.07));border:1px solid rgba(168,85,247,.3);border-radius:18px;padding:28px 32px;text-align:center;margin-bottom:40px">
+      <div style="font-size:32px;margin-bottom:8px">&#x1F9BE;</div>
+      <div style="font-size:18px;font-weight:900;margin-bottom:6px">Supercharge with Clawbot &amp; ClawFlow</div>
+      <div style="font-size:13px;color:var(--text-s);margin-bottom:20px;line-height:1.7">Clawbot connects directly to Flowstate Audio for real-time AI assistance &mdash; arrangement suggestions, beat generation, vocal pitch correction, AI mastering, and stem separation. ClawFlow subscription required ($40/month &mdash; first month $20).</div>
+      <button class="clawbot-cta" style="max-width:320px;margin:0 auto" onclick="switchTab('clawbot')">Activate ClawFlow &rarr;</button>
     </div>
+
+    <!-- System requirements -->
+    <div style="max-width:680px;width:100%;margin-bottom:32px">
+      <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:12px">System Requirements</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;font-size:12px">
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px"><div style="font-weight:700;margin-bottom:4px"><i class="fab fa-apple"></i> macOS</div><div style="color:var(--text-m)">macOS 12+ (Monterey)<br>Apple Silicon or Intel<br>8GB RAM, 2GB disk</div></div>
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px"><div style="font-weight:700;margin-bottom:4px"><i class="fab fa-windows"></i> Windows</div><div style="color:var(--text-m)">Windows 10/11 (64-bit)<br>ASIO-compatible audio<br>8GB RAM, 2GB disk</div></div>
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px"><div style="font-weight:700;margin-bottom:4px"><i class="fab fa-linux"></i> Linux</div><div style="color:var(--text-m)">Ubuntu 20.04+ / Arch<br>JACK or PulseAudio<br>8GB RAM, 2GB disk</div></div>
+      </div>
+    </div>
+
+    <div style="text-align:center;font-size:12px;color:var(--text-m)">Flowstate Audio is open source &mdash; <a href="https://github.com/mkbrown261/FS-AUDIO" target="_blank" style="color:var(--accent)">github.com/mkbrown261/FS-AUDIO</a></div>
   </div>
 </div>
 
