@@ -804,4 +804,8 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   { service: 'Supabase', purpose: 'Team database, auth, real-time presence', envKey: 'SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY', url: 'https://supabase.com', required: 'core', tier: 'team_starter' },
   { service: 'Upstash Redis', purpose: 'Session cache, rate limiting, presence indicators', envKey: 'UPSTASH_REDIS_URL, UPSTASH_REDIS_TOKEN', url: 'https://upstash.com', required: 'recommended', tier: 'team_starter' },
   { service: 'Beehiiv / ConvertKit', purpose: 'Weekly digest newsletter, onboarding emails', envKey: 'BEEHIIV_API_KEY', url: 'https://beehiiv.com', required: 'optional', tier: 'team_growth' },
+  // ── 264 Pro Video Editor AI Tools ───────────────────────────────────────────
+  { service: 'Replicate', purpose: '264 Pro: AI Upscale (Real-ESRGAN), AI Denoise (FastDVDnet), AI Face Enhance (CodeFormer), AI Stabilize, Super Slow-Mo (DAIN)', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'personal_pro' },
+  { service: 'Hugging Face', purpose: '264 Pro: Rotoscoping (SAM segment-anything), AI Colorize (FILM), AI Depth Map (MiDaS), AI Object Remove (LaMa)', envKey: 'HUGGINGFACE_API_KEY', url: 'https://huggingface.co/settings/tokens', required: 'optional', tier: 'personal_pro' },
+  { service: 'Cloudflare R2', purpose: '264 Pro: Store processed AI video outputs, export queue results, project backups', envKey: 'R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME', url: 'https://dash.cloudflare.com/?to=/:account/r2', required: 'optional', tier: 'personal_pro' },
 ];
