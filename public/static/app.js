@@ -213,6 +213,7 @@ function switchTab(tab) {
   if (tab==='learn')   loadLearnCards();
   if (tab==='restore') loadRestore();
   if (tab==='calendar') { renderCalGrid(); loadCalEvents(); }
+  if (tab==='clawbot') initClawbot();
 }
 
 // ── Clock ──────────────────────────────────────────────────────────────────
@@ -1146,7 +1147,7 @@ function startCheckout(tier) {
 
 function openCredsModal() {
   fetch('/api/credentials').then(r=>r.json()).then(d=>{
-    const rows = (d.credentials||[]).map(c=>`<tr><td>${c.service}</td><td style="color:var(--text-m)">${c.purpose}</td><td style="font-family:monospace;font-size:11px">${c.envKey}</td><td><span class="badge-${c.required==='core'?'core':c.required==='recommended'?'rec':'opt'}">${c.required}</span></td><td><a href="${c.docs}" target="_blank">Docs</a></td></tr>`).join('');
+    const rows = (d.credentials||[]).map(c=>`<tr><td>${c.service}</td><td style="color:var(--text-m)">${c.purpose}</td><td style="font-family:monospace;font-size:11px">${c.envKey}</td><td><span class="badge-${c.required==='core'?'core':c.required==='recommended'?'rec':'opt'}">${c.required}</span></td><td><a href="${c.url||c.docs||'#'}" target="_blank">Docs</a></td></tr>`).join('');
     openModal(`<h2>🔑 API Credentials</h2><p style="color:var(--text-s);font-size:13px;margin-top:4px">All keys stored as Cloudflare Secrets — never in client code</p><table class="cred-tbl"><thead><tr><th>Service</th><th>Purpose</th><th>Env Key</th><th>Required</th><th>Docs</th></tr></thead><tbody>${rows}</tbody></table>`);
   }).catch(()=>notify('Could not load credentials','error'));
 }
@@ -1254,6 +1255,206 @@ function setupKeyboard() {
   });
   const inp = document.getElementById('chat-in');
   if (inp) inp.addEventListener('input', () => { inp.style.height='42px'; inp.style.height=Math.min(inp.scrollHeight,130)+'px'; });
+}
+
+// ── Clawbot ────────────────────────────────────────────────────────────────
+let clawbotHistory = [];
+let clawbotSubscriptionActive = false;
+let clawbotInited = false;
+
+async function initClawbot() {
+  if (clawbotInited) return;
+  clawbotInited = true;
+  try {
+    const r = await fetch('/api/clawbot/status');
+    const d = await r.json();
+    clawbotSubscriptionActive = d.subscriptionActive;
+    if (d.subscriptionActive) {
+      document.getElementById('clawbot-gate').style.display = 'none';
+      document.getElementById('clawbot-active').style.display = 'flex';
+      const badge = document.getElementById('clawbot-coins-badge');
+      if (badge) badge.textContent = `⚡ ${d.coinsRemaining} coins`;
+    } else {
+      document.getElementById('clawbot-gate').style.display = 'block';
+      document.getElementById('clawbot-active').style.display = 'none';
+      loadClawbotPromo();
+    }
+  } catch(e) {
+    document.getElementById('clawbot-gate').style.display = 'block';
+    document.getElementById('clawbot-active').style.display = 'none';
+    loadClawbotPromo();
+  }
+  // Wire up send button
+  const sendBtn = document.getElementById('clawbot-send');
+  if (sendBtn) sendBtn.addEventListener('click', sendClawbotMessage);
+  const inp = document.getElementById('clawbot-in');
+  if (inp) {
+    inp.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); sendClawbotMessage(); }
+    });
+    inp.addEventListener('input', () => { inp.style.height='42px'; inp.style.height=Math.min(inp.scrollHeight,130)+'px'; });
+  }
+}
+
+async function loadClawbotPromo() {
+  try {
+    const r = await fetch('/api/clawbot/promo');
+    const d = await r.json();
+    const el = document.getElementById('clawbot-promo');
+    if (!el) return;
+    el.innerHTML = `
+      <div class="clawbot-promo-logo">🦾</div>
+      <div class="clawbot-promo-title">${d.headline}</div>
+      <div class="clawbot-promo-sub">Your AI brain for 264 Pro, Flowstate Audio &amp; Hub. Agentic workflows, walkthrough generation, and smart automation — all in one.</div>
+      <div class="clawbot-price-row">
+        <span class="clawbot-orig-price">${d.originalPrice}</span>
+        <span class="clawbot-new-price">${d.promoPrice}</span>
+        <span class="clawbot-discount">${d.discount}</span>
+      </div>
+      <ul class="clawbot-features">${d.features.map(f => `<li>${escHtml(f)}</li>`).join('')}</ul>
+      <button class="clawbot-cta" onclick="startClawFlowCheckout()">${escHtml(d.cta)}</button>
+    `;
+  } catch(e) {
+    const el = document.getElementById('clawbot-promo');
+    if (el) el.innerHTML = `<div class="clawbot-promo-logo">🦾</div><div class="clawbot-promo-title">Unlock Clawbot</div><div class="clawbot-promo-sub">Add CLAWBOT_API_KEY to your Cloudflare secrets to activate ClawFlow.</div>`;
+  }
+}
+
+function startClawFlowCheckout() {
+  if (!FS_USER && !state.settings.isDemo) { notify('Sign in to subscribe to ClawFlow','info'); return; }
+  fetch('/api/billing/checkout', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tier:'clawflow' }) })
+    .then(r=>r.json()).then(d => {
+      if (d.checkoutUrl) window.open(d.checkoutUrl,'_blank');
+      else notify(d.message || 'Add CLAWBOT_API_KEY to Cloudflare secrets to activate','info');
+    }).catch(() => notify('Add CLAWBOT_API_KEY to Cloudflare secrets to activate ClawFlow','info'));
+}
+
+async function sendClawbotMessage() {
+  const inp = document.getElementById('clawbot-in');
+  const msg = inp ? inp.value.trim() : '';
+  if (!msg) return;
+  if (inp) { inp.value=''; inp.style.height='42px'; }
+
+  appendClawbotMsg('user', msg, '');
+  const tid = appendClawbotTyping();
+  const appCtx = document.getElementById('clawbot-app-ctx')?.value || 'flowstate_hub';
+
+  try {
+    const res = await fetch('/api/clawbot/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ message:msg, app:appCtx, history:clawbotHistory.slice(-8) })
+    });
+    const data = await res.json();
+    removeTyping(tid);
+
+    if (data.error === 'clawflow_required') {
+      appendClawbotMsg('ai', '🦾 ClawFlow subscription required to continue. Upgrade below ↓', 'Clawbot');
+      document.getElementById('clawbot-active').style.display = 'none';
+      document.getElementById('clawbot-gate').style.display = 'block';
+      loadClawbotPromo();
+      return;
+    }
+
+    const reply = data.reply || 'No response.';
+    appendClawbotMsg('ai', reply, `Clawbot · ${data.coinCost || 0} coins`);
+    clawbotHistory.push({ role:'user', content:msg }, { role:'assistant', content:reply });
+
+    // Update coin badge
+    const badge = document.getElementById('clawbot-coins-badge');
+    if (badge && data.coinCost) {
+      const cur = parseInt(badge.textContent.replace(/[^0-9]/g,'')) || 500;
+      badge.textContent = `⚡ ${Math.max(0, cur - data.coinCost)} coins`;
+    }
+
+    // Proactively offer walkthrough if user seems stuck
+    if (/how|stuck|help|tutorial|walkthrough|can't|doesn't work|not working/i.test(msg) && Math.random() > 0.4) {
+      setTimeout(() => offerWalkthrough(msg, appCtx), 1200);
+    }
+  } catch(e) {
+    removeTyping(tid);
+    appendClawbotMsg('ai','Connection error — check your network.','Error');
+  }
+}
+
+function appendClawbotMsg(role, text, label) {
+  const msgs = document.getElementById('clawbot-msgs');
+  if (!msgs) return;
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  const av = role==='ai'
+    ? `<div class="msg-av" style="background:linear-gradient(135deg,#a855f7,#06b6d4)">🦾</div>`
+    : `<div class="msg-av" style="background:var(--bg-card)">👤</div>`;
+  const meta = role==='ai'
+    ? `<div class="msg-meta"><span class="m-tag" style="background:rgba(6,182,212,.15);color:#06b6d4">Clawbot</span><span style="font-size:11px;color:var(--text-m)">${label}</span></div>`
+    : '';
+  div.innerHTML = `${av}<div>${meta}<div class="msg-bub">${formatMsg(text)}</div></div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function appendClawbotTyping() {
+  const msgs = document.getElementById('clawbot-msgs');
+  if (!msgs) return 'no-clawbot-msgs';
+  const div = document.createElement('div');
+  const id = 'clawbot-typing-' + Date.now();
+  div.id = id; div.className = 'msg ai';
+  div.innerHTML = `<div class="msg-av" style="background:linear-gradient(135deg,#a855f7,#06b6d4)">🦾</div><div><div class="msg-bub"><div class="typing"><div class="t-dot"></div><div class="t-dot"></div><div class="t-dot"></div></div></div></div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return id;
+}
+
+function offerWalkthrough(context, appCtx) {
+  const bar     = document.getElementById('clawbot-wt-bar');
+  const content = document.getElementById('clawbot-wt-content');
+  if (!bar || !content) return;
+  const safeCtx = context.slice(0,60).replace(/'/g,'').replace(/"/g,'');
+  content.innerHTML = `<strong>🦾 Need a walkthrough?</strong> I noticed you might need help with this. Want me to generate a step-by-step guide? <button class="clawbot-quick-btn" style="margin-left:8px" onclick="generateWalkthrough('${safeCtx}','${appCtx}')">Yes, create it</button>`;
+  bar.style.display = 'flex';
+}
+
+function dismissWalkthrough() {
+  const bar = document.getElementById('clawbot-wt-bar');
+  if (bar) bar.style.display = 'none';
+}
+
+async function generateWalkthrough(topic, appCtx) {
+  dismissWalkthrough();
+  const tid = appendClawbotTyping();
+  try {
+    const res = await fetch('/api/clawbot/walkthrough', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ topic: topic || 'General Workflow', app: appCtx, complexity:'standard', userConsent:true })
+    });
+    const data = await res.json();
+    removeTyping(tid);
+    if (data.error === 'clawflow_required') { loadClawbotPromo(); return; }
+    if (data.walkthrough) {
+      const wt = data.walkthrough;
+      let text = `**📖 ${wt.title}**\n\nEstimated time: ${wt.estimatedMinutes} min · Cost: ${wt.coinCost} coins\n\n${wt.summary}\n\n`;
+      wt.sections.forEach(s => {
+        text += `**Step ${s.step}: ${s.title}**\n${s.content}\n`;
+        if (s.uiHighlight) text += `*UI: ${s.uiHighlight}*\n`;
+        if (s.tip)         text += `💡 ${s.tip}\n`;
+        text += '\n';
+      });
+      appendClawbotMsg('ai', text, `Clawbot · ${wt.coinCost} coins used`);
+      // Deduct coins from badge
+      const badge = document.getElementById('clawbot-coins-badge');
+      if (badge && wt.coinCost) {
+        const cur = parseInt(badge.textContent.replace(/[^0-9]/g,'')) || 500;
+        badge.textContent = `⚡ ${Math.max(0, cur - wt.coinCost)} coins`;
+      }
+    }
+  } catch(e) {
+    removeTyping(tid);
+    appendClawbotMsg('ai','Could not generate walkthrough — please try again.','Error');
+  }
+}
+
+function clawbotQuick(msg) {
+  const inp = document.getElementById('clawbot-in');
+  if (inp) { inp.value = msg; sendClawbotMessage(); }
 }
 
 // ── Start ──────────────────────────────────────────────────────────────────

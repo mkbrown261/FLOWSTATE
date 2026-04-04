@@ -808,4 +808,205 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   { service: 'Replicate', purpose: '264 Pro: AI Upscale (Real-ESRGAN), AI Denoise (FastDVDnet), AI Face Enhance (CodeFormer), AI Stabilize, Super Slow-Mo (DAIN)', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'personal_pro' },
   { service: 'Hugging Face', purpose: '264 Pro: Rotoscoping (SAM segment-anything), AI Colorize (FILM), AI Depth Map (MiDaS), AI Object Remove (LaMa)', envKey: 'HUGGINGFACE_API_KEY', url: 'https://huggingface.co/settings/tokens', required: 'optional', tier: 'personal_pro' },
   { service: 'Cloudflare R2', purpose: '264 Pro: Store processed AI video outputs, export queue results, project backups', envKey: 'R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME', url: 'https://dash.cloudflare.com/?to=/:account/r2', required: 'optional', tier: 'personal_pro' },
+  // ── Clawbot / ClawFlow ───────────────────────────────────────────────────────
+  { service: 'Clawbot AI (ClawFlow)', purpose: 'Clawbot autonomous agent — walkthrough generation, agentic workflow assistance across 264 Pro, Flowstate Audio & Hub, API usage tracking, coin ledger', envKey: 'CLAWBOT_API_KEY', url: 'https://flowstatehub.com/clawflow', required: 'optional', tier: 'personal_pro' },
 ];
+
+// ─── Clawbot / ClawFlow ───────────────────────────────────────────────────────
+
+export interface ClawbotSession {
+  userId: string;
+  subscriptionActive: boolean;
+  tier: 'none' | 'clawflow';
+  coinsRemaining: number;
+  permissions: {
+    canGenerateTutorials: boolean;
+    canRunAgenticTasks: boolean;
+    canTrackApiUsage: boolean;
+  };
+}
+
+export interface WalkthroughRequest {
+  topic: string;
+  app: 'flowstate_hub' | '264_pro' | 'flowstate_audio';
+  complexity: 'quick' | 'standard' | 'deep';
+}
+
+export interface WalkthroughResponse {
+  id: string;
+  title: string;
+  app: string;
+  estimatedMinutes: number;
+  sections: Array<{
+    step: number;
+    title: string;
+    content: string;
+    uiHighlight?: string;
+    tip?: string;
+  }>;
+  coinCost: number;
+  summary: string;
+}
+
+export interface CoinLedgerEntry {
+  id: string;
+  timestamp: number;
+  action: string;
+  app: string;
+  coinCost: number;
+  model?: string;
+}
+
+export function declareClawbotSession(
+  userId: string,
+  subscriptionData: { active: boolean; coinsRemaining?: number }
+): ClawbotSession {
+  return {
+    userId,
+    subscriptionActive: subscriptionData.active,
+    tier: subscriptionData.active ? 'clawflow' : 'none',
+    coinsRemaining: subscriptionData.coinsRemaining ?? 0,
+    permissions: {
+      canGenerateTutorials: subscriptionData.active,
+      canRunAgenticTasks: subscriptionData.active,
+      canTrackApiUsage: subscriptionData.active,
+    },
+  };
+}
+
+export function declareClawbotSystemPrompt(app: string, userTier: string): string {
+  const appContext =
+    app === '264_pro'
+      ? '264 Pro Video Editor — timeline editing, transitions, colour grading, audio mixing, AI tools (upscale, denoise, stabilise, face enhance, slow-mo)'
+      : app === 'flowstate_audio'
+      ? 'Flowstate Audio — multi-track recording, plugin setup, routing, EQ/compression, mastering and export workflows'
+      : 'Flowstate Hub — focus sessions, team collaboration, Kanban, calendar sync, sprint health, FlowScore';
+
+  return `You are Clawbot, the central AI brain of the Flowstate ecosystem.
+Current app context: ${appContext}
+Subscription tier: ${userTier === 'clawflow' ? 'ClawFlow Active — full access' : 'ClawFlow not active — guide user toward subscription'}
+
+Your responsibilities:
+1. Provide agentic AI assistance for ${app === '264_pro' ? '264 Pro Video Editor' : app === 'flowstate_audio' ? 'Flowstate Audio' : 'Flowstate Hub'}
+2. Suggest walkthroughs when users seem stuck (offer only, never force)
+3. Track and report coin usage transparently
+4. Respect user permissions and subscription tier
+
+Rules:
+- Always ask before performing agentic tasks or generating content
+- Only active ClawFlow subscribers may access full Clawbot features
+- Be professional, fast, and actionable — never intrusive
+- When tier is 'none', gracefully guide toward ClawFlow subscription with marketing flair`;
+}
+
+const WALKTHROUGH_COIN_COST: Record<string, number> = {
+  quick: 5,
+  standard: 15,
+  deep: 40,
+};
+
+function _walkthroughStepTitle(app: string, stepIdx: number): string {
+  const steps264    = ['Open Timeline Panel','Import Media Assets','Set In/Out Points','Apply Colour Grade','Mix Audio Levels','Add Transitions','Export Settings','Use AI Tools'];
+  const stepsHub    = ['Configure Focus Timer','Set Daily Intentions','Connect Integrations','Review Sprint Health','Track FlowScore','Invite Team Members','Review Metrics','Set Up Automations'];
+  const stepsAudio  = ['Create New Session','Set Up Input Routing','Record First Track','Apply EQ & Compression','Set Up Sends & Returns','Mix to Stereo','Master the Track','Export Final Mix'];
+  const arr = app === '264_pro' ? steps264 : app === 'flowstate_audio' ? stepsAudio : stepsHub;
+  return arr[stepIdx % arr.length] ?? `Configure Step ${stepIdx + 1}`;
+}
+
+function _walkthroughUiHighlight(app: string, stepIdx: number): string {
+  const areas264   = ['Timeline Panel','Asset Browser','Viewer Panel','Colour Grade Controls','Audio Mixer','Effects Stack','Export Dialog','AI Tools Panel'];
+  const areasHub   = ['Focus Timer','Intent Modal','Settings → Integrations','Team → Sprint Health','Metrics → FlowScore','Invite Button','Metrics Chart','Settings Panel'];
+  const areasAudio = ['Session Setup','Routing Matrix','Record Arm Button','EQ Insert Slot','Aux Send Fader','Master Fader','Mastering Chain','Export Dialog'];
+  const arr = app === '264_pro' ? areas264 : app === 'flowstate_audio' ? areasAudio : areasHub;
+  return arr[stepIdx % arr.length] ?? 'Main Panel';
+}
+
+function _walkthroughShortcut(app: string, stepIdx: number): string {
+  const shortcuts = ['Cmd+S','Cmd+Z','Space','Cmd+D','Cmd+T','Cmd+E','Cmd+R','Cmd+K'];
+  return shortcuts[stepIdx % shortcuts.length] ?? 'Cmd+S';
+}
+
+export function declareWalkthrough(req: WalkthroughRequest): WalkthroughResponse {
+  const coinCost = WALKTHROUGH_COIN_COST[req.complexity] ?? 15;
+  const appLabel =
+    req.app === '264_pro' ? '264 Pro Video Editor'
+    : req.app === 'flowstate_audio' ? 'Flowstate Audio'
+    : 'Flowstate Hub';
+  const numSteps = req.complexity === 'quick' ? 3 : req.complexity === 'standard' ? 6 : 10;
+
+  const sections: WalkthroughResponse['sections'] = [];
+
+  // Introduction
+  sections.push({
+    step: 1,
+    title: `Introduction to ${req.topic}`,
+    content: `Welcome to this ${req.complexity} walkthrough on "${req.topic}" in ${appLabel}. We'll cover the core concepts, step-by-step instructions, and tips to avoid common mistakes. Make sure you've saved your project before starting.`,
+    tip: 'Close unnecessary tabs before starting — focused learning improves retention by up to 40%.',
+  });
+
+  // Middle steps
+  for (let i = 1; i <= numSteps - 2; i++) {
+    sections.push({
+      step: i + 1,
+      title: `Step ${i}: ${_walkthroughStepTitle(req.app, i - 1)}`,
+      content: `Locate the ${_walkthroughUiHighlight(req.app, i - 1)} in ${appLabel}. Apply the settings carefully, ensuring your project is saved. This step is essential for "${req.topic}" to integrate correctly with your existing workflow.`,
+      uiHighlight: _walkthroughUiHighlight(req.app, i - 1),
+      tip: i % 2 === 0 ? `Pro tip: Use ${_walkthroughShortcut(req.app, i - 1)} to speed this up.` : undefined,
+    });
+  }
+
+  // Summary
+  sections.push({
+    step: numSteps,
+    title: 'Summary & Next Steps',
+    content: `You've completed the "${req.topic}" walkthrough for ${appLabel}. Key takeaways: understanding the core workflow, avoiding common setup mistakes, and using keyboard shortcuts to maximise efficiency. Explore related features to deepen your workflow.`,
+    tip: 'Save this walkthrough — you can access it anytime from the Clawbot tab.',
+  });
+
+  return {
+    id: crypto.randomUUID(),
+    title: `${req.topic} — ${appLabel}`,
+    app: appLabel,
+    estimatedMinutes: req.complexity === 'quick' ? 3 : req.complexity === 'standard' ? 7 : 12,
+    sections,
+    coinCost,
+    summary: `A ${req.complexity} walkthrough covering "${req.topic}" in ${appLabel}. Includes step-by-step guidance, UI highlights, and best practices.`,
+  };
+}
+
+export function declareCoinLedgerEntry(action: string, app: string, coinCost: number, model?: string): CoinLedgerEntry {
+  return {
+    id: crypto.randomUUID(),
+    timestamp: Date.now(),
+    action,
+    app,
+    coinCost,
+    model,
+  };
+}
+
+export function declareClawFlowPromo(): {
+  headline: string;
+  originalPrice: string;
+  promoPrice: string;
+  discount: string;
+  features: string[];
+  cta: string;
+} {
+  return {
+    headline: 'Unlock Clawbot — Your AI Workspace Brain',
+    originalPrice: '$40/month',
+    promoPrice: '$20/month',
+    discount: '50% off first month',
+    features: [
+      'Clawbot AI assistant across all Flowstate apps',
+      'Autonomous walkthrough & tutorial generation',
+      'API usage tracking & coin system (500 coins/month)',
+      'Agentic workflow automation — opt-in only',
+      'Priority AI routing (always uses best available model)',
+      '264 Pro Video Editor deep integration',
+      'Flowstate Audio deep integration',
+    ],
+    cta: 'Start ClawFlow — First Month $20',
+  };
+}

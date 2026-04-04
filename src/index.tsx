@@ -10,6 +10,8 @@ import {
   declareMindfulMinimum, declareOnboardingIntent, declareSprintHealth,
   declareDeadlineAlert, declareBurnoutRisk, declareFlowScore,
   declareSessionContext, declareTeamRoleCapabilities,
+  declareClawbotSession, declareClawbotSystemPrompt, declareWalkthrough,
+  declareCoinLedgerEntry, declareClawFlowPromo,
   MODEL_REGISTRY, IMAGE_MODEL_REGISTRY, VIDEO_MODEL_REGISTRY, CREDENTIAL_TABLE,
   type SessionIntent, type BehaviorData,
 } from './intent-layer'
@@ -24,6 +26,7 @@ type Bindings = {
   BFL_API_KEY: string; RUNWAY_API_KEY: string; IDEOGRAM_API_KEY: string
   STRIPE_SECRET_KEY: string; STRIPE_PUBLISHABLE_KEY: string; STRIPE_WEBHOOK_SECRET: string
   RESEND_API_KEY: string; SESSION_SECRET: string
+  CLAWBOT_API_KEY: string;
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -567,6 +570,130 @@ app.post('/api/team/update-role', async (c) => {
   return c.json({ ok: true, role, capabilities: declareTeamRoleCapabilities(role) })
 })
 
+// ─── Clawbot / ClawFlow ───────────────────────────────────────────────────────
+
+/** Check ClawFlow subscription status for the current user. */
+app.get('/api/clawbot/status', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ subscriptionActive: false, tier: 'none', coinsRemaining: 0 })
+  // Production: verify Stripe subscription + KV coin balance.
+  // Dev: CLAWBOT_API_KEY presence signals active subscription.
+  const hasKey = !!c.env?.CLAWBOT_API_KEY
+  return c.json(declareClawbotSession(session.email, { active: hasKey, coinsRemaining: hasKey ? 500 : 0 }))
+})
+
+/** Clawbot chat — gated behind ClawFlow subscription. */
+app.post('/api/clawbot/chat', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+
+  const { message, app: appCtx = 'flowstate_hub', history = [] } = await c.req.json()
+  if (!message?.trim()) return c.json({ error: 'message_required' }, 400)
+
+  // ── Paywall check ──────────────────────────────────────────────────────────
+  if (!c.env?.CLAWBOT_API_KEY) {
+    return c.json({ error: 'clawflow_required', promo: declareClawFlowPromo(), reply: null }, 402)
+  }
+
+  const systemPrompt = declareClawbotSystemPrompt(appCtx, 'clawflow')
+  const coinEntry    = declareCoinLedgerEntry('chat_message', appCtx, 2, 'clawbot')
+
+  // Prefer Anthropic for Clawbot responses; fall back to OpenAI
+  const useAnthropic = !!c.env?.ANTHROPIC_API_KEY
+  const apiKey       = useAnthropic ? c.env?.ANTHROPIC_API_KEY : c.env?.OPENAI_API_KEY
+
+  if (!apiKey) {
+    // Demo mode — return a canned response
+    return c.json({
+      reply: _demoClaw(message, appCtx),
+      model: 'clawbot-demo',
+      coinCost: 0,
+      app: appCtx,
+    })
+  }
+
+  try {
+    let reply = ''
+    if (useAnthropic) {
+      const res  = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-3-5-sonnet-20241022',
+          max_tokens: 1024,
+          system: systemPrompt,
+          messages: [...(history as any[]).slice(-6), { role: 'user', content: message }],
+        }),
+      })
+      const data: any = await res.json()
+      reply = data.content?.[0]?.text || 'No response from Clawbot.'
+    } else {
+      const res  = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          max_tokens: 1024,
+          messages: [{ role: 'system', content: systemPrompt }, ...(history as any[]).slice(-6), { role: 'user', content: message }],
+        }),
+      })
+      const data: any = await res.json()
+      reply = data.choices?.[0]?.message?.content || 'No response from Clawbot.'
+    }
+    return c.json({
+      reply,
+      model: useAnthropic ? 'claude-3-5-sonnet' : 'gpt-4o',
+      coinCost: coinEntry.coinCost,
+      app: appCtx,
+    })
+  } catch (err: any) {
+    return c.json({ reply: _demoClaw(message, appCtx), model: 'clawbot-fallback', coinCost: 0, app: appCtx })
+  }
+})
+
+/** Generate a step-by-step walkthrough — requires ClawFlow + explicit user consent. */
+app.post('/api/clawbot/walkthrough', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+
+  if (!c.env?.CLAWBOT_API_KEY)
+    return c.json({ error: 'clawflow_required', promo: declareClawFlowPromo() }, 402)
+
+  const { topic, app: appCtx = 'flowstate_hub', complexity = 'standard', userConsent } = await c.req.json()
+  if (!userConsent)
+    return c.json({ error: 'consent_required', message: 'User must explicitly consent to walkthrough generation.' }, 400)
+  if (!topic?.trim())
+    return c.json({ error: 'topic_required' }, 400)
+
+  const walkthrough = declareWalkthrough({ topic, app: appCtx as any, complexity })
+  const coinEntry   = declareCoinLedgerEntry('walkthrough_generation', appCtx, walkthrough.coinCost, 'clawbot')
+
+  return c.json({ walkthrough, coinEntry, ok: true })
+})
+
+/** ClawFlow promotional info — public. */
+app.get('/api/clawbot/promo', (c) => c.json(declareClawFlowPromo()))
+
+/** Coin balance stub — production uses KV/D1. */
+app.get('/api/clawbot/coins', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const hasKey = !!c.env?.CLAWBOT_API_KEY
+  return c.json({ coinsRemaining: hasKey ? 500 : 0, coinsUsedToday: hasKey ? 23 : 0, tier: hasKey ? 'clawflow' : 'none' })
+})
+
+function _demoClaw(message: string, app: string): string {
+  const l = message.toLowerCase()
+  const label = app === '264_pro' ? '264 Pro Video Editor' : app === 'flowstate_audio' ? 'Flowstate Audio' : 'Flowstate Hub'
+  if (/tutorial|walkthrough|help|stuck|how/.test(l))
+    return `I can generate a step-by-step walkthrough for that in ${label}. Want me to create one? Just confirm and I'll get it ready. (Demo mode — add CLAWBOT_API_KEY to enable full AI responses)`
+  if (/coin|credit|usage|cost/.test(l))
+    return `Your coin balance: 500 coins remaining this month. Chat messages cost 2 coins, walkthroughs cost 5–40 coins depending on depth. (Demo mode)`
+  if (/optimize|improve|workflow/.test(l))
+    return `I've analysed common usage patterns in ${label}. Top recommendation: batch similar operations together to reduce context switching — can save up to 30% of session time. Want a detailed workflow audit? (Demo mode)`
+  return `Clawbot here! I'm your AI assistant for the Flowstate ecosystem — ${label}, 264 Pro, and Flowstate Audio. I'm in demo mode. Add CLAWBOT_API_KEY to your Cloudflare secrets to unlock full agentic responses. What are you working on?`
+}
+
 // ─── Misc APIs ────────────────────────────────────────────────────────────────
 app.get('/api/health', (c) => c.json({ status: 'alive', version: '3.0.0', name: 'FlowState', phase: 'Phase 3 — Full Architecture' }))
 app.get('/api/learn/cards', (c) => c.json({ cards: declareLearnCards() }))
@@ -952,6 +1079,29 @@ em{color:var(--accent);font-style:italic}
 .form-row{display:flex;gap:8px;margin-bottom:8px}
 .form-row input,.form-row select{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:7px;color:var(--text-p);padding:8px 11px;font-size:13px;outline:none}
 .form-row input:focus,.form-row select:focus{border-color:var(--accent)}
+/* ── Clawbot ─────────────────────────────────────────────────── */
+.clawbot-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding:12px 16px;background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(6,182,212,.05));border:1px solid rgba(168,85,247,.2);border-radius:13px}
+.clawbot-title{display:flex;align-items:center;gap:11px}
+.clawbot-logo{font-size:28px}
+.clawbot-app-sel{display:flex;align-items:center;gap:9px}
+.clawbot-coins{font-size:11px;font-weight:700;padding:4px 10px;border-radius:7px;background:rgba(168,85,247,.12);color:var(--accent);border:1px solid rgba(168,85,247,.25)}
+.clawbot-promo-card{background:linear-gradient(135deg,rgba(168,85,247,.1),rgba(6,182,212,.07));border:1px solid rgba(168,85,247,.3);border-radius:18px;padding:32px;text-align:center;max-width:480px;margin:40px auto}
+.clawbot-promo-logo{font-size:52px;margin-bottom:14px}
+.clawbot-promo-title{font-size:22px;font-weight:900;margin-bottom:6px}
+.clawbot-promo-sub{font-size:14px;color:var(--text-s);margin-bottom:20px;line-height:1.6}
+.clawbot-price-row{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:6px}
+.clawbot-orig-price{font-size:20px;font-weight:700;color:var(--text-m);text-decoration:line-through}
+.clawbot-new-price{font-size:28px;font-weight:900;background:linear-gradient(135deg,#a855f7,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.clawbot-discount{font-size:12px;font-weight:700;padding:3px 9px;border-radius:6px;background:rgba(16,185,129,.15);color:var(--green)}
+.clawbot-features{list-style:none;text-align:left;margin:18px 0;display:flex;flex-direction:column;gap:7px}
+.clawbot-features li{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--text-s)}
+.clawbot-features li::before{content:"\\2736";color:var(--accent);font-size:10px}
+.clawbot-cta{width:100%;padding:15px;border-radius:14px;background:linear-gradient(135deg,#a855f7,#06b6d4);border:none;color:#fff;font-size:15px;font-weight:800;cursor:pointer;transition:.2s;margin-top:4px}
+.clawbot-cta:hover{opacity:.88;transform:scale(1.01)}
+.clawbot-walkthrough-bar{background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(6,182,212,.05));border:1px solid rgba(168,85,247,.25);border-radius:11px;padding:12px 16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:10px}
+.clawbot-wt-content{flex:1;font-size:13px;line-height:1.6}
+.clawbot-quick-btn{padding:5px 12px;border-radius:18px;font-size:12px;font-weight:600;border:1px solid rgba(168,85,247,.25);background:rgba(168,85,247,.06);color:var(--text-s);cursor:pointer;transition:.2s}
+.clawbot-quick-btn:hover{border-color:var(--accent);color:var(--accent)}
 </style>
 </head>
 <body>
@@ -1011,6 +1161,7 @@ em{color:var(--accent);font-style:italic}
   <button class="tab-btn" id="tab-learn"><i class="fas fa-graduation-cap"></i>Learn</button>
   <button class="tab-btn" id="tab-restore"><i class="fas fa-leaf"></i>Restore</button>
   <button class="tab-btn" id="tab-generate"><i class="fas fa-magic"></i>Generate</button>
+  <button class="tab-btn" id="tab-clawbot" style="border-color:rgba(6,182,212,.25)"><i class="fas fa-robot" style="color:#06b6d4"></i><span style="background:linear-gradient(135deg,#a855f7,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">Clawbot</span></button>
   <button class="tab-btn demo-tab" id="tab-demo" style="display:none"><i class="fas fa-eye"></i>Demo</button>
   <div style="margin-left:auto;display:flex;gap:5px">
     <button class="btn-sm" id="btn-creds" title="API Credentials"><i class="fas fa-key"></i></button>
@@ -1235,6 +1386,55 @@ em{color:var(--accent);font-style:italic}
       </select>
       <button class="btn-gen" id="btn-gen-vid"><i class="fas fa-film"></i>&nbsp; Generate Video</button>
       <div id="vid-result" style="margin-top:12px;font-size:13px;color:var(--text-s)"></div>
+    </div>
+  </div>
+</div>
+
+<!-- CLAWBOT TAB -->
+<div class="tab-pane" id="tab-pane-clawbot" style="display:none;padding:14px">
+  <div id="clawbot-gate" style="display:none">
+    <div class="clawbot-promo-card" id="clawbot-promo"></div>
+  </div>
+  <div id="clawbot-active" style="display:none;flex-direction:column;height:100%">
+    <div class="clawbot-header">
+      <div class="clawbot-title">
+        <span class="clawbot-logo">&#x1F9BE;</span>
+        <div>
+          <div style="font-size:15px;font-weight:900">Clawbot</div>
+          <div style="font-size:11px;color:var(--text-m)">AI Brain &middot; ClawFlow Active</div>
+        </div>
+      </div>
+      <div class="clawbot-app-sel">
+        <select class="fs-sel" id="clawbot-app-ctx">
+          <option value="flowstate_hub">&#9889; Flowstate Hub</option>
+          <option value="264_pro">&#127916; 264 Pro Editor</option>
+          <option value="flowstate_audio">&#127925; Flowstate Audio</option>
+        </select>
+        <div class="clawbot-coins" id="clawbot-coins-badge">&#9889; &mdash; coins</div>
+      </div>
+    </div>
+    <div class="chat-msgs" id="clawbot-msgs" style="flex:1;min-height:200px;margin-bottom:10px">
+      <div class="msg ai">
+        <div class="msg-av" style="background:linear-gradient(135deg,#a855f7,#06b6d4)">&#x1F9BE;</div>
+        <div>
+          <div class="msg-meta"><span class="m-tag" style="background:rgba(6,182,212,.15);color:#06b6d4">Clawbot</span><span>ClawFlow Active</span></div>
+          <div class="msg-bub">Hey! I&apos;m Clawbot &mdash; your AI brain for the Flowstate ecosystem. I can help with 264 Pro, Flowstate Audio, and Flowstate Hub. I can also generate step-by-step walkthroughs for any workflow. What are you working on?</div>
+        </div>
+      </div>
+    </div>
+    <div class="clawbot-walkthrough-bar" id="clawbot-wt-bar" style="display:none">
+      <div class="clawbot-wt-content" id="clawbot-wt-content"></div>
+      <button class="btn-sm" onclick="dismissWalkthrough()">&#x2715;</button>
+    </div>
+    <div class="chat-input-row">
+      <textarea class="chat-in" id="clawbot-in" placeholder="Ask Clawbot anything about Flowstate, 264 Pro, or Flowstate Audio&#8230;" rows="1"></textarea>
+      <button class="btn-send" id="clawbot-send" style="background:linear-gradient(135deg,#a855f7,#06b6d4)"><i class="fas fa-robot"></i></button>
+    </div>
+    <div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
+      <button class="clawbot-quick-btn" onclick="clawbotQuick('Generate a walkthrough for this app')">&#x1F4D6; Generate Walkthrough</button>
+      <button class="clawbot-quick-btn" onclick="clawbotQuick('What workflows can you optimize for me?')">&#9889; Optimize Workflow</button>
+      <button class="clawbot-quick-btn" onclick="clawbotQuick('Show me my coin usage and API stats')">&#x1F4B0; Coin Usage</button>
+      <button class="clawbot-quick-btn" onclick="clawbotQuick('What are the most powerful features I am not using?')">&#x1F50D; Hidden Features</button>
     </div>
   </div>
 </div>
