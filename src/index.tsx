@@ -1719,7 +1719,7 @@ em{color:var(--accent);font-style:italic}
 
     <!-- Hero -->
     <div style="text-align:center;max-width:700px;margin-bottom:52px">
-      <img src="/static/fs-audio-logo.png" alt="Flowstate Audio" style="max-width:480px;width:90%;margin-bottom:24px;border-radius:16px">
+      <img src="/static/fs-audio-logo.png" alt="Flowstate Audio" style="max-width:480px;width:90%;margin:0 auto 24px;display:block;border-radius:16px">
       <p style="font-size:18px;color:var(--text-s);margin:0 0 8px;line-height:1.6">Professional DAW. AI-Powered. Yours.</p>
       <p style="font-size:14px;color:var(--text-m);margin:0 0 32px">A standalone desktop application inspired by Logic Pro &mdash; multi-track recording, VST plugins, AI music generation, and Clawbot integration. Download and run it locally.</p>
       <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
@@ -1761,7 +1761,7 @@ em{color:var(--accent);font-style:italic}
     </div>
 
     <div style="text-align:center;font-size:12px;color:var(--text-m)">Flowstate Audio is open source &mdash; <a href="https://github.com/mkbrown261/FS-AUDIO" target="_blank" style="color:var(--accent)">github.com/mkbrown261/FS-AUDIO</a></div>
-    <div style="margin-top:40px;opacity:.4"><img src="/static/fs-audio-banner.png" alt="Flowstate" style="max-width:500px;width:80%;border-radius:12px"></div>
+    <div style="margin-top:40px;opacity:.4;width:100%;display:flex;justify-content:center"><img src="/static/fs-audio-banner.png" alt="Flowstate" style="max-width:500px;width:80%;border-radius:12px;display:block"></div>
   </div>
 </div>
 
