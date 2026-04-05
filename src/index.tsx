@@ -1993,7 +1993,7 @@ em{color:var(--accent);font-style:italic}
 /* ── Clawbot ─────────────────────────────────────────────────── */
 .clawbot-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding:12px 16px;background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(6,182,212,.05));border:1px solid rgba(168,85,247,.2);border-radius:13px}
 .clawbot-title{display:flex;align-items:center;gap:11px}
-.clawbot-logo{font-size:28px}
+.clawbot-logo{width:36px;height:36px;object-fit:contain}
 .clawbot-app-sel{display:flex;align-items:center;gap:9px}
 .clawbot-coins{font-size:11px;font-weight:700;padding:4px 10px;border-radius:7px;background:rgba(168,85,247,.12);color:var(--accent);border:1px solid rgba(168,85,247,.25)}
 .clawbot-promo-card{background:linear-gradient(135deg,rgba(168,85,247,.1),rgba(6,182,212,.07));border:1px solid rgba(168,85,247,.3);border-radius:18px;padding:32px;text-align:center;max-width:480px;margin:40px auto}
@@ -2085,7 +2085,7 @@ em{color:var(--accent);font-style:italic}
   <button class="tab-btn" id="tab-generate"><i class="fas fa-magic"></i>Generate</button>
   <button class="tab-btn" id="tab-264" style="border-color:rgba(236,72,153,.25)"><i class="fas fa-film" style="color:#ec4899"></i><span style="background:linear-gradient(135deg,#ec4899,#f59e0b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">264 Pro</span></button>
   <button class="tab-btn" id="tab-audio" style="border-color:rgba(16,185,129,.25)"><i class="fas fa-music" style="color:#10b981"></i><span style="background:linear-gradient(135deg,#10b981,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">Audio</span></button>
-  <button class="tab-btn" id="tab-clawbot" style="border-color:rgba(6,182,212,.25)"><i class="fas fa-robot" style="color:#06b6d4"></i><span style="background:linear-gradient(135deg,#a855f7,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">ClawFlow</span></button>
+  <button class="tab-btn" id="tab-clawbot" style="border-color:rgba(6,182,212,.25)"><img src="/static/clawbot-mascot.png" style="width:18px;height:18px;object-fit:contain;border-radius:3px"><span style="background:linear-gradient(135deg,#a855f7,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">ClawFlow</span></button>
   <button class="tab-btn demo-tab" id="tab-demo" style="display:none"><i class="fas fa-eye"></i>Demo</button>
   <div style="margin-left:auto;display:flex;gap:5px">
     <button class="btn-sm" id="btn-creds" title="API Credentials"><i class="fas fa-key"></i></button>
@@ -2450,7 +2450,7 @@ em{color:var(--accent);font-style:italic}
 
     <!-- AI Tools callout -->
     <div style="max-width:680px;width:100%;background:linear-gradient(135deg,rgba(236,72,153,.1),rgba(245,158,11,.07));border:1px solid rgba(236,72,153,.3);border-radius:18px;padding:28px 32px;text-align:center;margin-bottom:40px">
-      <div style="font-size:32px;margin-bottom:8px">&#x1F9BE;</div>
+      <img src="/static/clawbot-mascot.png" style="width:64px;height:64px;object-fit:contain;margin-bottom:8px">
       <div style="font-size:18px;font-weight:900;margin-bottom:6px">Supercharge with Clawbot &amp; ClawFlow</div>
       <div style="font-size:13px;color:var(--text-s);margin-bottom:20px;line-height:1.7">Clawbot connects directly to 264 Pro for real-time AI assistance &mdash; walkthrough generation, AI tool suggestions, export optimization, and automated editing workflows. ClawFlow subscription required ($40/month &mdash; first month $20).</div>
       <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
@@ -2589,7 +2589,7 @@ em{color:var(--accent);font-style:italic}
 
     <!-- Clawbot / ClawFlow callout -->
     <div style="max-width:680px;width:100%;background:linear-gradient(135deg,rgba(168,85,247,.1),rgba(6,182,212,.07));border:1px solid rgba(168,85,247,.3);border-radius:18px;padding:28px 32px;text-align:center;margin-bottom:40px">
-      <div style="font-size:32px;margin-bottom:8px">&#x1F9BE;</div>
+      <img src="/static/clawbot-mascot.png" style="width:64px;height:64px;object-fit:contain;margin-bottom:8px">
       <div style="font-size:18px;font-weight:900;margin-bottom:6px">Supercharge with Clawbot &amp; ClawFlow</div>
       <div style="font-size:13px;color:var(--text-s);margin-bottom:20px;line-height:1.7">Clawbot connects directly to Flowstate Audio for real-time AI assistance &mdash; arrangement suggestions, beat generation, vocal pitch correction, AI mastering, and stem separation. ClawFlow subscription required ($40/month &mdash; first month $20).</div>
       <button class="clawbot-cta" style="max-width:320px;margin:0 auto" onclick="switchTab('clawbot')">Activate ClawFlow &rarr;</button>
@@ -2618,7 +2618,7 @@ em{color:var(--accent);font-style:italic}
   <div id="clawbot-active" style="display:none;flex-direction:column;height:100%">
     <div class="clawbot-header">
       <div class="clawbot-title">
-        <span class="clawbot-logo">&#x1F9BE;</span>
+        <img src="/static/clawbot-mascot.png" style="width:36px;height:36px;object-fit:contain">
         <div>
           <div style="font-size:15px;font-weight:900">Clawbot</div>
           <div style="font-size:11px;color:var(--text-m)">AI Brain &middot; ClawFlow Active</div>
@@ -2642,7 +2642,7 @@ em{color:var(--accent);font-style:italic}
     </div>
     <div class="chat-msgs" id="clawbot-msgs" style="flex:1;min-height:200px;margin-bottom:10px">
       <div class="msg ai">
-        <div class="msg-av" style="background:linear-gradient(135deg,#a855f7,#06b6d4)">&#x1F9BE;</div>
+        <div class="msg-av" style="background:linear-gradient(135deg,#a855f7,#06b6d4);overflow:hidden;padding:0"><img src="/static/clawbot-mascot.png" style="width:100%;height:100%;object-fit:cover"></div>
         <div>
           <div class="msg-meta"><span class="m-tag" style="background:rgba(6,182,212,.15);color:#06b6d4">Clawbot</span><span>ClawFlow Active</span></div>
           <div class="msg-bub">Hey! I&apos;m Clawbot &mdash; your AI brain for the Flowstate ecosystem. I can help with 264 Pro, Flowstate Audio, and Flowstate Hub. I can also generate step-by-step walkthroughs for any workflow. What are you working on?</div>
@@ -2655,7 +2655,7 @@ em{color:var(--accent);font-style:italic}
     </div>
     <div class="chat-input-row">
       <textarea class="chat-in" id="clawbot-in" placeholder="Ask Clawbot anything about Flowstate, 264 Pro, or Flowstate Audio&#8230;" rows="1"></textarea>
-      <button class="btn-send" id="clawbot-send" style="background:linear-gradient(135deg,#a855f7,#06b6d4)"><i class="fas fa-robot"></i></button>
+      <button class="btn-send" id="clawbot-send" style="background:linear-gradient(135deg,#a855f7,#06b6d4);overflow:hidden;padding:4px"><img src="/static/clawbot-mascot.png" style="width:100%;height:100%;object-fit:contain"></button>
     </div>
     <div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
       <button class="clawbot-quick-btn" onclick="clawbotQuick('Generate a walkthrough for this app')">&#x1F4D6; Generate Walkthrough</button>
