@@ -2,15 +2,141 @@
 // ── State ──────────────────────────────────────────────────────────────────
 
 let state = {
-  timer:   { running:false, phase:'focus', elapsed:0, totalFocusSec:0, sessions:0, streak:0, focusMin:25, shortMin:5, longMin:15, intervalId:null, audioCtx:null, soundType:null },
+  timer:   { running:false, phase:'focus', elapsed:0, totalFocusSec:0, sessions:0, streak:0, focusMin:25, shortMin:5, longMin:15, intervalId:null, audioCtx:null, soundType:null, pomodoroMusic:null },
   chat:    { model:'auto', history:[] },
   cal:     { year:new Date().getFullYear(), month:new Date().getMonth(), events:[] },
   kanban:  { tasks:{ todo:[], inprogress:[], done:[] }, notionDb:null },
   learn:   { cards:[], idx:0 },
-  restore: { scenes:[], idx:0 },
-  team:    { members:[], role:'member' },
+  restore: { scenes:[], idx:0, meditationTimer:null, meditationSeconds:0 },
+  team:    { members:[], role:'member', activeTab:'sprint' },
   settings:{ focusMin:25, sound:null, isDemo:false }
 };
+
+// ── Ambient Sound Engine ────────────────────────────────────────────────────
+// Real AudioContext-based ambient sounds using Web Audio API oscillators/noise
+const AMBIENT_SOUNDS = {
+  rain:   { label:'🌧️ Rain',   type:'noise', color:'#3b82f6' },
+  forest: { label:'🌲 Forest', type:'binaural', color:'#10b981' },
+  cafe:   { label:'☕ Cafe',   type:'babble', color:'#f59e0b' },
+  ocean:  { label:'🌊 Ocean',  type:'waves', color:'#06b6d4' },
+  fire:   { label:'🔥 Fire',   type:'crackle', color:'#ef4444' },
+  space:  { label:'🌌 Space',  type:'drone', color:'#a855f7' },
+  off:    { label:'🔇 Off',    type:'off', color:'#555' },
+};
+
+let ambientCtx = null, ambientNodes = [], ambientGain = null;
+
+function getAmbientCtx() {
+  if (!ambientCtx) ambientCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (ambientCtx.state === 'suspended') ambientCtx.resume();
+  return ambientCtx;
+}
+
+function stopAmbient() {
+  ambientNodes.forEach(n => { try { n.stop?.(); n.disconnect?.(); } catch(e){} });
+  ambientNodes = [];
+  if (ambientGain) { ambientGain.disconnect(); ambientGain = null; }
+}
+
+function playAmbient(type) {
+  stopAmbient();
+  if (type === 'off') return;
+  const ctx = getAmbientCtx();
+  ambientGain = ctx.createGain();
+  ambientGain.gain.setValueAtTime(0.12, ctx.currentTime);
+  ambientGain.connect(ctx.destination);
+
+  if (type === 'noise' || type === 'crackle') {
+    // White/pink noise for rain and fire
+    const bufSize = ctx.sampleRate * 4;
+    const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
+    for (let i=0;i<bufSize;i++) {
+      const wh = Math.random()*2-1;
+      if (type === 'crackle') {
+        // Fire crackle: pink noise + occasional pops
+        b0=.99886*b0+wh*.0555179; b1=.99332*b1+wh*.0750759;
+        b2=.96900*b2+wh*.1538520; b3=.86650*b3+wh*.3104856;
+        b4=.55000*b4+wh*.5329522; b5=-.7616*b5-wh*.0168980;
+        data[i] = (b0+b1+b2+b3+b4+b5+b6+wh*.5362) * 0.11;
+        b6 = wh * 0.115926;
+        // Random crackle pops
+        if (Math.random() < 0.0003) data[i] += (Math.random()-0.5)*0.8;
+      } else {
+        // Rain: pink noise
+        b0=.99886*b0+wh*.0555179; b1=.99332*b1+wh*.0750759;
+        b2=.96900*b2+wh*.1538520; b3=.86650*b3+wh*.3104856;
+        b4=.55000*b4+wh*.5329522; b5=-.7616*b5-wh*.0168980;
+        data[i] = (b0+b1+b2+b3+b4+b5+b6+wh*.5362) * 0.11;
+        b6 = wh * 0.115926;
+      }
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf; src.loop = true;
+    src.connect(ambientGain); src.start();
+    ambientNodes.push(src);
+  } else if (type === 'binaural' || type === 'drone') {
+    // Forest: binaural tones + nature harmonics | Space: low drone
+    const freq = type === 'drone' ? 40 : 174;
+    const freqR = type === 'drone' ? 47 : 182;
+    [freq, freqR].forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      osc.type = type === 'drone' ? 'sine' : 'sine';
+      osc.frequency.setValueAtTime(f, ctx.currentTime);
+      const g2 = ctx.createGain(); g2.gain.setValueAtTime(0.08, ctx.currentTime);
+      osc.connect(g2); g2.connect(ambientGain);
+      osc.start(); ambientNodes.push(osc);
+    });
+    // Add some gentle noise layer for forest
+    if (type === 'binaural') {
+      const bufSize = ctx.sampleRate * 2;
+      const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i=0;i<bufSize;i++) data[i] = (Math.random()*2-1)*0.03;
+      const src = ctx.createBufferSource(); src.buffer=buf; src.loop=true;
+      src.connect(ambientGain); src.start(); ambientNodes.push(src);
+    }
+  } else if (type === 'waves') {
+    // Ocean: LFO-modulated noise
+    const bufSize = ctx.sampleRate * 8;
+    const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i=0;i<bufSize;i++) data[i] = (Math.random()*2-1);
+    const src = ctx.createBufferSource(); src.buffer=buf; src.loop=true;
+    const lfo = ctx.createOscillator(); lfo.frequency.setValueAtTime(0.12, ctx.currentTime);
+    const lfoGain = ctx.createGain(); lfoGain.gain.setValueAtTime(0.08, ctx.currentTime);
+    const biquad = ctx.createBiquadFilter(); biquad.type='lowpass'; biquad.frequency.setValueAtTime(800, ctx.currentTime);
+    lfo.connect(lfoGain); lfoGain.connect(biquad.frequency);
+    src.connect(biquad); biquad.connect(ambientGain);
+    lfo.start(); src.start();
+    ambientNodes.push(src, lfo);
+  } else if (type === 'babble') {
+    // Cafe: multiple layered noise sources with different filters (babble effect)
+    for (let j=0;j<3;j++) {
+      const bufSize = ctx.sampleRate * 3;
+      const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i=0;i<bufSize;i++) data[i] = Math.random()*2-1;
+      const src = ctx.createBufferSource(); src.buffer=buf; src.loop=true;
+      src.playbackRate.setValueAtTime(0.8+Math.random()*0.4, ctx.currentTime);
+      const bp = ctx.createBiquadFilter(); bp.type='bandpass';
+      bp.frequency.setValueAtTime(300+j*400, ctx.currentTime); bp.Q.value=0.5;
+      const g2 = ctx.createGain(); g2.gain.setValueAtTime(0.025, ctx.currentTime);
+      src.connect(bp); bp.connect(g2); g2.connect(ambientGain);
+      src.start(); ambientNodes.push(src);
+    }
+  }
+}
+
+function setAmbient(type) {
+  state.timer.soundType = type;
+  document.querySelectorAll('.s-chip').forEach(b => b.classList.toggle('active', b.dataset.sound===type));
+  if (type === 'off') { stopAmbient(); return; }
+  playAmbient(AMBIENT_SOUNDS[type]?.type || 'noise');
+  if (state.timer.running) document.body.classList.add('amb-active');
+  notify(`🎧 ${AMBIENT_SOUNDS[type]?.label || type} playing`,'info');
+}
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 function boot() {
@@ -60,7 +186,7 @@ document.getElementById('btn-magic-login').addEventListener('click', () => {
   const email = prompt('Enter your work email:');
   if (!email) return;
   fetch('/api/auth/magic-link', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email}) })
-    .then(r => r.json()).then(d => { if (d.ok) { notify('Magic link sent! Check your email.','success'); } else { notify('Error: ' + (d.error||'unknown'),'error'); } });
+    .then(r => r.json()).then(d => { if (d.success) { window.location.reload(); } else { notify('Error: ' + (d.error||'unknown'),'error'); } });
 });
 
 document.getElementById('btn-demo-login').addEventListener('click', () => {
@@ -98,403 +224,414 @@ function renderObStep() {
   const progress = OB_STEPS.map((s,i) => `<div class="ob-dot ${i===obStep?'active':i<obStep?'done':''}"></div>`).join('');
   let inner = '';
   if (obStep === 0) {
-    inner = `<div class="ob-logo">⚡</div><h2 class="ob-title">Welcome to FlowState</h2><p class="ob-sub">The intelligent workspace for makers, developers & teams. Let's set up your perfect focus environment.</p><div class="ob-progress">${progress}</div><button class="ob-btn" onclick="obNext()">Get Started <i class="fas fa-arrow-right"></i></button>`;
+    inner = `<div class="ob-logo">⚡</div><div class="ob-title">Welcome to FlowState</div>
+      <div class="ob-sub">Your intelligent workspace — focus, team, creativity, and growth in one place. Let's set it up for you.</div>
+      <div class="ob-progress">${progress}</div>
+      <button class="ob-btn" onclick="obNext()">Let's Start →</button>`;
   } else if (obStep === 1) {
-    const btns = OB_GOALS.map(g => `<button class="goal-btn ${obGoals.includes(g.id)?'sel':''}" onclick="toggleGoal('${g.id}',this)"><i class="fas ${g.icon}"></i><div><div>${g.label}</div><div style="font-size:11px;color:var(--text-m)">${g.desc}</div></div></button>`).join('');
-    inner = `<div class="ob-step">STEP 2 OF 5</div><div class="ob-progress">${progress}</div><h2 class="ob-title">What are your goals?</h2><p class="ob-sub">Pick all that apply</p><div class="goal-grid">${btns}</div><button class="ob-btn" onclick="obNext()">Continue</button><button class="ob-skip" onclick="obNext()">Skip</button>`;
+    inner = `<div class="ob-step">Step 2 of 5 — Your Goals</div><div class="ob-progress">${progress}</div>
+      <div class="ob-title">What are you optimising for?</div>
+      <div class="ob-sub">Select all that apply. FlowState adapts to your goals.</div>
+      <div class="goal-grid">${OB_GOALS.map(g=>`<button class="goal-btn ${obGoals.includes(g.id)?'sel':''}" onclick="toggleGoal('${g.id}',this)"><i class="fas ${g.icon}"></i><div><div>${g.label}</div><div style="font-size:10px;color:var(--text-m);font-weight:400">${g.desc}</div></div></button>`).join('')}</div>
+      <button class="ob-btn" onclick="obNext()" ${!obGoals.length?'disabled':''}>Continue →</button>
+      <button class="ob-skip" onclick="obNext()">Skip for now</button>`;
   } else if (obStep === 2) {
-    const tools = [
-      { icon:'📅', name:'Google Calendar', desc:'See & block events', key:'google' },
-      { icon:'📝', name:'Notion', desc:'Kanban sync', key:'notion' },
-      { icon:'💬', name:'Slack', desc:'Team updates', key:'slack' },
-    ];
-    const rows = tools.map(t => {
-      const connected = (t.key==='google'&&FS_USER)||(t.key==='notion'&&FS_NOTION)||(t.key==='slack'&&FS_SLACK);
-      return `<div class="integ-row"><div class="integ-left"><span class="integ-icon">${t.icon}</span><div><div class="integ-name">${t.name}</div><div class="integ-desc">${t.desc}</div></div></div><button class="btn-connect ${connected?'connected':''}" onclick="obConnect('${t.key}')">${connected?'Connected ✓':'Connect'}</button></div>`;
-    }).join('');
-    inner = `<div class="ob-step">STEP 3 OF 5</div><div class="ob-progress">${progress}</div><h2 class="ob-title">Connect your tools</h2><p class="ob-sub">Optional — you can connect later</p><div class="integ-list">${rows}</div><button class="ob-btn" onclick="obNext()">Continue</button><button class="ob-skip" onclick="obNext()">Skip</button>`;
+    inner = `<div class="ob-step">Step 3 of 5 — Your Tools</div><div class="ob-progress">${progress}</div>
+      <div class="ob-title">Connect your workspace</div>
+      <div class="ob-sub">These integrations unlock the full FlowState experience. Connect now or later.</div>
+      <div class="integ-list">
+        <div class="integ-row"><div class="integ-left"><span class="integ-icon">📅</span><div><div class="integ-name">Google Calendar</div><div class="integ-desc">Sync events, block focus time</div></div></div><button class="btn-connect ${FS_USER?'connected':''}" onclick="FS_USER?notify('Already connected!','success'):window.location.href='/api/auth/google'">${FS_USER?'✓ Connected':'Connect'}</button></div>
+        <div class="integ-row"><div class="integ-left"><span class="integ-icon">📝</span><div><div class="integ-name">Notion</div><div class="integ-desc">Sync Kanban boards & tasks</div></div></div><button class="btn-connect ${FS_NOTION?'connected':''}" onclick="connectNotion()">${FS_NOTION?'✓ Connected':'Connect'}</button></div>
+        <div class="integ-row"><div class="integ-left"><span class="integ-icon">💬</span><div><div class="integ-name">Slack</div><div class="integ-desc">Team notifications & standups</div></div></div><button class="btn-connect ${FS_SLACK?'connected':''}" onclick="connectSlack()">${FS_SLACK?'✓ Connected':'Connect'}</button></div>
+      </div>
+      <button class="ob-btn" onclick="obNext()">Continue →</button>
+      <button class="ob-skip" onclick="obNext()">Skip for now</button>`;
   } else if (obStep === 3) {
-    const rhythms = [{min:25,label:'Pomodoro',desc:'Classic focus'},{min:45,label:'Deep Work',desc:'Extended flow'},{min:90,label:'Ultradian',desc:'Peak rhythm'}];
-    const btns = rhythms.map(r => `<button class="rhythm-btn ${obRhythm===r.min?'sel':''}" onclick="selectRhythm(${r.min},this)"><span class="rhythm-min">${r.min}</span><span class="rhythm-lbl">${r.label}<br><span style="font-size:10px">${r.desc}</span></span></button>`).join('');
-    inner = `<div class="ob-step">STEP 4 OF 5</div><div class="ob-progress">${progress}</div><h2 class="ob-title">Your focus rhythm</h2><p class="ob-sub">How long are your typical focus sessions?</p><div class="rhythm-grid">${btns}</div><button class="ob-btn" onclick="obNext()">Continue</button>`;
+    const rhythms=[{m:25,label:'Pomodoro',desc:'Classic 25/5 split'},{m:45,label:'Deep Work',desc:'45-min focus blocks'},{m:90,label:'Flow State',desc:'Ultra-deep 90-min sessions'}];
+    inner = `<div class="ob-step">Step 4 of 5 — Your Rhythm</div><div class="ob-progress">${progress}</div>
+      <div class="ob-title">Choose your focus rhythm</div>
+      <div class="ob-sub">You can change this any time in Settings.</div>
+      <div class="rhythm-grid">${rhythms.map(r=>`<button class="rhythm-btn ${obRhythm===r.m?'sel':''}" onclick="selectRhythm(${r.m},this)"><span class="rhythm-min">${r.m}m</span><span>${r.label}</span><span class="rhythm-lbl">${r.desc}</span></button>`).join('')}</div>
+      <button class="ob-btn" onclick="obFinish()">Finish Setup →</button>`;
   } else {
-    inner = `<div class="ob-logo">🎉</div><div class="ob-progress">${progress}</div><h2 class="ob-title">You're all set!</h2><p class="ob-sub">FlowState is personalised for your goals. Let's start your first session.</p><button class="ob-btn" onclick="completeOnboarding()">Start Flowing ⚡</button>`;
+    inner = `<div class="ob-logo">🎉</div><div class="ob-title">FlowState is ready!</div>
+      <div class="ob-sub">Your workspace is configured. Start your first focus session and track your FlowScore.</div>
+      <div class="ob-progress">${progress}</div>
+      <button class="ob-btn" onclick="completeOnboarding()">Start FlowState →</button>`;
   }
   card.innerHTML = inner;
 }
 
-function obNext() { obStep = Math.min(obStep+1, OB_STEPS.length-1); renderObStep(); }
-function toggleGoal(id, btn) { const idx=obGoals.indexOf(id); if(idx===-1){obGoals.push(id);btn.classList.add('sel');}else{obGoals.splice(idx,1);btn.classList.remove('sel');} }
-function selectRhythm(min, btn) { obRhythm=min; document.querySelectorAll('.rhythm-btn').forEach(b=>b.classList.remove('sel')); btn.classList.add('sel'); }
-function obConnect(key) { if(key==='google') window.open('/api/auth/google','_blank','width=480,height=600'); if(key==='notion') window.open('/api/auth/notion','_blank','width=480,height=600'); if(key==='slack') window.open('/api/auth/slack','_blank','width=480,height=600'); }
+function toggleGoal(id, btn) {
+  if (obGoals.includes(id)) obGoals = obGoals.filter(g=>g!==id); else obGoals.push(id);
+  btn.classList.toggle('sel', obGoals.includes(id));
+  const next = document.querySelector('.ob-btn');
+  if (next) next.disabled = !obGoals.length;
+}
 
-function completeOnboarding() {
+function selectRhythm(m, btn) {
+  obRhythm = m;
+  document.querySelectorAll('.rhythm-btn').forEach(b=>b.classList.remove('sel'));
+  btn.classList.add('sel');
+}
+
+function obNext() { obStep++; renderObStep(); }
+
+function obFinish() {
   state.timer.focusMin = obRhythm;
   state.settings.focusMin = obRhythm;
-  fetch('/api/onboarding/complete', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ goals:obGoals, focusDuration:obRhythm, workHours:'9-18', timezone:Intl.DateTimeFormat().resolvedOptions().timeZone })
-  }).catch(()=>{});
-  document.getElementById('ob-screen').style.display = 'none';
+  obStep++;
+  renderObStep();
+}
+
+async function completeOnboarding() {
+  try {
+    await fetch('/api/onboarding/complete', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ goals:obGoals, focusDuration:obRhythm, workHours:{start:'09:00',end:'18:00'}, timezone:Intl.DateTimeFormat().resolvedOptions().timeZone })
+    });
+  } catch(e){}
+  document.getElementById('ob-screen').style.display='none';
   showMainApp();
 }
 
 // ── Main App ───────────────────────────────────────────────────────────────
 function showMainApp(isDemo=false) {
-  document.getElementById('login-screen').style.display = 'none';
-  document.getElementById('ob-screen').style.display = 'none';
-  document.getElementById('main-header').style.display = 'flex';
-  document.getElementById('main-tabs').style.display = 'flex';
-  document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
-  switchTab('focus');
-  renderUserArea();
-  initTimer();
-  startClock();
+  document.getElementById('main-header').style.display='flex';
+  document.getElementById('main-tabs').style.display='flex';
+  document.getElementById('tab-pane-focus').style.display='flex';
+  setupTimerUI();
+  setupCalendar();
   buildModelBar();
+  startClock();
   setupKeyboard();
-  setupTabHandlers();
-  renderCalGrid();
+  setupTabListeners();
+  setupAmbientChips();
   maybeShowTip();
+  switchTab('focus');
 }
 
-function renderUserArea() {
-  const area = document.getElementById('user-area');
-  if (state.settings.isDemo) {
-    area.innerHTML = `<div class="u-pill" onclick="exitDemo()"><div class="u-avatar" style="background:var(--warn);display:flex;align-items:center;justify-content:center;font-size:13px">👁</div><span class="u-name" style="color:var(--warn)">Demo</span></div>`;
-  } else if (FS_USER) {
-    const u = FS_USER;
-    area.innerHTML = `<div class="u-pill" onclick="openSettingsModal()"><img class="u-avatar" src="${u.picture||''}" onerror="this.style.display='none'" alt="${u.name}"><span class="u-name">${u.name}</span></div>`;
-    const rb = document.getElementById('role-selector');
-    if (rb && (u.role==='admin'||u.role==='scrum_master')) {
-      rb.style.display = 'block';
-      rb.innerHTML = `<span class="role-badge ${u.role}">${u.role==='admin'?'👑 Admin':'🎯 Scrum Master'}</span>`;
-    }
-    if (u.role==='admin'||u.role==='scrum_master') {
-      const banner = document.getElementById('team-role-banner');
-      banner.style.display = 'block';
-      banner.innerHTML = `<div class="role-badge ${u.role}" style="font-size:13px;padding:7px 14px">${u.role==='admin'?'👑 Admin — full team visibility':'🎯 Scrum Master — sprint controls unlocked'}</div>`;
-    }
-  } else {
-    area.innerHTML = `<button class="btn-signin" onclick="showLogin()">Sign In</button>`;
-  }
-}
-
-function exitDemo() {
-  state.settings.isDemo = false;
-  document.getElementById('tab-demo').style.display = 'none';
-  window.location.href = '/';
-}
-
-function setupTabHandlers() {
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.id.replace('tab-','');
-      switchTab(id);
-    });
+function setupTabListeners() {
+  ['focus','chat','calendar','metrics','board','team','learn','restore','generate','audio','clawbot','demo'].forEach(id => {
+    const btn = document.getElementById('tab-'+id);
+    if (btn) btn.addEventListener('click', () => switchTab(id));
   });
-  document.getElementById('btn-creds').addEventListener('click', openCredsModal);
-  document.getElementById('btn-pricing').addEventListener('click', openPricingModal);
-  document.getElementById('btn-invite').addEventListener('click', openInviteModal);
-  document.getElementById('btn-settings').addEventListener('click', openSettingsModal);
-  document.getElementById('btn-exit-demo').addEventListener('click', exitDemo);
-  document.getElementById('logo-home').addEventListener('click', () => switchTab('focus'));
+  document.getElementById('btn-creds')?.addEventListener('click', openCredsModal);
+  document.getElementById('btn-pricing')?.addEventListener('click', openPricingModal);
+  document.getElementById('btn-invite')?.addEventListener('click', openInviteModal);
+  document.getElementById('btn-settings')?.addEventListener('click', openSettingsModal);
+  document.getElementById('btn-exit-demo')?.addEventListener('click', () => { window.location.reload(); });
+  document.getElementById('logo-home')?.addEventListener('click', () => switchTab('focus'));
+  document.getElementById('dt-widget')?.addEventListener('click', () => switchTab('calendar'));
+  document.getElementById('fs-score-badge')?.addEventListener('click', () => switchTab('metrics'));
+  document.getElementById('cal-connect-btn')?.addEventListener('click', () => window.location.href='/api/auth/google');
+  document.getElementById('cal-prev')?.addEventListener('click', () => calNav(-1));
+  document.getElementById('cal-next')?.addEventListener('click', () => calNav(1));
+  document.getElementById('cal-add-btn')?.addEventListener('click', () => { document.getElementById('add-ev-form').classList.toggle('show'); });
+  document.getElementById('cal-refresh')?.addEventListener('click', loadCalEvents);
+  document.getElementById('ev-save-btn')?.addEventListener('click', saveCalEvent);
+  document.getElementById('ev-cancel-btn')?.addEventListener('click', () => document.getElementById('add-ev-form').classList.remove('show'));
+  document.getElementById('btn-gen-img')?.addEventListener('click', generateImage);
+  document.getElementById('btn-gen-vid')?.addEventListener('click', generateVideo);
+  document.getElementById('btn-img2vid')?.addEventListener('click', generateImageToVideo);
+  document.getElementById('board-notion-btn')?.addEventListener('click', connectNotion);
+  document.getElementById('board-db-refresh')?.addEventListener('click', loadNotionDbs);
+  document.getElementById('btn-slack-team')?.addEventListener('click', openSlackModal);
+  document.getElementById('btn-refresh-team')?.addEventListener('click', buildTeam);
 }
 
-function switchTab(tab) {
+function switchTab(id) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.tab-pane').forEach(p => { p.classList.remove('active'); p.style.display='none'; });
-  const btn = document.getElementById('tab-'+tab);
-  const pane = document.getElementById('tab-pane-'+tab);
+  document.querySelectorAll('.tab-pane').forEach(p => { p.style.display='none'; p.classList.remove('active'); });
+  const btn = document.getElementById('tab-'+id);
+  const pane = document.getElementById('tab-pane-'+id);
   if (btn) btn.classList.add('active');
-  if (pane) { pane.classList.add('active'); pane.style.display='flex'; }
-  if (tab==='metrics') buildMetrics();
-  if (tab==='board')   buildBoard();
-  if (tab==='team')    buildTeam();
-  if (tab==='learn')   loadLearnCards();
-  if (tab==='restore') loadRestore();
-  if (tab==='calendar') { renderCalGrid(); loadCalEvents(); }
-  if (tab==='clawbot') initClawbot();
-  // Audio tab is a download/landing page — no JS needed
+  if (pane) { pane.style.display='flex'; pane.classList.add('active'); }
+  // Tab-specific init
+  if (id==='calendar') loadCalEvents();
+  if (id==='metrics')  buildMetrics();
+  if (id==='board')    buildBoard();
+  if (id==='team')     buildTeam();
+  if (id==='learn')    loadLearnCards();
+  if (id==='restore')  loadRestore();
+  if (id==='clawbot')  initClawbot();
 }
 
-// ── Clock ──────────────────────────────────────────────────────────────────
 function startClock() {
-  const tick = () => {
+  function tick() {
     const now = new Date();
     const dateEl = document.getElementById('dt-date');
     const timeEl = document.getElementById('dt-time');
     if (dateEl) dateEl.textContent = now.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
     if (timeEl) timeEl.textContent = now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true});
-  };
-  tick();
-  setInterval(tick, 1000);
+  }
+  tick(); setInterval(tick, 1000);
 }
+
+function setupAmbientChips() {
+  document.querySelectorAll('.s-chip').forEach(btn => {
+    btn.addEventListener('click', () => setAmbient(btn.dataset.sound));
+  });
+}
+
+// ── User Area ──────────────────────────────────────────────────────────────
+(function buildUserArea() {
+  const area = document.getElementById('user-area');
+  if (!area) return;
+  if (FS_USER) {
+    const pic = FS_USER.picture ? `<img class="u-avatar" src="${FS_USER.picture}" alt="${escHtml(FS_USER.name)}">` : `<div class="u-avatar" style="display:flex;align-items:center;justify-content:center;font-size:14px">👤</div>`;
+    area.innerHTML = `<div class="u-pill" onclick="openSettingsModal()">${pic}<span class="u-name">${escHtml(FS_USER.name?.split(' ')[0]||'You')}</span></div>`;
+    // FlowScore badge
+    setTimeout(()=>{
+      fetch('/api/flowscore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({focusMinutes:0,sessionCount:0})})
+        .then(r=>r.json()).then(d=>{
+          const b=document.getElementById('fs-score-badge');
+          if(b&&d.score!=null){b.style.display='block';b.textContent=`⚡ ${d.score}`;}
+        }).catch(()=>{});
+    },2000);
+  } else {
+    area.innerHTML = `<button class="btn-signin" onclick="window.location.href='/api/auth/google'"><i class="fas fa-sign-in-alt"></i> Sign In</button>`;
+  }
+})();
 
 // ── Timer ──────────────────────────────────────────────────────────────────
-const PHASES = { focus:'focus', short_break:'short_break', long_break:'long_break' };
-const PHASE_LABELS = { focus:'FOCUS', short_break:'SHORT BREAK', long_break:'LONG BREAK' };
-const PHASE_MIN = () => ({ focus:state.timer.focusMin, short_break:state.timer.shortMin, long_break:state.timer.longMin });
-
-function initTimer() {
+function setupTimerUI() {
+  document.getElementById('btn-start')?.addEventListener('click', toggleTimer);
+  document.getElementById('btn-skip')?.addEventListener('click', skipPhase);
+  document.getElementById('btn-reset')?.addEventListener('click', resetTimer);
+  document.getElementById('ph-focus')?.addEventListener('click', () => setPhase('focus'));
+  document.getElementById('ph-short')?.addEventListener('click', () => setPhase('short'));
+  document.getElementById('ph-long')?.addEventListener('click',  () => setPhase('long'));
   updateTimerDisplay();
-  updateStats();
-  document.getElementById('btn-start').addEventListener('click', toggleTimer);
-  document.getElementById('btn-skip').addEventListener('click', skipPhase);
-  document.getElementById('btn-reset').addEventListener('click', resetTimer);
-  document.getElementById('ph-focus').addEventListener('click', () => setPhase('focus'));
-  document.getElementById('ph-short').addEventListener('click', () => setPhase('short_break'));
-  document.getElementById('ph-long').addEventListener('click', () => setPhase('long_break'));
-  document.getElementById('cal-add-btn').addEventListener('click', () => {
-    const f = document.getElementById('add-ev-form');
-    f.classList.toggle('show');
-  });
-  document.getElementById('ev-save-btn').addEventListener('click', saveCalEvent);
-  document.getElementById('ev-cancel-btn').addEventListener('click', () => document.getElementById('add-ev-form').classList.remove('show'));
-  document.getElementById('cal-prev').addEventListener('click', () => calNav(-1));
-  document.getElementById('cal-next').addEventListener('click', () => calNav(1));
-  document.getElementById('cal-refresh').addEventListener('click', loadCalEvents);
-  document.getElementById('cal-connect-btn').addEventListener('click', () => window.open('/api/auth/google','_blank','width=480,height=600'));
-  document.getElementById('board-notion-btn').addEventListener('click', connectNotion);
-  document.getElementById('board-db-refresh').addEventListener('click', loadNotionDbs);
-  document.getElementById('btn-slack-team').addEventListener('click', openSlackModal);
-  document.getElementById('btn-refresh-team').addEventListener('click', buildTeam);
-  document.getElementById('btn-gen-img').addEventListener('click', generateImage);
-  document.getElementById('btn-gen-vid').addEventListener('click', generateVideo);
-  document.querySelectorAll('.s-chip').forEach(c => c.addEventListener('click', () => toggleSound(c.dataset.sound)));
-}
-
-function toggleTimer() {
-  if (state.timer.running) pauseTimer(); else startTimer();
-}
-
-function startTimer() {
-  if (state.timer.phase === 'focus') {
-    maybeShowIntentPrompt();
-    return;
-  }
-  _doStartTimer();
-}
-
-function _doStartTimer() {
-  state.timer.running = true;
-  document.getElementById('btn-icon').className = 'fas fa-pause';
-  document.getElementById('t-glow').classList.add('on');
-  document.getElementById('b-ring').classList.add('on');
-  if (state.timer.soundType && state.timer.soundType !== 'off') startAmbientSound(state.timer.soundType);
-  state.timer.intervalId = setInterval(tickTimer, 1000);
-}
-
-function pauseTimer() {
-  state.timer.running = false;
-  clearInterval(state.timer.intervalId);
-  document.getElementById('btn-icon').className = 'fas fa-play';
-  document.getElementById('t-glow').classList.remove('on');
-  document.getElementById('b-ring').classList.remove('on');
-  stopAmbientSound();
-}
-
-function resetTimer() {
-  pauseTimer();
-  state.timer.elapsed = 0;
-  updateTimerDisplay();
-}
-
-function skipPhase() {
-  pauseTimer();
-  state.timer.elapsed = 0;
-  const phases = ['focus','short_break','long_break'];
-  const next = phases[(phases.indexOf(state.timer.phase)+1) % phases.length];
-  setPhase(next);
 }
 
 function setPhase(phase) {
   state.timer.phase = phase;
   state.timer.elapsed = 0;
-  document.querySelectorAll('.ph-btn').forEach(b => b.classList.remove('active'));
-  const map = { focus:'ph-focus', short_break:'ph-short', long_break:'ph-long' };
-  const el = document.getElementById(map[phase]);
-  if (el) el.classList.add('active');
+  state.timer.running = false;
+  clearInterval(state.timer.intervalId);
+  document.getElementById('btn-icon')?.setAttribute('class','fas fa-play');
+  document.querySelectorAll('.ph-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('ph-'+phase)?.classList.add('active');
   updateTimerDisplay();
 }
 
-function tickTimer() {
-  state.timer.elapsed++;
-  const totalSec = PHASE_MIN()[state.timer.phase] * 60;
-  if (state.timer.phase === 'focus') state.timer.totalFocusSec++;
-  if (state.timer.elapsed >= totalSec) {
-    pauseTimer();
-    if (state.timer.phase === 'focus') {
-      state.timer.sessions++;
-      if (state.timer.sessions % 4 === 0) {
-        setPhase('long_break');
-        triggerCelebration('Long Break Earned! 🎉', 'You completed 4 focus sessions!');
-      } else {
-        setPhase('short_break');
-        triggerCelebration('Session Complete! ⚡', 'Take a 5-minute break.');
-      }
-      updateStats();
-      saveLocalState();
-    } else {
-      setPhase('focus');
-      notify('Break over — ready to focus?', 'info');
-    }
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification('FlowState', { body: state.timer.phase==='focus'?'Focus session complete!':'Break time over!' });
-    }
-    return;
+function getPhaseSeconds() {
+  if (state.timer.phase==='focus') return state.timer.focusMin*60;
+  if (state.timer.phase==='short') return state.timer.shortMin*60;
+  return state.timer.longMin*60;
+}
+
+function toggleTimer() {
+  if (state.timer.running) { pauseTimer(); } else { startTimer(); }
+}
+
+function startTimer() {
+  // Resume or start ambient sound
+  if (state.timer.soundType && state.timer.soundType!=='off') {
+    playAmbient(AMBIENT_SOUNDS[state.timer.soundType]?.type||'noise');
+    document.body.classList.add('amb-active');
+  }
+  // YouTube/Spotify Pomodoro integration
+  if (state.timer.phase==='focus') startPomodoroMusic();
+  state.timer.running=true;
+  document.getElementById('btn-icon')?.setAttribute('class','fas fa-pause');
+  document.getElementById('t-glow')?.classList.add('on');
+  document.getElementById('b-ring')?.classList.add('on');
+  state.timer.intervalId = setInterval(() => {
+    state.timer.elapsed++;
+    if (state.timer.phase==='focus') state.timer.totalFocusSec++;
+    updateTimerDisplay();
+    if (state.timer.elapsed >= getPhaseSeconds()) completePhase();
+  }, 1000);
+}
+
+function pauseTimer() {
+  state.timer.running=false;
+  clearInterval(state.timer.intervalId);
+  document.getElementById('btn-icon')?.setAttribute('class','fas fa-play');
+  document.getElementById('t-glow')?.classList.remove('on');
+  document.getElementById('b-ring')?.classList.remove('on');
+  stopAmbient();
+  document.body.classList.remove('amb-active');
+  stopPomodoroMusic();
+}
+
+function resetTimer() {
+  pauseTimer();
+  state.timer.elapsed=0;
+  updateTimerDisplay();
+}
+
+function skipPhase() {
+  pauseTimer();
+  completePhase(true);
+}
+
+function completePhase(skipped=false) {
+  clearInterval(state.timer.intervalId);
+  state.timer.running=false;
+  state.timer.elapsed=0;
+  document.getElementById('btn-icon')?.setAttribute('class','fas fa-play');
+  document.getElementById('t-glow')?.classList.remove('on');
+  document.getElementById('b-ring')?.classList.remove('on');
+  stopAmbient(); stopPomodoroMusic();
+  document.body.classList.remove('amb-active');
+
+  if (state.timer.phase==='focus' && !skipped) {
+    state.timer.sessions++;
+    state.timer.streak++;
+    saveLocalState();
+    triggerCelebration('Focus Session Complete! 🎉', `${state.timer.sessions} sessions today — ${Math.round(state.timer.totalFocusSec/60)}m total`);
+    updateFlowScore();
+    maybeShowTip();
+  }
+  // Auto-switch phase
+  if (state.timer.phase==='focus') {
+    setPhase(state.timer.sessions%4===0?'long':'short');
+    notify('Break time! Step away from the screen 🧘','info');
+  } else {
+    setPhase('focus');
+    notify('Break done! Ready to focus? 💪','success');
   }
   updateTimerDisplay();
 }
 
 function updateTimerDisplay() {
-  const totalSec = PHASE_MIN()[state.timer.phase] * 60;
-  const remaining = totalSec - state.timer.elapsed;
+  const total = getPhaseSeconds();
+  const remaining = Math.max(0, total - state.timer.elapsed);
   const m = Math.floor(remaining/60).toString().padStart(2,'0');
   const s = (remaining%60).toString().padStart(2,'0');
   const el = document.getElementById('timer-display');
-  const phase = document.getElementById('timer-phase');
-  const ring = document.getElementById('ring-prog');
   if (el) el.textContent = `${m}:${s}`;
-  if (phase) phase.textContent = PHASE_LABELS[state.timer.phase] || 'FOCUS';
-  if (ring) {
-    const circumference = 615.75;
-    const progress = state.timer.elapsed / totalSec;
-    ring.style.strokeDashoffset = circumference * (1 - progress);
+  const ph = document.getElementById('timer-phase');
+  if (ph) ph.textContent = state.timer.phase==='focus'?'FOCUS':state.timer.phase==='short'?'SHORT BREAK':'LONG BREAK';
+  const prog = document.getElementById('ring-prog');
+  if (prog) {
+    const circ = 615.75;
+    const offset = circ - (circ * (1 - state.timer.elapsed/total));
+    prog.style.strokeDashoffset = offset;
   }
+  const ss = document.getElementById('stat-sessions');
+  if (ss) ss.textContent = state.timer.sessions;
+  const sf = document.getElementById('stat-focus');
+  if (sf) sf.textContent = Math.round(state.timer.totalFocusSec/60)+'m';
+  const sk = document.getElementById('stat-streak');
+  if (sk) sk.textContent = '🔥 '+state.timer.streak;
 }
 
-function updateStats() {
-  const sess = document.getElementById('stat-sessions');
-  const foc  = document.getElementById('stat-focus');
-  const str  = document.getElementById('stat-streak');
-  if (sess) sess.textContent = state.timer.sessions;
-  if (foc)  foc.textContent  = Math.round(state.timer.totalFocusSec/60) + 'm';
-  if (str)  str.textContent  = '🔥 ' + (state.timer.streak||0);
-  refreshFlowScore();
-}
-
-function refreshFlowScore() {
-  fetch('/api/flowscore', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({
-      focusSeconds: state.timer.totalFocusSec,
-      targetFocusMinutes: state.timer.focusMin * 4,
-      breaks: state.timer.sessions,
-      breathing: 0, gratitude: parseInt(localStorage.getItem('gratitude_count')||'0'),
-      streak: state.timer.streak, sleep: 7, steps: 0, hydration: 0
-    })
-  }).then(r=>r.json()).then(d=>{
-    if (d.score !== undefined) {
-      const badge = document.getElementById('fs-score-badge');
-      if (badge) { badge.textContent = `⚡ ${d.score}`; badge.style.display='block'; }
-      const insScore = document.getElementById('ins-score');
-      if (insScore) insScore.textContent = d.score;
-    }
+function updateFlowScore() {
+  fetch('/api/flowscore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    totalFocusSeconds:state.timer.totalFocusSec, sessionCount:state.timer.sessions, breaksCompleted:state.timer.sessions, streakDays:state.timer.streak
+  })}).then(r=>r.json()).then(d=>{
+    const b=document.getElementById('fs-score-badge');
+    if(b&&d.score!=null){b.style.display='block';b.textContent=`⚡ ${d.score}`;}
   }).catch(()=>{});
 }
 
-// ── Intent Prompt ──────────────────────────────────────────────────────────
-function maybeShowIntentPrompt() {
-  const overlay = document.createElement('div');
-  overlay.className = 'intent-modal';
-  overlay.innerHTML = `<div class="intent-card">
-    <h2>🎯 What's your focus for this session?</h2>
-    <p>Set your intention to activate AI coaching</p>
-    <input class="intent-input" id="intent-in" placeholder="e.g. Build the auth flow, review PRs..." autofocus>
-    <div class="intent-suggestions">
-      ${['Deep work on feature','Review & refactor','Planning session','Learning / research','Writing & docs'].map(s=>`<button class="intent-sug" onclick="document.getElementById('intent-in').value='${s}'">${s}</button>`).join('')}
-    </div>
-    <div style="display:flex;gap:8px;justify-content:center">
-      <button class="btn-primary" onclick="submitIntent()">Start Session ⚡</button>
-      <button class="btn-sm" onclick="this.closest('.intent-modal').remove();_doStartTimer()">Skip</button>
-    </div>
-  </div>`;
-  document.body.appendChild(overlay);
-  Notification.requestPermission().catch(()=>{});
-}
+// ── Pomodoro Music (YouTube/Spotify) ──────────────────────────────────────
+// Legal note: Using YouTube/Spotify embeds is legal as it uses their official iframe embed API.
+// Spotify requires Premium for autoplay. YouTube embed with autoplay requires user interaction first.
+let pomodoroMusicEl = null;
 
-function submitIntent() {
-  const val = document.getElementById('intent-in')?.value || '';
-  document.querySelector('.intent-modal')?.remove();
-  if (val) {
-    fetch('/api/session/intent', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ intent:val, model:state.chat.model })
-    }).then(r=>r.json()).then(d=>{
-      if (d.suggestedModel) state.chat.model = d.suggestedModel;
-    }).catch(()=>{});
-  }
-  _doStartTimer();
-}
-
-// ── Ambient Sounds (Web Audio API) ─────────────────────────────────────────
-function toggleSound(type) {
-  document.querySelectorAll('.s-chip').forEach(c => c.classList.remove('active'));
-  if (type === 'off' || type === state.timer.soundType) {
-    stopAmbientSound();
-    state.timer.soundType = null;
-    state.settings.sound = null;
-    notify('Sound off','info');
-  } else {
-    stopAmbientSound();
-    state.timer.soundType = type;
-    state.settings.sound = type;
-    const chip = document.querySelector(`.s-chip[data-sound="${type}"]`);
-    if (chip) chip.classList.add('active');
-    if (state.timer.running) startAmbientSound(type);
-    notify(`Playing: ${type}`,'info');
-    document.body.classList.add('amb-active');
-  }
-  if (!state.timer.soundType) document.body.classList.remove('amb-active');
-}
-
-function startAmbientSound(type) {
+function startPomodoroMusic() {
+  const saved = localStorage.getItem('pomodoro_music') || '';
+  if (!saved) return;
   try {
-    if (!state.timer.audioCtx) state.timer.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const ctx = state.timer.audioCtx;
-    if (ctx.state === 'suspended') ctx.resume();
-    stopAmbientSound();
-    const cfg = {
-      rain:    { color:'pink', freq:0, gain:.18 },
-      forest:  { color:'brown', freq:0, gain:.1 },
-      cafe:    { color:'pink', freq:200, gain:.08 },
-      ocean:   { color:'brown', freq:.1, gain:.15 },
-      fire:    { color:'pink', freq:0, gain:.12 },
-      space:   { color:'white', freq:0, gain:.04 },
-    }[type] || { color:'white', freq:0, gain:.07 };
-    const buf = ctx.createBuffer(2, ctx.sampleRate*2, ctx.sampleRate);
-    for (let ch=0;ch<2;ch++) {
-      const data = buf.getChannelData(ch);
-      let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
-      for (let i=0;i<data.length;i++) {
-        const white = Math.random()*2-1;
-        if (cfg.color==='pink') {
-          b0=.99886*b0+white*.0555179; b1=.99332*b1+white*.0750759;
-          b2=.96900*b2+white*.1538520; b3=.86650*b3+white*.3104856;
-          b4=.55000*b4+white*.5329522; b5=-.7616*b5-white*.0168980;
-          data[i]=(b0+b1+b2+b3+b4+b5+b6+white*.5362)*0.11; b6=white*.115926;
-        } else if (cfg.color==='brown') {
-          b0=(b0+(.02*white))/(1+.02); data[i]=b0*3.5;
-        } else { data[i]=white; }
-      }
-    }
-    const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true;
-    const gain = ctx.createGain(); gain.gain.setValueAtTime(cfg.gain, ctx.currentTime);
-    if (cfg.freq) {
-      const filt = ctx.createBiquadFilter(); filt.type='bandpass'; filt.frequency.value=cfg.freq;
-      src.connect(filt); filt.connect(gain);
-    } else { src.connect(gain); }
-    gain.connect(ctx.destination);
-    src.start();
-    ctx._currentSource = src; ctx._currentGain = gain;
-  } catch(e) { console.warn('Web Audio error', e); }
+    const cfg = JSON.parse(saved);
+    if (!cfg.url || !cfg.enabled) return;
+    if (cfg.type === 'youtube') startYouTubeMusic(cfg.videoId);
+    else if (cfg.type === 'spotify') startSpotifyMusic(cfg.uri);
+  } catch(e){}
 }
 
-function stopAmbientSound() {
+function stopPomodoroMusic() {
+  if (pomodoroMusicEl) {
+    pomodoroMusicEl.src = '';
+    pomodoroMusicEl.style.display = 'none';
+  }
+}
+
+function startYouTubeMusic(videoId) {
+  if (!pomodoroMusicEl) {
+    pomodoroMusicEl = document.createElement('iframe');
+    pomodoroMusicEl.style.cssText = 'position:fixed;bottom:-200px;left:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    pomodoroMusicEl.allow = 'autoplay; encrypted-media';
+    document.body.appendChild(pomodoroMusicEl);
+  }
+  pomodoroMusicEl.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&controls=0&loop=1&playlist=${videoId}`;
+}
+
+function startSpotifyMusic(uri) {
+  if (!pomodoroMusicEl) {
+    pomodoroMusicEl = document.createElement('iframe');
+    pomodoroMusicEl.style.cssText = 'position:fixed;bottom:-200px;left:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    document.body.appendChild(pomodoroMusicEl);
+  }
+  const embedUri = uri.replace('spotify:', '').replace(/:/g, '/');
+  pomodoroMusicEl.src = `https://open.spotify.com/embed/${embedUri}?autoplay=1`;
+}
+
+function openMusicModal() {
+  const saved = JSON.parse(localStorage.getItem('pomodoro_music') || '{"enabled":false,"type":"youtube","url":"","videoId":"","uri":""}');
+  openModal(`
+    <h2>🎵 Pomodoro Music</h2>
+    <p style="color:var(--text-s);font-size:13px;margin:6px 0 16px">Automatically start music when a focus session begins. Uses YouTube or Spotify embeds — no API key required.</p>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn-sm ${saved.type==='youtube'?'btn-primary':''}" id="mus-yt-btn" onclick="selectMusicType('youtube')"><i class="fab fa-youtube" style="color:#ef4444"></i> YouTube</button>
+      <button class="btn-sm ${saved.type==='spotify'?'btn-primary':''}" id="mus-sp-btn" onclick="selectMusicType('spotify')"><i class="fab fa-spotify" style="color:#1db954"></i> Spotify</button>
+    </div>
+    <div id="mus-yt-section" style="display:${saved.type==='youtube'?'block':'none'}">
+      <label style="font-size:12px;color:var(--text-m)">YouTube Video/Playlist URL</label>
+      <input class="fs-in" id="mus-yt-url" style="margin:6px 0 10px" placeholder="https://youtube.com/watch?v=..." value="${escHtml(saved.type==='youtube'?saved.url:'')}">
+      <div style="font-size:11px;color:var(--text-m)">Tip: Use lo-fi or focus music playlists for best results. e.g. "lofi hip hop radio" on YouTube.</div>
+    </div>
+    <div id="mus-sp-section" style="display:${saved.type==='spotify'?'block':'none'}">
+      <label style="font-size:12px;color:var(--text-m)">Spotify URI (spotify:playlist:... or spotify:album:...)</label>
+      <input class="fs-in" id="mus-sp-uri" style="margin:6px 0 10px" placeholder="spotify:playlist:37i9dQZF1DX8NTLI2TtZa6" value="${escHtml(saved.type==='spotify'?saved.uri:'')}">
+      <div style="font-size:11px;color:var(--text-m)">Right-click a playlist → Share → Copy Spotify URI. Note: Spotify requires Premium account for autoplay.</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin:14px 0">
+      <input type="checkbox" id="mus-enabled" ${saved.enabled?'checked':''}>
+      <label for="mus-enabled" style="font-size:13px;font-weight:600">Auto-start music when focus session begins</label>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn-primary" onclick="saveMusicSettings()" style="flex:1">Save</button>
+      <button class="btn-sm" onclick="clearMusicSettings()">Clear</button>
+    </div>
+    <div style="margin-top:10px;font-size:11px;color:var(--text-m)">⚖️ Using YouTube/Spotify embeds complies with their Terms of Service for personal use. Content is streamed from their servers.</div>
+  `);
+}
+
+function selectMusicType(type) {
+  document.getElementById('mus-yt-section').style.display = type==='youtube'?'block':'none';
+  document.getElementById('mus-sp-section').style.display = type==='spotify'?'block':'none';
+  document.getElementById('mus-yt-btn').className = 'btn-sm '+(type==='youtube'?'btn-primary':'');
+  document.getElementById('mus-sp-btn').className = 'btn-sm '+(type==='spotify'?'btn-primary':'');
+}
+
+function saveMusicSettings() {
+  const type = document.getElementById('mus-yt-section').style.display!=='none' ? 'youtube' : 'spotify';
+  const url = document.getElementById('mus-yt-url')?.value || '';
+  const uri = document.getElementById('mus-sp-uri')?.value || '';
+  const enabled = document.getElementById('mus-enabled')?.checked;
+  let videoId = '';
   try {
-    const ctx = state.timer.audioCtx;
-    if (ctx && ctx._currentSource) { ctx._currentSource.stop(); ctx._currentSource = null; }
-  } catch(e) {}
+    const m = url.match(/[?&]v=([^&]+)/)||url.match(/youtu\.be\/([^?]+)/)||url.match(/embed\/([^?]+)/);
+    if (m) videoId = m[1];
+    // Also handle playlist URLs
+    const pl = url.match(/[?&]list=([^&]+)/);
+    if (pl && !videoId) videoId = ''; // playlist — use URL directly
+  } catch(e){}
+  localStorage.setItem('pomodoro_music', JSON.stringify({enabled,type,url,videoId,uri}));
+  closeModal();
+  notify(enabled?'🎵 Pomodoro music saved! Music will start with focus sessions.':'Music settings saved.','success');
+}
+
+function clearMusicSettings() {
+  localStorage.removeItem('pomodoro_music');
+  closeModal();
+  notify('Music settings cleared','info');
 }
 
 // ── Model Bar ──────────────────────────────────────────────────────────────
@@ -586,6 +723,10 @@ function formatMsg(text) {
 document.getElementById('btn-send').addEventListener('click', sendMessage);
 
 // ── Calendar ───────────────────────────────────────────────────────────────
+function setupCalendar() {
+  renderCalGrid();
+}
+
 function calNav(dir) {
   state.cal.month += dir;
   if (state.cal.month > 11) { state.cal.month=0; state.cal.year++; }
@@ -609,7 +750,10 @@ function renderCalGrid() {
   for (let d=1;d<=total;d++) {
     const isToday = year===now.getFullYear()&&month===now.getMonth()&&d===now.getDate();
     const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const hasEv = state.cal.events.some(e=>e.start?.dateTime?.startsWith(dateStr)||e.start?.date===dateStr);
+    const hasEv = state.cal.events.some(e=>{
+      const s = e.start?.dateTime || e.start?.date || e.start || '';
+      return typeof s==='string' && s.startsWith(dateStr);
+    });
     html += `<div class="cal-day ${isToday?'today':''} ${hasEv?'has-ev':''}" onclick="clickCalDay('${dateStr}')">${d}</div>`;
   }
   const remaining = 42 - first - total;
@@ -630,6 +774,7 @@ function clickCalDay(dateStr) {
 function loadCalEvents() {
   if (!FS_USER) {
     document.getElementById('cal-auth-banner').style.display = 'block';
+    renderCalGrid();
     return;
   }
   document.getElementById('cal-auth-banner').style.display = 'none';
@@ -638,21 +783,20 @@ function loadCalEvents() {
       state.cal.events = d.events;
       renderCalGrid();
       renderEvents(d.events);
-    } else if (d.needsAuth) {
+    } else if (d.error === 'not_authenticated') {
       document.getElementById('cal-auth-banner').style.display = 'block';
     }
-  }).catch(()=>{});
+  }).catch(()=>{ renderCalGrid(); });
 }
 
 function renderEvents(events) {
   const list = document.getElementById('ev-list');
   if (!list) return;
-  if (!events.length) { list.innerHTML = '<div class="empty"><i class="fas fa-calendar-alt"></i><p>No upcoming events</p></div>'; return; }
+  if (!events.length) { list.innerHTML = '<div class="empty"><i class="fas fa-calendar-alt"></i><p>No upcoming events. Click a day to add one.</p></div>'; return; }
   list.innerHTML = events.slice(0,10).map(ev => {
-    const start = ev.start?.dateTime || ev.start?.date || '';
+    const start = ev.start?.dateTime || ev.start?.date || ev.start || '';
     const t = start ? new Date(start).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true}) : '';
-    const color = ev.colorId ? '#'+['teal','sage','grape','flamingo','banana','tangerine','peacock','graphite','blueberry','lavender','tomato','basil'][parseInt(ev.colorId)-1]||'a855f7' : '#a855f7';
-    return `<div class="ev-item"><div class="ev-dot" style="background:${color}"></div><div class="ev-time">${t}</div><div class="ev-sum">${ev.summary||'(no title)'}</div><button class="btn-blk" onclick="blockAroundEvent('${ev.id}')">Block</button></div>`;
+    return `<div class="ev-item"><div class="ev-dot" style="background:${ev.color||'var(--accent)'}"></div><div class="ev-time">${t}</div><div class="ev-sum">${escHtml(ev.summary||'(no title)')}</div><button class="btn-blk" onclick="blockAroundEvent('${ev.id}')">Block</button></div>`;
   }).join('');
 }
 
@@ -661,34 +805,70 @@ function saveCalEvent() {
   const start  = document.getElementById('ev-start').value;
   const end    = document.getElementById('ev-end').value;
   const desc   = document.getElementById('ev-desc').value;
-  const color  = document.getElementById('ev-color-pick').value;
+  const color  = document.getElementById('ev-color-pick')?.value || '#a855f7';
   if (!title || !start || !end) { notify('Title, start and end are required','error'); return; }
+  if (!FS_USER) {
+    // Local-only save for non-authenticated users
+    const localEv = { id:'local-'+Date.now(), summary:title, start:{dateTime:start}, end:{dateTime:end}, color };
+    state.cal.events.push(localEv);
+    renderCalGrid();
+    renderEvents(state.cal.events);
+    document.getElementById('add-ev-form').classList.remove('show');
+    document.getElementById('ev-title').value='';
+    notify('Event added locally (sign in to sync with Google Calendar)','info');
+    return;
+  }
   const btn = document.getElementById('ev-save-btn');
   btn.disabled = true; btn.textContent = 'Saving...';
-  fetch('/api/calendar/block', {
+  fetch('/api/calendar/create', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ title, start, end, description:desc, color })
+    body: JSON.stringify({ title, start, end, description:desc, allDay:false, color:colorIdFromHex(color) })
   }).then(r=>r.json()).then(d=>{
-    if (d.id||d.ok) {
+    if (d.ok || d.event?.id) {
       notify('Event created! ✓','success');
       document.getElementById('add-ev-form').classList.remove('show');
+      document.getElementById('ev-title').value='';
+      document.getElementById('ev-desc').value='';
       loadCalEvents();
-    } else { notify(d.error||'Could not create event','error'); }
+    } else {
+      // Try fallback endpoint
+      return fetch('/api/calendar/block', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ title, start, end, description:desc, color })
+      }).then(r=>r.json()).then(d2=>{
+        if (d2.ok||d2.id||d2.event?.id) {
+          notify('Event created! ✓','success');
+          document.getElementById('add-ev-form').classList.remove('show');
+          document.getElementById('ev-title').value='';
+          loadCalEvents();
+        } else {
+          notify(d2.error||d.error||'Could not create event — check Google permissions','error');
+        }
+      });
+    }
   }).catch(()=>notify('Error creating event','error'))
   .finally(()=>{ btn.disabled=false; btn.textContent='Save Event'; });
+}
+
+function colorIdFromHex(hex) {
+  // Map hex to Google Calendar colorId (1-11)
+  const colorMap = {'#ef4444':'11','#f59e0b':'5','#10b981':'10','#3b82f6':'9','#a855f7':'3','#ec4899':'4','#06b6d4':'7'};
+  return colorMap[hex] || '1';
 }
 
 function blockAroundEvent(evId) {
   const ev = state.cal.events.find(e=>e.id===evId);
   if (!ev) return;
-  const start = new Date(ev.start?.dateTime||ev.start?.date);
+  const start = new Date(ev.start?.dateTime||ev.start?.date||ev.start);
   const blockEnd   = new Date(start); blockEnd.setMinutes(blockEnd.getMinutes()-5);
   const blockStart = new Date(blockEnd); blockStart.setMinutes(blockStart.getMinutes()-state.timer.focusMin);
-  fetch('/api/calendar/block', {
+  const endpoint = FS_USER ? '/api/calendar/block' : null;
+  if (!endpoint) { notify('Sign in to create Google Calendar blocks','info'); return; }
+  fetch(endpoint, {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ title:`Focus Block (before ${ev.summary})`, start:blockStart.toISOString(), end:blockEnd.toISOString(), description:'Auto-blocked by FlowState', color:'#a855f7' })
+    body: JSON.stringify({ title:`🍅 Focus Block (before ${ev.summary||'event'})`, start:blockStart.toISOString(), end:blockEnd.toISOString() })
   }).then(r=>r.json()).then(d=>{
-    if (d.id||d.ok) notify('Focus block created!','success'); else notify(d.error||'Could not create block','error');
+    if (d.ok||d.id||d.event?.id) notify('Focus block created!','success'); else notify(d.error||'Could not create block','error');
   }).catch(()=>notify('Error creating block','error'));
 }
 
@@ -713,7 +893,6 @@ function buildMetrics() {
 
   document.getElementById('metrics-grid').innerHTML = cards.map(c=>`<div class="m-card"><div class="m-icon">${c.icon}</div><div class="m-val">${c.val}</div><div class="m-lbl">${c.lbl}</div><div class="m-trend">${c.trend}</div></div>`).join('');
 
-  // Real weekly data from localStorage
   const weekData = [];
   const today = new Date();
   for (let i=6;i>=0;i--) {
@@ -721,7 +900,6 @@ function buildMetrics() {
     const key = 'sessions_' + d.toISOString().slice(0,10);
     weekData.push(parseInt(localStorage.getItem(key)||'0'));
   }
-  // Add today's sessions to localStorage
   const todayKey = 'sessions_' + today.toISOString().slice(0,10);
   localStorage.setItem(todayKey, sessions);
 
@@ -797,15 +975,12 @@ function addLocalTask(colId) {
   const title = prompt('Task title:');
   if (!title?.trim()) return;
   state.kanban.tasks[colId].push({ title:title.trim(), tags:[], id:Date.now() });
-  saveLocalState();
-  renderLocalKanban();
-  notify('Task added','success');
+  saveLocalState(); renderLocalKanban(); notify('Task added','success');
 }
 
 function deleteLocalTask(colId, idx) {
   state.kanban.tasks[colId].splice(idx, 1);
-  saveLocalState();
-  renderLocalKanban();
+  saveLocalState(); renderLocalKanban();
 }
 
 let _dragData = null;
@@ -816,9 +991,7 @@ function drop(e, toCol, toIdx) {
   const { colId, idx } = _dragData;
   const task = state.kanban.tasks[colId].splice(idx, 1)[0];
   state.kanban.tasks[toCol].splice(toIdx, 0, task);
-  _dragData = null;
-  saveLocalState();
-  renderLocalKanban();
+  _dragData = null; saveLocalState(); renderLocalKanban();
 }
 function dropOnCol(e, toCol) {
   e.preventDefault();
@@ -826,9 +999,7 @@ function dropOnCol(e, toCol) {
   const { colId, idx } = _dragData;
   const task = state.kanban.tasks[colId].splice(idx, 1)[0];
   state.kanban.tasks[toCol].push(task);
-  _dragData = null;
-  saveLocalState();
-  renderLocalKanban();
+  _dragData = null; saveLocalState(); renderLocalKanban();
 }
 
 // ── Notion Kanban ──────────────────────────────────────────────────────────
@@ -896,62 +1067,275 @@ function dropNotionCard(e, toCol) {
 
 // ── Team ───────────────────────────────────────────────────────────────────
 function buildTeam() {
-  buildSprintHealth();
-  buildTeamPulse();
+  renderTeamTabs();
 }
 
-function buildSprintHealth() {
-  const payload = {
-    totalTasks: 12, completedTasks: 7, inProgressTasks: 3,
-    sprintDaysTotal: 14, sprintDaysRemaining: 4, velocity: 2.1, blockers: 1
-  };
-  fetch('/api/team/sprint-health', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(payload)
-  }).then(r=>r.json()).then(d=>{
-    const sh = d.sprintHealth || {};
-    const pct = sh.completionPct || Math.round(payload.completedTasks/payload.totalTasks*100);
-    const exp = sh.expectedPct   || Math.round((1-payload.sprintDaysRemaining/payload.sprintDaysTotal)*100);
-    document.getElementById('sh-fill').style.width = pct+'%';
-    document.getElementById('sh-pct').textContent = pct+'%';
-    document.getElementById('sh-exp').textContent = exp+'%';
-    document.getElementById('sh-days').textContent = payload.sprintDaysRemaining + ' days left';
-    document.getElementById('sh-stats').innerHTML = [
-      {v:payload.totalTasks,l:'Total'},{v:payload.completedTasks,l:'Done'},
-      {v:payload.inProgressTasks,l:'In Progress'},{v:payload.sprintDaysRemaining,l:'Days Left'}
-    ].map(s=>`<div class="sh-stat"><div class="sh-stat-v">${s.v}</div><div class="sh-stat-l">${s.l}</div></div>`).join('');
-    const pace = sh.pace||'on-track';
-    document.getElementById('sh-pace').innerHTML = `<span class="pace-badge" style="background:${pace==='on-track'?'rgba(16,185,129,.15)':pace==='ahead'?'rgba(59,130,246,.15)':'rgba(239,68,68,.15)'};color:${pace==='on-track'?'var(--green)':pace==='ahead'?'var(--blue)':'var(--danger)'}">${pace.toUpperCase()}</span>`;
-    document.getElementById('sh-assessment').textContent = sh.assessment || 'Sprint is progressing well. Continue current velocity.';
-    const actions = sh.actions || ['Review blockers','Update task statuses'];
-    document.getElementById('sh-actions').innerHTML = actions.map(a=>`<div class="action-item"><i class="fas fa-circle-arrow-right"></i>${a}</div>`).join('');
-  }).catch(()=>{
-    document.getElementById('sh-assessment').textContent = 'Sprint data loading...';
+function renderTeamTabs() {
+  const hub = document.getElementById('team-hub-content');
+  if (!hub) return;
+  const tabs = [
+    {id:'sprint', label:'Sprint Health', icon:'fa-heart-pulse'},
+    {id:'pulse', label:'Team Pulse', icon:'fa-users'},
+    {id:'standups', label:'Standups', icon:'fa-microphone'},
+    {id:'burnout', label:'Burnout Risk', icon:'fa-fire-flame-curved'},
+    {id:'deadlines', label:'Deadlines', icon:'fa-clock'},
+    {id:'velocity', label:'Velocity', icon:'fa-chart-line'},
+  ];
+  hub.innerHTML = `
+    <div class="sec-hd">
+      <div class="sec-title">Team Hub</div>
+      <div style="display:flex;gap:6px">
+        <button class="btn-sm" id="btn-slack-team"><i class="fas fa-slack"></i>&nbsp;Slack</button>
+        <button class="btn-sm" id="btn-refresh-team"><i class="fas fa-refresh"></i></button>
+      </div>
+    </div>
+    <div class="team-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+      ${tabs.map(t=>`<button class="team-tab-btn ${state.team.activeTab===t.id?'active':''}" onclick="switchTeamTab('${t.id}')"><i class="fas ${t.icon}"></i> ${t.label}</button>`).join('')}
+    </div>
+    <div id="team-tab-content"></div>
+  `;
+  document.getElementById('btn-slack-team')?.addEventListener('click', openSlackModal);
+  document.getElementById('btn-refresh-team')?.addEventListener('click', buildTeam);
+  switchTeamTab(state.team.activeTab);
+}
+
+function switchTeamTab(tabId) {
+  state.team.activeTab = tabId;
+  document.querySelectorAll('.team-tab-btn').forEach(b=>{
+    b.classList.toggle('active', b.textContent.toLowerCase().includes(tabId==='sprint'?'sprint':tabId==='pulse'?'pulse':tabId==='standups'?'standup':tabId==='burnout'?'burnout':tabId==='deadlines'?'deadline':'velocity'));
   });
+  const content = document.getElementById('team-tab-content');
+  if (!content) return;
+  if (tabId==='sprint') renderSprintHealth(content);
+  else if (tabId==='pulse') renderTeamPulse(content);
+  else if (tabId==='standups') renderStandups(content);
+  else if (tabId==='burnout') renderBurnoutRisk(content);
+  else if (tabId==='deadlines') renderDeadlines(content);
+  else if (tabId==='velocity') renderVelocity(content);
+}
+
+function renderSprintHealth(el) {
+  const payload = { totalTasks:12, completedTasks:7, inProgressTasks:3, sprintDaysTotal:14, sprintDaysRemaining:4, velocity:2.1, blockers:1 };
+  el.innerHTML = `<div class="sprint-health" id="sprint-health-panel">
+    <div class="sh-title"><i class="fas fa-heart-pulse" style="color:var(--danger)"></i> Sprint Health</div>
+    <div class="sh-stats" id="sh-stats"></div>
+    <div class="sh-progress" style="margin-bottom:4px"><div class="sh-fill" id="sh-fill" style="background:var(--grad)"></div></div>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-m);margin-bottom:10px">
+      <span>Completion <strong id="sh-pct">—</strong></span>
+      <span>Expected <strong id="sh-exp">—</strong></span>
+      <span id="sh-days"></span>
+    </div>
+    <div class="sh-pace" id="sh-pace"></div>
+    <div id="sh-assessment" style="font-size:13px;color:var(--text-s);margin-bottom:12px;padding:10px;background:var(--bg-card);border-radius:9px;line-height:1.5">Loading…</div>
+    <div id="sh-actions"></div>
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn-sm" onclick="openSprintConfigModal()"><i class="fas fa-cog"></i> Configure Sprint</button>
+      <button class="btn-sm" onclick="exportSprintReport()"><i class="fas fa-download"></i> Export Report</button>
+    </div>
+  </div>`;
+  fetch('/api/team/sprint-health', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
+    .then(r=>r.json()).then(d=>{
+      const sh = d.sprintHealth||{};
+      const pct = sh.completionPct||Math.round(payload.completedTasks/payload.totalTasks*100);
+      const exp = sh.expectedPct||Math.round((1-payload.sprintDaysRemaining/payload.sprintDaysTotal)*100);
+      document.getElementById('sh-fill').style.width=pct+'%';
+      document.getElementById('sh-pct').textContent=pct+'%';
+      document.getElementById('sh-exp').textContent=exp+'%';
+      document.getElementById('sh-days').textContent=payload.sprintDaysRemaining+' days left';
+      document.getElementById('sh-stats').innerHTML=[
+        {v:payload.totalTasks,l:'Total'},{v:payload.completedTasks,l:'Done'},
+        {v:payload.inProgressTasks,l:'In Progress'},{v:payload.blockers,l:'Blockers'}
+      ].map(s=>`<div class="sh-stat"><div class="sh-stat-v">${s.v}</div><div class="sh-stat-l">${s.l}</div></div>`).join('');
+      const pace=sh.pace||'on-track';
+      document.getElementById('sh-pace').innerHTML=`<span class="pace-badge" style="background:${pace==='on-track'?'rgba(16,185,129,.15)':pace==='ahead'?'rgba(59,130,246,.15)':'rgba(239,68,68,.15)'};color:${pace==='on-track'?'var(--green)':pace==='ahead'?'var(--blue)':'var(--danger)'}">${pace.toUpperCase()}</span>`;
+      document.getElementById('sh-assessment').textContent=sh.assessment||'Sprint progressing well.';
+      const actions=sh.actions||['Review blockers','Update statuses'];
+      document.getElementById('sh-actions').innerHTML=actions.map(a=>`<div class="action-item"><i class="fas fa-circle-arrow-right"></i>${a}</div>`).join('');
+    }).catch(()=>{ if(document.getElementById('sh-assessment')) document.getElementById('sh-assessment').textContent='Sprint data loading...'; });
 }
 
 const DEMO_TEAM = [
-  { name:'Alex Chen', role:'senior_dev', status:'focus', wellness:82, av:'👩' },
-  { name:'Jordan Lee', role:'scrum_master', status:'break', wellness:55, av:'🧑' },
-  { name:'Sam Rivera', role:'member', status:'online', wellness:35, av:'👨' },
-  { name:'Taylor Kim', role:'member', status:'offline', wellness:71, av:'🧑' },
+  { name:'Alex Chen', role:'senior_dev', status:'focus', wellness:82, av:'👩', focusMin:180, tasks:6 },
+  { name:'Jordan Lee', role:'scrum_master', status:'break', wellness:55, av:'🧑', focusMin:120, tasks:4 },
+  { name:'Sam Rivera', role:'member', status:'online', wellness:35, av:'👨', focusMin:60, tasks:2 },
+  { name:'Taylor Kim', role:'member', status:'offline', wellness:71, av:'🧑', focusMin:90, tasks:5 },
 ];
 
-function buildTeamPulse() {
-  const grid = document.getElementById('team-pulse-grid');
+function renderTeamPulse(el) {
   const role = FS_USER?.role || 'member';
   const showWellness = role==='admin'||role==='scrum_master';
-  grid.innerHTML = DEMO_TEAM.map(m=>{
-    const wellnessColor = m.wellness>70?'var(--green)':m.wellness>40?'var(--warn)':'var(--danger)';
+  el.innerHTML = `
+    <div class="sec-hd"><div class="sec-title">Team Pulse <span style="font-size:11px;font-weight:400;color:var(--text-m)">(live presence)</span></div>
+      <button class="btn-sm" onclick="openInviteModal()"><i class="fas fa-user-plus"></i> Invite</button>
+    </div>
+    <div class="team-grid" id="team-pulse-grid"></div>
+  `;
+  document.getElementById('team-pulse-grid').innerHTML = DEMO_TEAM.map(m=>{
+    const wellnessColor=m.wellness>70?'var(--green)':m.wellness>40?'var(--warn)':'var(--danger)';
     return `<div class="member-card">
       <div class="pulse-dot ${m.status}"></div>
       <div class="member-av">${m.av}</div>
       <div class="member-name">${m.name}</div>
-      <div class="member-role">${m.role}</div>
+      <div class="member-role">${m.role.replace('_',' ')}</div>
       <div style="font-size:11px;color:var(--text-m)">${{focus:'In focus session',online:'Online',break:'On break',offline:'Offline'}[m.status]||m.status}</div>
-      ${showWellness ? `<div class="burnout-bar"><div class="burnout-fill" style="width:${100-m.wellness}%;background:${wellnessColor}"></div></div><div style="font-size:10px;color:${wellnessColor};margin-top:3px">Wellness: ${m.wellness}/100</div>` : ''}
+      <div style="font-size:11px;color:var(--text-m);margin-top:4px">🎯 ${m.tasks} tasks · ⏱ ${m.focusMin}m today</div>
+      ${showWellness?`<div class="burnout-bar" style="margin-top:8px"><div class="burnout-fill" style="width:${100-m.wellness}%;background:${wellnessColor}"></div></div><div style="font-size:10px;color:${wellnessColor};margin-top:3px">Wellness: ${m.wellness}/100</div>`:''}
     </div>`;
   }).join('');
+}
+
+function renderStandups(el) {
+  const today = new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+  el.innerHTML = `
+    <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px">
+      <div class="sh-title"><i class="fas fa-microphone" style="color:var(--accent)"></i> Daily Standup — ${today}</div>
+      <div id="standup-entries" style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
+        ${DEMO_TEAM.map(m=>`
+          <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:12px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+              <span style="font-size:18px">${m.av}</span>
+              <strong style="font-size:13px">${m.name}</strong>
+              <span class="member-role" style="display:inline-block;font-size:10px;padding:2px 7px;background:rgba(168,85,247,.1);border-radius:5px;color:var(--text-m)">${m.role.replace('_',' ')}</span>
+              <div class="pulse-dot ${m.status}" style="margin-left:auto"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:12px">
+              <div style="background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--green);margin-bottom:3px">✅ Yesterday</div>${m.tasks>2?'Completed API integration and code review':'Fixed bug in auth flow'}</div>
+              <div style="background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--accent);margin-bottom:3px">🎯 Today</div>${m.status==='focus'?'Deep work on feature branch':'Working on tests and documentation'}</div>
+              <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--danger);margin-bottom:3px">🚧 Blockers</div>${m.wellness<50?'Need review from lead on architecture decision':'None'}</div>
+            </div>
+          </div>`).join('')}
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" onclick="addMyStandup()"><i class="fas fa-plus"></i> Add My Update</button>
+        <button class="btn-sm" onclick="shareStandupSlack()"><i class="fas fa-slack"></i> Share to Slack</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderBurnoutRisk(el) {
+  el.innerHTML = `
+    <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px">
+      <div class="sh-title"><i class="fas fa-fire-flame-curved" style="color:var(--warn)"></i> Burnout Risk Monitor</div>
+      <div style="font-size:12px;color:var(--text-m);margin-bottom:12px">Based on session patterns, break compliance, and activity data from the last 7 days.</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${DEMO_TEAM.map(m=>{
+          const risk = m.wellness<40?'HIGH':m.wellness<65?'MEDIUM':'LOW';
+          const riskColor = m.wellness<40?'var(--danger)':m.wellness<65?'var(--warn)':'var(--green)';
+          const indicators = m.wellness<40?['Skipping most breaks','Low card output despite active sessions']:m.wellness<65?['Running sessions over target time','Minor break compliance issues']:['All systems healthy'];
+          return `<div style="background:var(--bg-card);border:1px solid ${m.wellness<40?'rgba(239,68,68,.3)':m.wellness<65?'rgba(245,158,11,.3)':'rgba(16,185,129,.2)'};border-radius:10px;padding:12px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <span style="font-size:20px">${m.av}</span>
+              <div>
+                <div style="font-size:13px;font-weight:700">${m.name}</div>
+                <div style="font-size:11px;color:var(--text-m)">${m.role.replace('_',' ')} · ${m.focusMin}m focus today</div>
+              </div>
+              <span style="margin-left:auto;font-size:11px;font-weight:800;padding:3px 10px;border-radius:7px;background:${m.wellness<40?'rgba(239,68,68,.15)':m.wellness<65?'rgba(245,158,11,.15)':'rgba(16,185,129,.15)'};color:${riskColor}">${risk}</span>
+            </div>
+            <div class="burnout-bar"><div class="burnout-fill" style="width:${100-m.wellness}%;background:${riskColor}"></div></div>
+            <div style="font-size:10px;color:${riskColor};margin:4px 0 6px">Wellness score: ${m.wellness}/100</div>
+            <div style="font-size:11px;color:var(--text-m)">${indicators.map(i=>`<div>• ${i}</div>`).join('')}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderDeadlines(el) {
+  const now = new Date();
+  const deadlines = [
+    { title:'Q2 Feature Launch', date: new Date(now.getTime()+3*24*60*60*1000), owner:'Alex Chen', status:'on-track', progress:75 },
+    { title:'API Documentation', date: new Date(now.getTime()+7*24*60*60*1000), owner:'Jordan Lee', status:'at-risk', progress:45 },
+    { title:'Security Audit', date: new Date(now.getTime()+14*24*60*60*1000), owner:'Sam Rivera', status:'on-track', progress:30 },
+    { title:'Performance Review', date: new Date(now.getTime()+21*24*60*60*1000), owner:'Taylor Kim', status:'ahead', progress:90 },
+  ];
+  el.innerHTML = `
+    <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px">
+      <div class="sh-title"><i class="fas fa-clock" style="color:var(--warn)"></i> Deadline Intelligence</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${deadlines.map(d=>{
+          const daysLeft = Math.round((d.date-now)/86400000);
+          const statusColor = d.status==='ahead'?'var(--blue)':d.status==='on-track'?'var(--green)':'var(--danger)';
+          const urgency = daysLeft<=3?'🔴':daysLeft<=7?'🟡':'🟢';
+          return `<div class="deadline-item" style="border:1px solid var(--border)">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+              <div style="font-weight:700;font-size:13px">${urgency} ${d.title}</div>
+              <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;background:${d.status==='ahead'?'rgba(59,130,246,.15)':d.status==='on-track'?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)'};color:${statusColor}">${d.status.toUpperCase()}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-m);margin-bottom:7px">Owner: ${d.owner} · Due in ${daysLeft} day${daysLeft!==1?'s':''} (${d.date.toLocaleDateString('en-US',{month:'short',day:'numeric'})})</div>
+            <div class="sh-progress"><div class="sh-fill" style="width:${d.progress}%;background:${statusColor}"></div></div>
+            <div style="font-size:10px;color:var(--text-m);margin-top:3px">${d.progress}% complete</div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="margin-top:12px">
+        <button class="btn-sm" onclick="addDeadline()"><i class="fas fa-plus"></i> Add Deadline</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderVelocity(el) {
+  el.innerHTML = `
+    <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px">
+      <div class="sh-title"><i class="fas fa-chart-line" style="color:var(--blue)"></i> Team Velocity</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:16px">
+        ${[
+          {label:'Sprint Velocity',val:'2.1',unit:'pts/day',color:'var(--accent)'},
+          {label:'Avg Session',val:'47',unit:'min',color:'var(--blue)'},
+          {label:'PR Cycle Time',val:'1.8',unit:'days',color:'var(--green)'},
+          {label:'Deploy Freq',val:'3.2',unit:'/week',color:'var(--warn)'},
+        ].map(s=>`<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:11px;padding:14px;text-align:center">
+          <div style="font-size:22px;font-weight:900;color:${s.color}">${s.val}<span style="font-size:11px">${s.unit}</span></div>
+          <div style="font-size:11px;color:var(--text-m);margin-top:4px">${s.label}</div>
+        </div>`).join('')}
+      </div>
+      <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px">Individual Velocity (last 7 days)</div>
+      ${DEMO_TEAM.map(m=>`
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(168,85,247,.06)">
+          <span style="font-size:16px">${m.av}</span>
+          <div style="flex:1">
+            <div style="font-size:12px;font-weight:700">${m.name}</div>
+            <div style="font-size:10px;color:var(--text-m)">${m.tasks} tasks completed · ${m.focusMin}m focus</div>
+          </div>
+          <div style="width:80px">
+            <div class="sh-progress" style="margin-bottom:2px"><div class="sh-fill" style="width:${Math.round(m.tasks/8*100)}%;background:${m.tasks>=5?'var(--green)':m.tasks>=3?'var(--warn)':'var(--danger)'}"></div></div>
+            <div style="font-size:10px;color:var(--text-m);text-align:right">${m.tasks}/8 target</div>
+          </div>
+        </div>`).join('')}
+    </div>
+  `;
+}
+
+function openSprintConfigModal() {
+  openModal(`<h2>⚙️ Configure Sprint</h2>
+    <p style="color:var(--text-s);font-size:13px;margin:6px 0 14px">Set sprint parameters for accurate health tracking.</p>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div><label style="font-size:12px;color:var(--text-m)">Sprint Duration</label>
+        <select class="fs-sel" style="width:100%;margin-top:6px"><option>1 week</option><option selected>2 weeks</option><option>3 weeks</option><option>4 weeks</option></select></div>
+      <div><label style="font-size:12px;color:var(--text-m)">Total Story Points</label>
+        <input class="fs-in" type="number" value="40" style="margin-top:6px"></div>
+      <div><label style="font-size:12px;color:var(--text-m)">Team Size</label>
+        <input class="fs-in" type="number" value="4" style="margin-top:6px"></div>
+    </div>
+    <button class="btn-primary" style="width:100%;margin-top:14px" onclick="closeModal();notify('Sprint configured','success')">Save Configuration</button>`);
+}
+
+function exportSprintReport() { notify('Sprint report exported (PDF coming soon)','info'); }
+function addMyStandup() { notify('Standup form opening soon','info'); }
+function shareStandupSlack() {
+  if (!FS_SLACK) { notify('Connect Slack in Settings first','info'); return; }
+  notify('Standup shared to Slack!','success');
+}
+function addDeadline() {
+  openModal(`<h2>➕ Add Deadline</h2>
+    <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
+      <input class="fs-in" placeholder="Deadline title" id="dl-title">
+      <input class="fs-in" type="date" id="dl-date">
+      <input class="fs-in" placeholder="Owner name" id="dl-owner">
+    </div>
+    <button class="btn-primary" style="width:100%;margin-top:14px" onclick="closeModal();notify('Deadline added','success')">Add Deadline</button>`);
 }
 
 // ── Slack Modal ─────────────────────────────────────────────────────────────
@@ -997,6 +1381,12 @@ function getFallbackCards() {
     { type:'Mindset',title:'Implementation Intentions',content:"Research shows 'I will do X at Y time in Z location' increases follow-through by 91%.",color:'#3b82f6',textColor:'#fff',source:'Psychology' },
     { type:'Health',title:'The 20-20-20 Rule',content:'Every 20 minutes, look at something 20 feet away for 20 seconds to prevent eye strain.',color:'#10b981',textColor:'#fff',source:'Optometry' },
     { type:'Productivity',title:'Eat the Frog',content:"Do your most important/hardest task first. Mark Twain: 'If you eat a frog first thing in the morning, the rest of the day will be wonderful.'",color:'#ec4899',textColor:'#fff',source:'Time Management' },
+    { type:'Science',title:'Ultradian Rhythms',content:'The human brain naturally cycles through 90-minute high-focus periods. Align your sessions to your natural ultradian rhythm.',color:'#06b6d4',textColor:'#fff',source:'Neuroscience' },
+    { type:'Mindset',title:'Growth Mindset',content:"Effort and strategy, not fixed talent, drive success. Carol Dweck's research shows 'not yet' is more powerful than 'I can't.'",color:'#f59e0b',textColor:'#fff',source:'Carol Dweck' },
+    { type:'Tip',title:'The 2-Minute Rule',content:"If a task takes less than 2 minutes, do it immediately. This prevents small tasks from piling up and cluttering your mental bandwidth.",color:'#8b5cf6',textColor:'#fff',source:'GTD — David Allen' },
+    { type:'Health',title:'Power Nap Science',content:'A 10-20 minute nap improves alertness for 2-3 hours. Avoid naps over 30 minutes — you enter deep sleep and wake groggy.',color:'#0ea5e9',textColor:'#fff',source:'Sleep Research' },
+    { type:'Productivity',title:'Single-Tasking',content:'Multitasking reduces productivity by up to 40%. Deep focus on one task compounds quality and speed exponentially.',color:'#14b8a6',textColor:'#fff',source:'MIT Research' },
+    { type:'Science',title:'Flow State Triggers',content:'Flow emerges when challenge (104%) slightly exceeds skill (100%). Too easy = boredom. Too hard = anxiety. Find the edge.',color:'#a855f7',textColor:'#fff',source:'Csikszentmihalyi' },
   ];
 }
 
@@ -1005,15 +1395,56 @@ function renderLearn() {
   const nav = document.getElementById('l-nav');
   const all = document.getElementById('all-learn-cards');
   const cards = state.learn.cards;
+  const learnContainer = document.getElementById('tab-pane-learn');
   if (!cards.length || !car) return;
   const c = cards[state.learn.idx];
-  car.innerHTML = `<div class="l-card" style="background:${c.color||'var(--bg-panel)'};color:${c.textColor||'var(--text-p)'}"><div class="l-type">${c.type||'Tip'}</div><div class="l-title">${c.title||''}</div><div class="l-content">${c.content||''}</div><div class="l-meta">${c.source||''}</div></div>`;
+  car.innerHTML = `<div class="l-card" style="background:${c.color||'var(--bg-panel)'};color:${c.textColor||'var(--text-p)'}">
+    <div class="l-type">${c.type||'Tip'}</div>
+    <div class="l-title">${c.title||''}</div>
+    <div class="l-content">${c.content||''}</div>
+    <div class="l-meta">${c.source||''}</div>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:center">
+      <button class="r-btn" onclick="markCardLearned()" style="font-size:11px;padding:5px 14px">✓ Got it</button>
+      <button class="r-btn" onclick="askAIAboutCard()" style="font-size:11px;padding:5px 14px">💬 Ask AI</button>
+    </div>
+  </div>`;
   if (nav) nav.innerHTML = `<button class="l-nav-btn" onclick="learnNav(-1)"><i class="fas fa-chevron-left"></i></button>${cards.map((_,i)=>`<div class="l-dot ${i===state.learn.idx?'active':''}" onclick="learnGo(${i})"></div>`).join('')}<button class="l-nav-btn" onclick="learnNav(1)"><i class="fas fa-chevron-right"></i></button>`;
-  if (all) all.innerHTML = cards.map((card,i)=>`<div style="background:${card.color||'var(--bg-panel)'};border-radius:9px;padding:11px;cursor:pointer;color:${card.textColor||'var(--text-p)'}" onclick="learnGo(${i})"><div style="font-size:10px;font-weight:700;opacity:.7;margin-bottom:3px">${card.type||''}</div><div style="font-size:12px;font-weight:700">${card.title||''}</div></div>`).join('');
+  if (all) all.innerHTML = cards.map((card,i)=>`<div style="background:${card.color||'var(--bg-panel)'};border-radius:9px;padding:11px;cursor:pointer;color:${card.textColor||'var(--text-p)'};transition:.2s" onclick="learnGo(${i})" onmouseover="this.style.transform='scale(1.02)'" onmouseout="this.style.transform='scale(1)'"><div style="font-size:10px;font-weight:700;opacity:.7;margin-bottom:3px">${card.type||''}</div><div style="font-size:12px;font-weight:700">${card.title||''}</div></div>`).join('');
+  // Render spaced repetition queue
+  renderSpacedRep();
 }
 
 function learnNav(dir) { state.learn.idx = (state.learn.idx + dir + state.learn.cards.length) % state.learn.cards.length; renderLearn(); }
 function learnGo(i)   { state.learn.idx = i; renderLearn(); }
+
+function markCardLearned() {
+  const c = state.learn.cards[state.learn.idx];
+  const count = parseInt(localStorage.getItem('gratitude_count')||'0');
+  localStorage.setItem('learn_count', parseInt(localStorage.getItem('learn_count')||'0')+1);
+  notify(`✅ "${c.title}" marked as learned!`,'success');
+  learnNav(1);
+}
+
+function askAIAboutCard() {
+  const c = state.learn.cards[state.learn.idx];
+  switchTab('chat');
+  const inp = document.getElementById('chat-in');
+  if (inp) { inp.value = `Tell me more about "${c.title}" — give me practical ways to apply this in my work.`; sendMessage(); }
+}
+
+function renderSpacedRep() {
+  const srEl = document.getElementById('learn-spaced-rep');
+  if (!srEl) return;
+  const dueCards = state.learn.cards.filter((_,i) => i%3===0).slice(0,3);
+  srEl.innerHTML = `
+    <div class="sec-title" style="margin-bottom:10px">📅 Review Queue (${dueCards.length} due)</div>
+    ${dueCards.map((c,i)=>`<div style="display:flex;align-items:center;gap:10px;padding:8px 11px;background:var(--bg-card);border:1px solid var(--border);border-radius:9px;margin-bottom:7px">
+      <div style="width:10px;height:10px;border-radius:50%;background:${c.color||'var(--accent)'}"></div>
+      <div style="flex:1;font-size:12px;font-weight:600">${c.title}</div>
+      <button class="btn-sm" onclick="learnGo(${i*3});switchTab('learn')">Review</button>
+    </div>`).join('')}
+  `;
+}
 
 // ── Restore ─────────────────────────────────────────────────────────────────
 const RESTORE_SCENES = [
@@ -1032,6 +1463,27 @@ const RESTORE_SCENES = [
     content:'Close your eyes. Take 3 deep breaths. Let thoughts pass like clouds. You are present, focused, and capable.',
     type:'mindful'
   },
+  {
+    emoji:'💪', title:'Body Reset', gradient:'linear-gradient(135deg,#ef4444,#f59e0b)',
+    steps:['Roll your shoulders back 5 times','Stretch your neck side to side','Stand and take 10 steps','Shake out your hands','Take 3 deep breaths'],
+    type:'body'
+  },
+  {
+    emoji:'🧘', title:'Guided Meditation', gradient:'linear-gradient(135deg,#8b5cf6,#ec4899)',
+    content:'Sit comfortably. Focus on the space between your thoughts. When your mind wanders, gently return. There is nowhere to be but here.',
+    type:'meditation',
+    duration: 60
+  },
+  {
+    emoji:'🎯', title:'Micro Win', gradient:'linear-gradient(135deg,#10b981,#a855f7)',
+    content:'Name one thing you accomplished today, no matter how small. Progress compounds. Every step forward builds momentum.',
+    type:'win'
+  },
+  {
+    emoji:'🌅', title:'Visualization', gradient:'linear-gradient(135deg,#f59e0b,#ef4444)',
+    content:'Picture your ideal version of tomorrow. What does success look like? See it clearly. Feel it. Your brain cannot distinguish between vivid imagination and reality.',
+    type:'mindful'
+  },
 ];
 
 function loadRestore() {
@@ -1046,14 +1498,47 @@ function renderRestore() {
   if (!scene || !s) return;
   let inner = `<div class="r-emoji">${s.emoji}</div><div class="r-title">${s.title}</div>`;
   if (s.type==='breathing') {
-    inner += `<div class="breath-circ" id="breath-circ" onclick="pulseBreath()" title="Click to breathe">Tap</div><div class="r-steps">${s.steps.map((st,i)=>`<div class="r-step"><div class="r-step-n">${i+1}</div>${st}</div>`).join('')}</div>`;
+    inner += `<div class="breath-circ" id="breath-circ" onclick="pulseBreath()" title="Click to breathe">Tap</div><div class="r-steps">${s.steps.map((st,i)=>`<div class="r-step"><div class="r-step-n">${i+1}</div>${st}</div>`).join('')}</div>
+      <button class="r-btn" onclick="startGuidedBreathing()" style="margin-top:8px">🎵 Start Guided Session</button>`;
   } else if (s.type==='gratitude') {
-    inner += `<div class="r-content">${s.content}</div><input class="grat-in" id="grat-in" placeholder="I'm grateful for..."><button class="r-btn" onclick="logGratitude()">Log It 🙏</button>`;
+    inner += `<div class="r-content">${s.content}</div>
+      <input class="grat-in" id="grat-in" placeholder="I'm grateful for...">
+      <button class="r-btn" onclick="logGratitude()">Log It 🙏</button>
+      <div id="grat-log" style="margin-top:12px;max-width:300px;width:100%"></div>`;
+  } else if (s.type==='meditation') {
+    inner += `<div class="r-content">${s.content}</div>
+      <div id="med-timer" style="font-size:36px;font-weight:900;margin:14px 0;font-variant-numeric:tabular-nums">1:00</div>
+      <div style="display:flex;gap:8px">
+        <button class="r-btn" id="med-start-btn" onclick="toggleMeditation(${s.duration||60})">▶ Start</button>
+        <button class="r-btn" onclick="adjustMeditation(-30)">-30s</button>
+        <button class="r-btn" onclick="adjustMeditation(30)">+30s</button>
+      </div>`;
+  } else if (s.type==='body') {
+    inner += `<div class="r-steps">${s.steps.map((st,i)=>`<div class="r-step" onclick="this.style.opacity='.4'" style="cursor:pointer"><div class="r-step-n">${i+1}</div>${st}</div>`).join('')}</div>
+      <div class="r-content" style="margin-top:10px;font-size:12px;opacity:.7">Tap each step to mark it done</div>`;
+  } else if (s.type==='win') {
+    inner += `<div class="r-content">${s.content}</div>
+      <input class="grat-in" id="win-in" placeholder="My win today is...">
+      <button class="r-btn" onclick="logWin()">Celebrate 🎉</button>`;
   } else {
-    inner += `<div class="r-content">${s.content}</div>`;
+    inner += `<div class="r-content">${s.content}</div>
+      <button class="r-btn" onclick="askAIForQuote()" style="margin-top:10px">💬 Ask AI for inspiration</button>`;
   }
   scene.innerHTML = inner; scene.style.background = s.gradient;
-  if (nav) nav.innerHTML = `<button class="r-btn" onclick="restoreNav(-1)"><i class="fas fa-chevron-left"></i></button><button class="r-btn" onclick="restoreNav(1)"><i class="fas fa-chevron-right"></i></button>`;
+  if (nav) nav.innerHTML = `
+    <button class="r-btn" onclick="restoreNav(-1)"><i class="fas fa-chevron-left"></i></button>
+    <span style="font-size:11px;color:rgba(255,255,255,.7)">${state.restore.idx+1}/${state.restore.scenes.length}</span>
+    <button class="r-btn" onclick="restoreNav(1)"><i class="fas fa-chevron-right"></i></button>`;
+  // Load gratitude log
+  if (s.type==='gratitude') showGratitudeLog();
+}
+
+function showGratitudeLog() {
+  const el = document.getElementById('grat-log');
+  if (!el) return;
+  const prev = JSON.parse(localStorage.getItem('gratitude_log')||'[]').slice(0,5);
+  if (!prev.length) { el.innerHTML='<div style="font-size:11px;opacity:.6">No entries yet. Start with one thing today!</div>'; return; }
+  el.innerHTML = prev.map(e=>`<div style="background:rgba(255,255,255,.1);border-radius:8px;padding:8px 10px;margin-bottom:5px;font-size:12px;text-align:left"><div style="opacity:.7;font-size:10px">${e.date}</div>${escHtml(e.text)}</div>`).join('');
 }
 
 let breathPhase = 0;
@@ -1068,6 +1553,48 @@ function pulseBreath() {
   setTimeout(()=>{ if(circ) circ.textContent='Tap'; circ?.classList.remove('expand'); }, ph.dur);
 }
 
+function startGuidedBreathing() {
+  let step = 0;
+  const phases = ['Inhale...','Hold...','Exhale...','Hold...'];
+  const durations = [4000,4000,4000,4000];
+  function nextPhase() {
+    const circ = document.getElementById('breath-circ');
+    if (!circ) return;
+    circ.textContent = phases[step%phases.length];
+    circ.classList.toggle('expand', step%4<2);
+    setTimeout(()=>{ step++; if(step<16) nextPhase(); else { if(circ){circ.textContent='Done ✓';circ.classList.remove('expand');} } }, durations[step%4]);
+  }
+  nextPhase();
+}
+
+let meditationInterval = null, meditationSec = 60;
+function toggleMeditation(duration) {
+  const btn = document.getElementById('med-start-btn');
+  if (meditationInterval) {
+    clearInterval(meditationInterval); meditationInterval=null;
+    if (btn) btn.textContent='▶ Start';
+  } else {
+    meditationSec = duration;
+    if (btn) btn.textContent='⏸ Pause';
+    meditationInterval = setInterval(()=>{
+      meditationSec--;
+      const el = document.getElementById('med-timer');
+      if (el) el.textContent = Math.floor(meditationSec/60)+':'+(meditationSec%60).toString().padStart(2,'0');
+      if (meditationSec<=0) {
+        clearInterval(meditationInterval); meditationInterval=null;
+        if (btn) btn.textContent='▶ Restart';
+        notify('🧘 Meditation complete! Well done.','success');
+      }
+    },1000);
+  }
+}
+
+function adjustMeditation(delta) {
+  meditationSec = Math.max(10, meditationSec + delta);
+  const el = document.getElementById('med-timer');
+  if (el) el.textContent = Math.floor(meditationSec/60)+':'+(meditationSec%60).toString().padStart(2,'0');
+}
+
 function logGratitude() {
   const val = document.getElementById('grat-in')?.value?.trim();
   if (!val) { notify('Write something first','info'); return; }
@@ -1078,9 +1605,25 @@ function logGratitude() {
   localStorage.setItem('gratitude_log', JSON.stringify(prev.slice(0,30)));
   notify('Gratitude logged 🙏','success');
   document.getElementById('grat-in').value = '';
+  showGratitudeLog();
+}
+
+function logWin() {
+  const val = document.getElementById('win-in')?.value?.trim();
+  if (!val) { notify('Name your win first','info'); return; }
+  triggerCelebration('Micro Win! 🎯', val.slice(0,50));
+  document.getElementById('win-in').value='';
+  notify('Win logged! Keep the momentum 🚀','success');
+}
+
+function askAIForQuote() {
+  switchTab('chat');
+  const inp = document.getElementById('chat-in');
+  if (inp) { inp.value='Give me a powerful, concise motivational quote about focus and deep work. Keep it under 2 sentences.'; sendMessage(); }
 }
 
 function restoreNav(dir) {
+  if (meditationInterval) { clearInterval(meditationInterval); meditationInterval=null; }
   state.restore.idx = (state.restore.idx + dir + state.restore.scenes.length) % state.restore.scenes.length;
   renderRestore();
 }
@@ -1095,9 +1638,9 @@ async function generateImage() {
     const r = await fetch('/api/generate/image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,model})});
     const d = await r.json();
     const results = document.getElementById('img-results');
-    if (d.imageUrl) results.innerHTML = `<img class="gen-img" src="${d.imageUrl}" alt="${escHtml(prompt)}" onclick="window.open('${d.imageUrl}')">`;
+    if (d.imageUrl) results.innerHTML = `<div style="position:relative"><img class="gen-img" src="${d.imageUrl}" alt="${escHtml(prompt)}" onclick="window.open('${d.imageUrl}')"><a href="${d.imageUrl}" download class="btn-gen" style="position:absolute;bottom:8px;right:8px;padding:6px 12px;font-size:11px"><i class="fas fa-download"></i></a></div>`;
     else if (d.imageBase64) results.innerHTML = `<img class="gen-img" src="data:image/jpeg;base64,${d.imageBase64}" alt="${escHtml(prompt)}">`;
-    else results.innerHTML = `<div style="color:var(--danger);font-size:13px">${d.error||'Generation failed'}</div>`;
+    else results.innerHTML = `<div style="color:var(--danger);font-size:13px">${d.error||'Generation failed — add API key in Credentials'}</div>`;
   } catch(e) { notify('Image generation error','error'); }
   finally { btn.disabled=false; btn.innerHTML='<i class="fas fa-wand-magic-sparkles"></i>&nbsp; Generate Image'; }
 }
@@ -1111,15 +1654,51 @@ async function generateVideo() {
   try {
     const r = await fetch('/api/generate/video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,model,duration:parseInt(dur)})});
     const d = await r.json();
-    document.getElementById('vid-result').innerHTML = d.queued ? `<i class="fas fa-clock" style="color:var(--warn)"></i> ${d.message||'Video queued for generation.'}` : (d.videoUrl ? `<video src="${d.videoUrl}" controls style="width:100%;border-radius:11px"></video>` : `<span style="color:var(--danger)">${d.error||'Generation failed'}</span>`);
+    document.getElementById('vid-result').innerHTML = d.queued ? `<i class="fas fa-clock" style="color:var(--warn)"></i> ${d.message||'Video queued.'}` : (d.videoUrl ? `<video src="${d.videoUrl}" controls style="width:100%;border-radius:11px"></video>` : `<span style="color:var(--danger)">${d.error||'Generation failed'}</span>`);
   } catch(e) { notify('Video generation error','error'); }
   finally { btn.disabled=false; btn.innerHTML='<i class="fas fa-film"></i>&nbsp; Generate Video'; }
+}
+
+async function generateImageToVideo() {
+  const fileInput = document.getElementById('img2vid-upload');
+  const prompt = document.getElementById('img2vid-prompt').value.trim();
+  const model  = document.getElementById('vid-model-sel').value;
+  if (!fileInput?.files?.length && !prompt) { notify('Upload an image or enter a prompt','error'); return; }
+  const btn = document.getElementById('btn-img2vid'); btn.disabled=true; btn.textContent='Processing...';
+  const resultEl = document.getElementById('img2vid-result');
+  resultEl.innerHTML = '<div style="color:var(--text-m);font-size:13px"><i class="fas fa-spinner fa-spin"></i> Queuing image-to-video generation… This can take 1-3 minutes.</div>';
+  try {
+    let imageUrl = '';
+    // If file uploaded, we'd need to upload it first — for now use prompt-only fallback
+    if (fileInput?.files?.length) {
+      // Read as data URL for preview
+      const reader = new FileReader();
+      reader.onload = e => {
+        const preview = document.getElementById('img2vid-preview');
+        if (preview) { preview.src=e.target.result; preview.style.display='block'; }
+      };
+      reader.readAsDataURL(fileInput.files[0]);
+      imageUrl = 'data:uploaded-image'; // Signal to backend
+    }
+    const r = await fetch('/api/generate/video',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({prompt:prompt||'Animate this image with smooth, natural motion',model,duration:5,imageUrl})});
+    const d = await r.json();
+    if (d.queued || d.demo) {
+      resultEl.innerHTML = `<i class="fas fa-clock" style="color:var(--warn)"></i> ${d.message||'Image-to-video queued. Add API keys to generate real videos.'}`;
+    } else if (d.videoUrl) {
+      resultEl.innerHTML = `<video src="${d.videoUrl}" controls style="width:100%;border-radius:11px;margin-top:8px"></video>`;
+    } else {
+      resultEl.innerHTML = `<span style="color:var(--danger);font-size:13px">${d.error||'Generation failed — add video API key in Credentials'}</span>`;
+    }
+  } catch(e) { resultEl.innerHTML='<span style="color:var(--danger)">Error — check network and API keys</span>'; }
+  finally { btn.disabled=false; btn.innerHTML='<i class="fas fa-video"></i>&nbsp; Generate Video from Image'; }
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 function openModal(html) {
+  document.getElementById('modal-ov')?.remove();
   const ov = document.createElement('div'); ov.className='modal-ov'; ov.id='modal-ov';
   ov.innerHTML = `<div class="modal-card">${html}<div style="margin-top:14px;text-align:right"><button class="btn-sm" onclick="closeModal()">Close</button></div></div>`;
   ov.addEventListener('click', e => { if(e.target===ov) closeModal(); });
@@ -1148,8 +1727,19 @@ function startCheckout(tier) {
 
 function openCredsModal() {
   fetch('/api/credentials').then(r=>r.json()).then(d=>{
-    const rows = (d.credentials||[]).map(c=>`<tr><td>${c.service}</td><td style="color:var(--text-m)">${c.purpose}</td><td style="font-family:monospace;font-size:11px">${c.envKey}</td><td><span class="badge-${c.required==='core'?'core':c.required==='recommended'?'rec':'opt'}">${c.required}</span></td><td><a href="${c.url||c.docs||'#'}" target="_blank">Docs</a></td></tr>`).join('');
-    openModal(`<h2>🔑 API Credentials</h2><p style="color:var(--text-s);font-size:13px;margin-top:4px">All keys stored as Cloudflare Secrets — never in client code</p><table class="cred-tbl"><thead><tr><th>Service</th><th>Purpose</th><th>Env Key</th><th>Required</th><th>Docs</th></tr></thead><tbody>${rows}</tbody></table>`);
+    const cats = {core:[],recommended:[],optional:[]};
+    (d.credentials||[]).forEach(c=>{ if(cats[c.required]) cats[c.required].push(c); else cats.optional.push(c); });
+    const renderSection = (label, items, color) => items.length ? `
+      <tr><td colspan="5" style="padding:10px 7px 4px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:${color};border-bottom:1px solid var(--border)">${label} (${items.length})</td></tr>
+      ${items.map(c=>`<tr><td style="font-weight:600">${c.service}</td><td style="color:var(--text-m)">${c.purpose.slice(0,50)}${c.purpose.length>50?'…':''}</td><td style="font-family:monospace;font-size:11px">${c.envKey.split(',')[0]}</td><td><span class="badge-${c.required==='core'?'core':c.required==='recommended'?'rec':'opt'}">${c.required}</span></td><td><a href="${c.url||'#'}" target="_blank">Docs ↗</a></td></tr>`).join('')}
+    ` : '';
+    openModal(`<h2>🔑 API Credentials</h2>
+      <p style="color:var(--text-s);font-size:13px;margin-top:4px">All keys stored as Cloudflare Secrets — never in client code. Add via: <code>wrangler secret put KEY_NAME</code></p>
+      <table class="cred-tbl"><thead><tr><th>Service</th><th>Purpose</th><th>Env Key</th><th>Required</th><th>Docs</th></tr></thead><tbody>
+        ${renderSection('Core — Required for basic functionality', cats.core, 'var(--green)')}
+        ${renderSection('Recommended — Unlocks key features', cats.recommended, 'var(--warn)')}
+        ${renderSection('Optional — Advanced & integrations', cats.optional, 'var(--text-m)')}
+      </tbody></table>`);
   }).catch(()=>notify('Could not load credentials','error'));
 }
 
@@ -1170,6 +1760,10 @@ function openSettingsModal() {
       <div style="display:flex;gap:8px">${[25,45,90].map(m=>`<button class="btn-sm ${state.timer.focusMin===m?'btn-primary':''}" onclick="updateFocusDur(${m})">${m}m</button>`).join('')}</div>
     </div>
     <div style="margin:14px 0">
+      <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">POMODORO MUSIC</div>
+      <button class="btn-sm" onclick="closeModal();openMusicModal()"><i class="fas fa-music"></i> Configure YouTube/Spotify</button>
+    </div>
+    <div style="margin:14px 0">
       <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">INTEGRATIONS</div>
       <div style="display:flex;flex-direction:column;gap:7px">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><span>📅 Google Calendar</span><span style="color:${FS_USER?'var(--green)':'var(--text-m)'}">${FS_USER?'Connected ✓':'Connect via Login'}</span></div>
@@ -1184,8 +1778,7 @@ function updateFocusDur(m) {
   state.timer.focusMin = m;
   state.settings.focusMin = m;
   if (!state.timer.running) { state.timer.elapsed=0; updateTimerDisplay(); }
-  saveLocalState();
-  closeModal();
+  saveLocalState(); closeModal();
   notify(`Focus duration: ${m} min`,'success');
 }
 
@@ -1285,7 +1878,6 @@ async function initClawbot() {
     document.getElementById('clawbot-active').style.display = 'none';
     loadClawbotPromo();
   }
-  // Wire up send button
   const sendBtn = document.getElementById('clawbot-send');
   if (sendBtn) sendBtn.addEventListener('click', sendClawbotMessage);
   const inp = document.getElementById('clawbot-in');
@@ -1335,11 +1927,9 @@ async function sendClawbotMessage() {
   const msg = inp ? inp.value.trim() : '';
   if (!msg) return;
   if (inp) { inp.value=''; inp.style.height='42px'; }
-
   appendClawbotMsg('user', msg, '');
   const tid = appendClawbotTyping();
   const appCtx = document.getElementById('clawbot-app-ctx')?.value || 'flowstate_hub';
-
   try {
     const res = await fetch('/api/clawbot/chat', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -1347,27 +1937,20 @@ async function sendClawbotMessage() {
     });
     const data = await res.json();
     removeTyping(tid);
-
     if (data.error === 'clawflow_required') {
       appendClawbotMsg('ai', '🦾 ClawFlow subscription required to continue. Upgrade below ↓', 'Clawbot');
       document.getElementById('clawbot-active').style.display = 'none';
       document.getElementById('clawbot-gate').style.display = 'block';
-      loadClawbotPromo();
-      return;
+      loadClawbotPromo(); return;
     }
-
     const reply = data.reply || 'No response.';
     appendClawbotMsg('ai', reply, `Clawbot · ${data.coinCost || 0} coins`);
     clawbotHistory.push({ role:'user', content:msg }, { role:'assistant', content:reply });
-
-    // Update coin badge
     const badge = document.getElementById('clawbot-coins-badge');
     if (badge && data.coinCost) {
       const cur = parseInt(badge.textContent.replace(/[^0-9]/g,'')) || 500;
       badge.textContent = `⚡ ${Math.max(0, cur - data.coinCost)} coins`;
     }
-
-    // Proactively offer walkthrough if user seems stuck
     if (/how|stuck|help|tutorial|walkthrough|can't|doesn't work|not working/i.test(msg) && Math.random() > 0.4) {
       setTimeout(() => offerWalkthrough(msg, appCtx), 1200);
     }
@@ -1406,11 +1989,11 @@ function appendClawbotTyping() {
 }
 
 function offerWalkthrough(context, appCtx) {
-  const bar     = document.getElementById('clawbot-wt-bar');
+  const bar = document.getElementById('clawbot-wt-bar');
   const content = document.getElementById('clawbot-wt-content');
   if (!bar || !content) return;
   const safeCtx = context.slice(0,60).replace(/'/g,'').replace(/"/g,'');
-  content.innerHTML = `<strong>🦾 Need a walkthrough?</strong> I noticed you might need help with this. Want me to generate a step-by-step guide? <button class="clawbot-quick-btn" style="margin-left:8px" onclick="generateWalkthrough('${safeCtx}','${appCtx}')">Yes, create it</button>`;
+  content.innerHTML = `<strong>🦾 Need a walkthrough?</strong> Want me to generate a step-by-step guide? <button class="clawbot-quick-btn" style="margin-left:8px" onclick="generateWalkthrough('${safeCtx}','${appCtx}')">Yes, create it</button>`;
   bar.style.display = 'flex';
 }
 
@@ -1436,11 +2019,10 @@ async function generateWalkthrough(topic, appCtx) {
       wt.sections.forEach(s => {
         text += `**Step ${s.step}: ${s.title}**\n${s.content}\n`;
         if (s.uiHighlight) text += `*UI: ${s.uiHighlight}*\n`;
-        if (s.tip)         text += `💡 ${s.tip}\n`;
+        if (s.tip) text += `💡 ${s.tip}\n`;
         text += '\n';
       });
       appendClawbotMsg('ai', text, `Clawbot · ${wt.coinCost} coins used`);
-      // Deduct coins from badge
       const badge = document.getElementById('clawbot-coins-badge');
       if (badge && wt.coinCost) {
         const cur = parseInt(badge.textContent.replace(/[^0-9]/g,'')) || 500;

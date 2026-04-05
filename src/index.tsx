@@ -28,6 +28,8 @@ type Bindings = {
   STRIPE_SECRET_KEY: string; STRIPE_PUBLISHABLE_KEY: string; STRIPE_WEBHOOK_SECRET: string
   RESEND_API_KEY: string; SESSION_SECRET: string
   CLAWBOT_API_KEY: string;
+  KLING_API_KEY: string; PIKA_API_KEY: string; MINIMAX_API_KEY: string;
+  REPLICATE_API_KEY: string; HUGGINGFACE_API_KEY: string;
   // FlowState Audio — Music AI
   SUNO_API_KEY: string;
   MUSICGEN_API_KEY: string;
@@ -357,18 +359,81 @@ app.post('/api/generate/image', async (c) => {
       const data: any = await (await fetch(spec.apiEndpoint, { method: 'POST', headers: { Authorization: 'Bearer ' + apiKey, Accept: 'application/json' }, body: form })).json()
       return c.json({ imageUrl: 'data:image/jpeg;base64,' + data.image })
     }
+    if (modelId === 'imagen3') {
+      const data: any = await (await fetch(spec.apiEndpoint + '?key=' + apiKey, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instances: [{ prompt }], parameters: { sampleCount: 1, aspectRatio: '1:1' } })
+      })).json()
+      const b64 = data.predictions?.[0]?.bytesBase64Encoded
+      if (b64) return c.json({ imageUrl: 'data:image/jpeg;base64,' + b64 })
+      return c.json({ error: data.error?.message || 'Imagen 3 generation failed', demo: true })
+    }
+    if (modelId === 'flux_pro') {
+      const data: any = await (await fetch(spec.apiEndpoint, {
+        method: 'POST', headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, width: 1024, height: 1024, steps: 40 })
+      })).json()
+      if (data.id) {
+        // Poll for result
+        let result: any = null
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 2000))
+          const poll: any = await (await fetch('https://api.bfl.ml/v1/get_result?id=' + data.id, { headers: { Authorization: 'Bearer ' + apiKey } })).json()
+          if (poll.status === 'Ready') { result = poll; break }
+        }
+        if (result?.result?.sample) return c.json({ imageUrl: result.result.sample })
+      }
+      return c.json({ error: 'FLUX Pro generation failed or timed out', demo: true })
+    }
+    if (modelId === 'ideogram2') {
+      const data: any = await (await fetch(spec.apiEndpoint, {
+        method: 'POST', headers: { 'Api-Key': apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_request: { prompt, aspect_ratio: 'ASPECT_1_1', model: 'V_2', magic_prompt_option: 'AUTO' } })
+      })).json()
+      const url = data.data?.[0]?.url
+      if (url) return c.json({ imageUrl: url })
+      return c.json({ error: data.error || 'Ideogram generation failed', demo: true })
+    }
     return c.json({ error: 'Model ' + modelId + ' endpoint not fully implemented yet.', demo: true })
   } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
 // ─── Video Generation ─────────────────────────────────────────────────────────
 app.post('/api/generate/video', async (c) => {
-  const { prompt, model: modelId = 'veo2', duration = 5 } = await c.req.json()
+  const { prompt, model: modelId = 'veo2', duration = 5, imageUrl } = await c.req.json()
   const spec = VIDEO_MODEL_REGISTRY[modelId as keyof typeof VIDEO_MODEL_REGISTRY]
   if (!spec) return c.json({ error: 'Unknown video model' }, 400)
   const apiKey = (c.env as any)?.[spec.envKey]
-  if (!apiKey) return c.json({ error: spec.name + ' API key not configured (' + spec.envKey + ')', demo: true, message: 'Demo: Would generate ' + duration + 's video with ' + spec.name + ': "' + prompt.slice(0, 60) + '"' })
-  return c.json({ queued: true, model: spec.name, prompt, message: 'Video generation queued. This typically takes 1-3 minutes.' })
+  const isImg2Vid = !!imageUrl
+  if (!apiKey) {
+    const demoMsg = isImg2Vid
+      ? `Demo: Would animate your image into a ${duration}s video using ${spec.name}. Add ${spec.envKey} to enable.`
+      : `Demo: Would generate ${duration}s video with ${spec.name}: "${prompt.slice(0, 60)}"`
+    return c.json({ error: spec.name + ' API key not configured (' + spec.envKey + ')', demo: true, queued: false, message: demoMsg })
+  }
+  // Route to appropriate video API
+  try {
+    if (modelId === 'runway_gen4' && isImg2Vid) {
+      const res = await fetch('https://api.runwayml.com/v1/image_to_video', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json', 'X-Runway-Version': '2024-11-06' },
+        body: JSON.stringify({ promptImage: imageUrl, promptText: prompt, model: 'gen4_turbo', duration: Math.min(duration, 10) })
+      })
+      const data: any = await res.json()
+      if (data.id) return c.json({ queued: true, jobId: data.id, model: spec.name, message: 'Image-to-video queued via Runway Gen-4.' })
+    }
+    if (modelId === 'kling16') {
+      const endpoint = isImg2Vid ? 'https://api.klingai.com/v1/videos/image2video' : 'https://api.klingai.com/v1/videos/text2video'
+      const body: any = { prompt, duration: Math.min(duration, 10), aspect_ratio: '16:9', mode: 'std' }
+      if (isImg2Vid) body.image_url = imageUrl
+      const res = await fetch(endpoint, { method: 'POST', headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const data: any = await res.json()
+      if (data.data?.task_id) return c.json({ queued: true, jobId: data.data.task_id, model: spec.name, message: 'Video queued via Kling 1.6.' })
+    }
+  } catch (err: any) {
+    return c.json({ error: err.message, queued: false }, 500)
+  }
+  return c.json({ queued: true, model: spec.name, prompt, message: 'Video generation queued via ' + spec.name + '. This typically takes 1-3 minutes.' })
 })
 
 // ─── Session Context + Intent ─────────────────────────────────────────────────
@@ -1288,6 +1353,17 @@ em{color:var(--accent);font-style:italic}
 .clawbot-wt-content{flex:1;font-size:13px;line-height:1.6}
 .clawbot-quick-btn{padding:5px 12px;border-radius:18px;font-size:12px;font-weight:600;border:1px solid rgba(168,85,247,.25);background:rgba(168,85,247,.06);color:var(--text-s);cursor:pointer;transition:.2s}
 .clawbot-quick-btn:hover{border-color:var(--accent);color:var(--accent)}
+/* ── Team Tabs ────────────────────────────────────────────────── */
+.team-tab-btn{padding:6px 13px;border-radius:9px;font-size:12px;font-weight:600;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;transition:.2s;display:flex;align-items:center;gap:5px;white-space:nowrap}
+.team-tab-btn:hover{border-color:var(--border-h);color:var(--text-p)}
+.team-tab-btn.active{background:rgba(168,85,247,.12);border-color:rgba(168,85,247,.35);color:var(--accent)}
+/* ── Image Upload ─────────────────────────────────────────────── */
+.file-drop{border:2px dashed var(--border);border-radius:11px;padding:22px;text-align:center;cursor:pointer;transition:.2s;background:rgba(168,85,247,.02)}
+.file-drop:hover{border-color:var(--accent);background:rgba(168,85,247,.05)}
+.file-drop input[type=file]{display:none}
+.img2vid-preview{width:100%;border-radius:8px;margin-top:8px;display:none;border:1px solid var(--border)}
+/* ── Spaced Repetition ────────────────────────────────────────── */
+.learn-sr-panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:13px;padding:14px;margin-top:14px}
 </style>
 </head>
 <body>
@@ -1390,7 +1466,7 @@ em{color:var(--accent);font-style:italic}
       <div class="stat-item"><div class="stat-val" id="stat-streak">&#128293; 0</div><div class="stat-lbl">Streak</div></div>
     </div>
     <div class="amb-panel">
-      <div class="amb-title"><i class="fas fa-headphones"></i>&nbsp; Ambient Sounds</div>
+      <div class="amb-title"><i class="fas fa-headphones"></i>&nbsp; Ambient Sounds <button class="btn-sm" style="margin-left:auto;font-size:10px" onclick="openMusicModal()"><i class="fab fa-youtube" style="color:#ef4444"></i><i class="fab fa-spotify" style="color:#1db954;margin-left:4px"></i> Music</button></div>
       <div class="s-chips" id="sound-chips">
         <button class="s-chip" data-sound="rain">&#127783;&#65039; Rain</button>
         <button class="s-chip" data-sound="forest">&#127794; Forest</button>
@@ -1493,47 +1569,18 @@ em{color:var(--accent);font-style:italic}
 <!-- TEAM TAB -->
 <div class="tab-pane" id="tab-pane-team" style="display:none">
   <div id="team-role-banner" style="display:none;margin-bottom:14px"></div>
-  <div id="team-hub-content">
-    <div class="sec-hd">
-      <div class="sec-title">Team Hub</div>
-      <div style="display:flex;gap:6px">
-        <button class="btn-sm" id="btn-slack-team"><i class="fas fa-slack"></i>&nbsp; Slack</button>
-        <button class="btn-sm" id="btn-refresh-team"><i class="fas fa-refresh"></i></button>
-      </div>
-    </div>
-    <div class="sprint-health" id="sprint-health-panel">
-      <div class="sh-title"><i class="fas fa-heart-pulse" style="color:var(--danger)"></i> Sprint Health</div>
-      <div class="sh-stats" id="sh-stats"></div>
-      <div class="sh-progress" style="margin-bottom:4px"><div class="sh-fill" id="sh-fill" style="background:var(--grad)"></div></div>
-      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-m);margin-bottom:10px">
-        <span>Completion <strong id="sh-pct">&#8212;</strong></span>
-        <span>Expected <strong id="sh-exp">&#8212;</strong></span>
-        <span id="sh-days"></span>
-      </div>
-      <div class="sh-pace" id="sh-pace"></div>
-      <div id="sh-assessment" style="font-size:13px;color:var(--text-s);margin-bottom:12px;padding:10px;background:var(--bg-card);border-radius:9px;line-height:1.5"></div>
-      <div id="sh-actions"></div>
-    </div>
-    <div class="sec-hd">
-      <div class="sec-title">Team Pulse <span style="font-size:11px;font-weight:400;color:var(--text-m)">(presence only)</span></div>
-      <div id="role-selector" style="display:none"></div>
-    </div>
-    <div class="team-grid" id="team-pulse-grid"></div>
-    <div id="deadline-intel" class="sprint-health" style="display:none">
-      <div class="sh-title"><i class="fas fa-clock" style="color:var(--warn)"></i> Deadline Intelligence</div>
-      <div id="deadline-content"></div>
-    </div>
-  </div>
+  <div id="team-hub-content"></div>
 </div>
 
 <!-- LEARN TAB -->
 <div class="tab-pane" id="tab-pane-learn" style="display:none">
   <div class="learn-car" id="learn-car"></div>
   <div class="l-nav" id="l-nav"></div>
-  <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:13px;padding:16px">
+  <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:13px;padding:16px;margin-bottom:14px">
     <div class="sec-title" style="margin-bottom:12px">All Cards</div>
     <div id="all-learn-cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:9px"></div>
   </div>
+  <div class="learn-sr-panel" id="learn-spaced-rep"></div>
 </div>
 
 <!-- RESTORE TAB -->
@@ -1548,24 +1595,27 @@ em{color:var(--accent);font-style:italic}
     <div class="gen-panel">
       <div class="gen-title"><i class="fas fa-image" style="color:var(--accent)"></i> Image Generation</div>
       <select class="fs-sel" id="img-model-sel" style="width:100%;margin-bottom:10px">
-        <option value="dalle3">DALL-E 3 (OpenAI)</option>
-        <option value="sd3">Stable Diffusion 3</option>
-        <option value="flux_pro">FLUX Pro (BFL)</option>
-        <option value="ideogram2">Ideogram 2</option>
+        <option value="dalle3">DALL-E 3 (OpenAI) — Best text rendering</option>
+        <option value="imagen3">Imagen 3 (Google) — Photorealistic</option>
+        <option value="sd3">Stable Diffusion 3 — Open source</option>
+        <option value="flux_pro">FLUX Pro (BFL) — Ultra-fast</option>
+        <option value="ideogram2">Ideogram 2 — Design-forward</option>
       </select>
-      <textarea class="gen-pmt" id="img-prompt" placeholder="Describe the image you want to generate..."></textarea>
+      <textarea class="gen-pmt" id="img-prompt" placeholder="Describe the image you want to generate&#8230;"></textarea>
       <button class="btn-gen" id="btn-gen-img"><i class="fas fa-wand-magic-sparkles"></i>&nbsp; Generate Image</button>
       <div class="gen-results" id="img-results"></div>
     </div>
     <div class="gen-panel">
       <div class="gen-title"><i class="fas fa-video" style="color:var(--pink)"></i> Video Generation</div>
       <select class="fs-sel" id="vid-model-sel" style="width:100%;margin-bottom:10px">
-        <option value="veo2">Veo 2 (Google)</option>
-        <option value="kling16">Kling 1.6</option>
-        <option value="runway_gen4">Runway Gen-4</option>
-        <option value="sora">Sora (OpenAI)</option>
+        <option value="veo2">Veo 2 (Google) — Cinematic</option>
+        <option value="kling16">Kling 1.6 — Smooth motion</option>
+        <option value="runway_gen4">Runway Gen-4 — Film quality</option>
+        <option value="sora">Sora (OpenAI) — World models</option>
+        <option value="pika20">Pika 2.0 — Creative effects</option>
+        <option value="hailuo">Hailuo (MiniMax) — Fast faces</option>
       </select>
-      <textarea class="gen-pmt" id="vid-prompt" placeholder="Describe the video you want to generate..."></textarea>
+      <textarea class="gen-pmt" id="vid-prompt" placeholder="Describe the video you want to generate&#8230;"></textarea>
       <select class="fs-sel" id="vid-dur" style="margin-bottom:10px">
         <option value="5">5 seconds</option>
         <option value="8">8 seconds</option>
@@ -1573,6 +1623,26 @@ em{color:var(--accent);font-style:italic}
       </select>
       <button class="btn-gen" id="btn-gen-vid"><i class="fas fa-film"></i>&nbsp; Generate Video</button>
       <div id="vid-result" style="margin-top:12px;font-size:13px;color:var(--text-s)"></div>
+    </div>
+  </div>
+  <!-- Image to Video -->
+  <div class="gen-panel" style="margin-top:14px">
+    <div class="gen-title"><i class="fas fa-photo-film" style="color:var(--cyan)"></i> Image &#8594; Video <span style="font-size:11px;font-weight:600;padding:2px 7px;border-radius:5px;background:rgba(6,182,212,.15);color:var(--cyan);margin-left:6px">NEW</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">
+      <div>
+        <label class="file-drop" for="img2vid-upload">
+          <input type="file" id="img2vid-upload" accept="image/*">
+          <i class="fas fa-cloud-upload-alt" style="font-size:24px;color:var(--accent);display:block;margin-bottom:7px"></i>
+          <div style="font-size:13px;font-weight:700">Drop image here or click to upload</div>
+          <div style="font-size:11px;color:var(--text-m);margin-top:3px">JPG, PNG, WebP &#8226; Max 10MB</div>
+        </label>
+        <img id="img2vid-preview" class="img2vid-preview" alt="Preview">
+      </div>
+      <div>
+        <textarea class="gen-pmt" id="img2vid-prompt" placeholder="Describe the motion you want&#8230; e.g. 'Zoom out slowly, dramatic lighting'" style="margin-bottom:8px"></textarea>
+        <button class="btn-gen" id="btn-img2vid" style="width:100%"><i class="fas fa-video"></i>&nbsp; Generate Video from Image</button>
+        <div id="img2vid-result" style="margin-top:10px;font-size:13px;color:var(--text-s)"></div>
+      </div>
     </div>
   </div>
 </div>

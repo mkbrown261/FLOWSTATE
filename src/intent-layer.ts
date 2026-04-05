@@ -14,7 +14,7 @@ export type SessionPhase = 'focus' | 'short_break' | 'long_break' | 'idle';
 export type ModelProvider = 'openai' | 'anthropic' | 'google' | 'xai' | 'mistral' | 'deepseek' | 'meta';
 export type TaskCapability = 'code' | 'creative' | 'analysis' | 'quick' | 'vision' | 'reasoning' | 'realtime' | 'long_form' | 'math';
 export type ImageProvider = 'dalle3' | 'imagen3' | 'sd3' | 'flux_pro' | 'ideogram2';
-export type VideoProvider = 'veo2' | 'kling16' | 'runway_gen4' | 'pika20' | 'hailuo' | 'sora';
+export type VideoProvider = 'veo2' | 'kling16' | 'runway_gen4' | 'pika20' | 'hailuo' | 'sora' | 'minimax';
 export type PremiumTier = 'free' | 'personal_pro' | 'team_starter' | 'team_growth' | 'enterprise';
 export type TeamRole = 'member' | 'senior_dev' | 'scrum_master' | 'admin';
 export type LearnCardType = 'language' | 'skill_tip' | 'did_you_know' | 'book_rec' | 'mental_model';
@@ -110,6 +110,7 @@ export const VIDEO_MODEL_REGISTRY: Record<VideoProvider, VideoModelSpec> = {
   pika20: { id: 'pika20', name: 'Pika 2.0', provider: 'Pika Labs', description: 'Creative effects, fast', apiEndpoint: 'https://api.pika.art/v2/generate', envKey: 'PIKA_API_KEY', maxDuration: 10 },
   hailuo: { id: 'hailuo', name: 'Hailuo', provider: 'MiniMax', description: 'Fast, good faces', apiEndpoint: 'https://api.minimax.chat/v1/video/generation', envKey: 'MINIMAX_API_KEY', maxDuration: 6 },
   sora: { id: 'sora', name: 'Sora', provider: 'OpenAI', description: 'World models, long-form', apiEndpoint: 'https://api.openai.com/v1/video/generations', envKey: 'OPENAI_API_KEY', maxDuration: 60 },
+  minimax: { id: 'minimax', name: 'Hailuo (MiniMax)', provider: 'MiniMax', description: 'Fast generation, good faces', apiEndpoint: 'https://api.minimax.chat/v1/video/generation', envKey: 'MINIMAX_API_KEY', maxDuration: 6 },
 };
 
 // ─── Intent Routing ───────────────────────────────────────────────────────────
@@ -819,6 +820,15 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   { service: 'ACRCloud', purpose: 'FlowState Audio: Audio fingerprinting, BPM detection, key detection, real-time pitch correction reference', envKey: 'ACRCLOUD_ACCESS_KEY, ACRCLOUD_ACCESS_SECRET', url: 'https://console.acrcloud.com', required: 'optional', tier: 'personal_pro' },
   { service: 'Dolby.io Media APIs', purpose: 'FlowState Audio: AI noise suppression, speech enhancement, audio analysis, loudness correction', envKey: 'DOLBY_API_KEY', url: 'https://dashboard.dolby.io', required: 'optional', tier: 'personal_pro' },
   { service: 'AudioShake', purpose: 'FlowState Audio: Professional stem separation for licensed music and original recordings', envKey: 'AUDIOSHAKE_API_KEY', url: 'https://app.audioshake.ai', required: 'optional', tier: 'team_growth' },
+  // ── New Video Models ─────────────────────────────────────────────────────────
+  { service: 'Pika Labs', purpose: 'Pika 2.0 — Creative video generation with effects and templates', envKey: 'PIKA_API_KEY', url: 'https://pika.art/api', required: 'optional', tier: 'team_growth' },
+  { service: 'MiniMax (Hailuo)', purpose: 'Hailuo video generation — fast, good face consistency', envKey: 'MINIMAX_API_KEY', url: 'https://api.minimax.chat', required: 'optional', tier: 'team_growth' },
+  { service: 'Kling / Kuaishou', purpose: 'Kling 1.6 text-to-video and image-to-video generation', envKey: 'KLING_API_KEY', url: 'https://klingai.com/dev', required: 'optional', tier: 'team_growth' },
+  // ── YouTube & Spotify (no API key required — embed-based) ───────────────────
+  { service: 'YouTube Embed', purpose: 'Pomodoro music: embed YouTube videos/playlists during focus sessions (no API key — use embed URL in Settings)', envKey: 'N/A — browser embed via Settings', url: 'https://developers.google.com/youtube/iframe_api', required: 'optional', tier: 'free' },
+  { service: 'Spotify Embed', purpose: 'Pomodoro music: embed Spotify playlists during focus sessions (Spotify Premium required for autoplay; use URI in Settings)', envKey: 'N/A — browser embed via Settings', url: 'https://developer.spotify.com/documentation/embeds', required: 'optional', tier: 'free' },
+  // ── Additional Image Models ──────────────────────────────────────────────────
+  { service: 'Google Imagen 3', purpose: 'Imagen 3 photorealistic image generation via Google AI Studio', envKey: 'GOOGLE_AI_KEY', url: 'https://aistudio.google.com/app/apikey', required: 'optional', tier: 'personal_pro' },
 ];
 
 // ─── Clawbot / ClawFlow ───────────────────────────────────────────────────────
