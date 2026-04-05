@@ -932,6 +932,7 @@ app.post('/api/audio/analyze', async (c) => {
 
 // ─── Misc APIs ────────────────────────────────────────────────────────────────
 app.get('/api/health', (c) => c.json({ status: 'alive', version: '3.0.0', name: 'FlowState', phase: 'Phase 3 — Full Architecture' }))
+
 app.get('/api/learn/cards', (c) => c.json({ cards: declareLearnCards() }))
 app.get('/api/restore/intent', (c) => c.json(declareRestoreIntent()))
 app.get('/api/tier/capabilities', (c) => c.json(declareTierCapabilities((c.req.query('tier') as any) || 'free')))
