@@ -1556,13 +1556,17 @@ em{color:var(--accent);font-style:italic}
           <div class="msg-bub">Hey! I auto-route to the best model for each task &mdash; Claude for code, Gemini for speed, Grok for live data. Click the model pill below to switch models.</div>
         </div>
       </div>
-      <div id="chat-suggestions" style="display:flex;flex-wrap:wrap;gap:8px;padding:12px 0 4px">
-        <button class="chat-suggest-chip" onclick="sendSuggestion('Help me plan my sprint goals for this week')">&#128203; Plan my sprint</button>
-        <button class="chat-suggest-chip" onclick="sendSuggestion('Write a Python script to automate my daily standup report')">&#128187; Write code</button>
-        <button class="chat-suggest-chip" onclick="sendSuggestion('Summarize the key principles from Deep Work by Cal Newport')">&#128218; Book summary</button>
-        <button class="chat-suggest-chip" onclick="sendSuggestion('Give me 3 focus techniques to beat afternoon energy slumps')">&#9889; Focus tips</button>
-        <button class="chat-suggest-chip" onclick="sendSuggestion('Draft a professional update email to my team about project status')">&#9993; Draft email</button>
-        <button class="chat-suggest-chip" onclick="sendSuggestion('What are the latest AI developments today?')">&#127757; Live news (Grok)</button>
+      <div style="flex:1"></div>
+      <div id="chat-suggestions" style="padding-bottom:6px">
+        <div style="font-size:12px;color:var(--text-m);margin-bottom:10px;font-weight:600;letter-spacing:.4px;text-transform:uppercase">&#10024; Try asking</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <button class="chat-suggest-chip" onclick="sendSuggestion('Help me plan my sprint goals for this week')">&#128203; Plan my sprint</button>
+          <button class="chat-suggest-chip" onclick="sendSuggestion('Write a Python script to automate my daily standup report')">&#128187; Write code</button>
+          <button class="chat-suggest-chip" onclick="sendSuggestion('Summarize the key principles from Deep Work by Cal Newport')">&#128218; Book summary</button>
+          <button class="chat-suggest-chip" onclick="sendSuggestion('Give me 3 focus techniques to beat afternoon energy slumps')">&#9889; Focus tips</button>
+          <button class="chat-suggest-chip" onclick="sendSuggestion('Draft a professional update email to my team about project status')">&#9993; Draft email</button>
+          <button class="chat-suggest-chip" onclick="sendSuggestion('What are the latest AI developments today?')">&#127757; Live news (Grok)</button>
+        </div>
       </div>
     </div>
     <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:16px;padding:10px 14px">

@@ -905,14 +905,17 @@ async function sendMessage() {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ message:msg, model:state.chat.model, history:state.chat.history.slice(-10) })
     });
-    const data = await res.json();
+    if (!res.ok) { throw new Error('HTTP ' + res.status); }
+    // Server returns plain text + X-Routed-Model header
+    const reply = await res.text();
+    const routedModel = res.headers.get('X-Routed-Model') || state.chat.model;
     removeTyping(tid);
-    const model = data.model || state.chat.model;
-    appendMsg('ai', data.reply || 'No response.', MODEL_NAMES[model] || model);
-    state.chat.history.push({role:'user',content:msg},{role:'assistant',content:data.reply||''});
+    appendMsg('ai', reply || 'No response.', MODEL_NAMES[routedModel] || routedModel);
+    state.chat.history.push({role:'user',content:msg},{role:'assistant',content:reply||''});
   } catch(e) {
     removeTyping(tid);
-    appendMsg('ai','Connection error — check your network.','Error');
+    appendMsg('ai','Sorry, something went wrong. Check your API keys in Settings or try again.','Error');
+    console.error('Chat error:', e);
   }
 }
 
@@ -1135,13 +1138,26 @@ function buildMetrics() {
   const ctx = document.getElementById('focus-chart')?.getContext('2d');
   if (!ctx) return;
   if (focusChartInstance) focusChartInstance.destroy();
+
+  // If no real data yet, show sample data so chart looks useful
+  const hasData = weekData.some(v => v > 0);
+  const sampleData = [2, 4, 3, 5, 2, 6, 3];
+  const chartData = hasData ? weekData : sampleData;
+  const isDemoChart = !hasData;
+
+  // Update chart title to show "sample" when no real data
+  const chartTitle = document.querySelector('.chart-title');
+  if (chartTitle) {
+    chartTitle.innerHTML = `<i class="fas fa-chart-bar" style="color:var(--accent)"></i> Focus Sessions This Week${isDemoChart ? ' <span style="font-size:10px;color:var(--text-m);font-weight:400;background:rgba(168,85,247,.12);padding:2px 7px;border-radius:10px;margin-left:4px">sample</span>' : ''}`;
+  }
+
   focusChartInstance = new Chart(ctx, {
     type:'bar',
     data: {
       labels: Array.from({length:7},(_, i)=>{ const d=new Date(today); d.setDate(d.getDate()-(6-i)); return d.toLocaleDateString('en-US',{weekday:'short'}); }),
-      datasets:[{ data:weekData, backgroundColor:'rgba(168,85,247,.6)', borderColor:'#a855f7', borderWidth:2, borderRadius:8 }]
+      datasets:[{ data:chartData, backgroundColor: isDemoChart ? 'rgba(168,85,247,.25)' : 'rgba(168,85,247,.6)', borderColor:'#a855f7', borderWidth:2, borderRadius:8 }]
     },
-    options:{ plugins:{legend:{display:false}}, scales:{ y:{beginAtZero:true,ticks:{color:'#555',stepSize:1,precision:0},grid:{color:'rgba(168,85,247,.07)'}}, x:{ticks:{color:'#555'},grid:{display:false}} }, animation:{duration:600} }
+    options:{ plugins:{legend:{display:false}}, scales:{ y:{beginAtZero:true,ticks:{color:'#888',stepSize:1,precision:0},grid:{color:'rgba(168,85,247,.07)'}}, x:{ticks:{color:'#888'},grid:{display:false}} }, animation:{duration:600} }
   });
   loadBehaviorInsight();
 }
