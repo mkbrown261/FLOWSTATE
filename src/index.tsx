@@ -1028,7 +1028,15 @@ app.get('/api/billing/revenue', async (c) => {
 app.post('/api/audio/tts', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
-  const { text, voice_id = 'pNInz6obpgDQGcFmaJgB', model_id = 'eleven_turbo_v2' } = await c.req.json()
+  const {
+    text,
+    voice_id        = 'pNInz6obpgDQGcFmaJgB',
+    model_id        = 'eleven_turbo_v2_5',
+    stability       = 0.5,
+    similarity_boost= 0.75,
+    style           = 0,
+    use_speaker_boost = true,
+  } = await c.req.json()
   if (!text) return c.json({ error: 'text required' }, 400)
 
   const elKey = c.env?.ELEVENLABS_API_KEY
@@ -1038,15 +1046,22 @@ app.post('/api/audio/tts', async (c) => {
     const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice_id}/stream`, {
       method: 'POST',
       headers: { 'xi-api-key': elKey, 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
-      body: JSON.stringify({ text, model_id, voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
+      body: JSON.stringify({
+        text,
+        model_id,
+        voice_settings: { stability, similarity_boost, style, use_speaker_boost },
+      }),
     })
     if (!res.ok) {
       const err: any = await res.json().catch(() => ({}))
-      return c.json({ error: err?.detail?.message || 'ElevenLabs error' }, 500)
+      return c.json({ error: err?.detail?.message || `ElevenLabs error ${res.status}` }, 500)
     }
-    // Stream audio directly back to client
     return new Response(res.body, {
-      headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-cache', 'Transfer-Encoding': 'chunked' },
+      headers: {
+        'Content-Type': 'audio/mpeg',
+        'Cache-Control': 'no-cache',
+        'Content-Disposition': 'inline; filename="tts.mp3"',
+      },
     })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
@@ -2412,28 +2427,75 @@ em{color:var(--accent);font-style:italic}
 
       <!-- ── TTS Section ── -->
       <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:18px;margin-top:8px">
-        <div style="font-size:14px;font-weight:800;margin-bottom:12px">🎙️ Text-to-Speech (ElevenLabs)</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <div style="font-size:14px;font-weight:800">🎙️ Text-to-Speech <span style="font-size:11px;font-weight:400;color:#10b981;margin-left:6px">● ElevenLabs Live</span></div>
+          <span id="tts-voice-count" style="font-size:11px;color:var(--text-s)">Loading voices…</span>
+        </div>
         <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
-          <select id="tts-voice" style="flex:1;min-width:140px;background:var(--bg-input,#1e1e30);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
-            <option value="pNInz6obpgDQGcFmaJgB">Adam</option>
-            <option value="EXAVITQu4vr4xnSDxMaL">Bella</option>
-            <option value="21m00Tcm4TlvDq8ikWAM">Rachel</option>
-            <option value="VR6AewLTigWG4xSOukaG">Arnold</option>
-            <option value="pMsXgVXv3BLzUgSXRplE">Serena</option>
+          <select id="tts-voice" style="flex:1;min-width:180px;background:var(--bg-input,#1e1e30);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
+            <option value="pNInz6obpgDQGcFmaJgB">Adam - Dominant, Firm</option>
+            <option value="EXAVITQu4vr4xnSDxMaL">Sarah - Mature, Confident</option>
+            <option value="FGY2WhTYpPnrIDTdsKH5">Laura - Enthusiast, Quirky</option>
+            <option value="IKne3meq5aSn9XLyUdCD">Charlie - Deep, Energetic</option>
+            <option value="JBFqnCBsd6RMkjVDRZzb">George - Warm Storyteller</option>
+            <option value="nPczCjzI2devNBz1zQrb">Brian - Deep, Resonant</option>
+            <option value="cgSgspJ2msm6clMCkdW9">Jessica - Playful, Bright</option>
+            <option value="onwK4e9ZLuTAKqWW03F9">Daniel - Steady Broadcaster</option>
+            <option value="CwhRBWXzGAHq8TQ4Fs17">Roger - Laid-Back, Casual</option>
+            <option value="SAz9YHcvj6GT2YYXdXww">River - Relaxed, Neutral</option>
+            <option value="TX3LPaxmHKxFdv7VOQHJ">Liam - Energetic Creator</option>
+            <option value="bIHbv24MWmeRgasZH58o">Will - Relaxed Optimist</option>
+            <option value="cjVigY5qzO86Huf0OWal">Eric - Smooth, Trustworthy</option>
+            <option value="iP95p4xoKVk53GoZ742B">Chris - Charming, Casual</option>
+            <option value="pqHfZKP75CvOlQylNhV4">Bill - Wise, Mature</option>
+            <option value="XrExE9yKIg1WjnnlVkGX">Matilda - Professional</option>
+            <option value="pFZP5JQG7iQjIQuC4Bku">Lily - Velvety Actress</option>
+            <option value="Xb7hH8MSUJpSbSDYk0k2">Alice - Clear Educator</option>
+            <option value="hpp4J3VqNfWAUOO0d1Us">Bella - Professional, Warm</option>
+            <option value="N2lVS1w4EtoT3dr4eOWO">Callum - Husky Trickster</option>
+            <option value="SOYHLrjzK2X1ezoPC6cr">Harry - Fierce Warrior</option>
+            <option value="vfaqCOvlrKi4Zp7C2IAm">Demon Monster - Character</option>
+            <option value="flHkNRp1BlvT73UL6gyz">Jessica Anne - Animation</option>
+            <option value="gDdSvLgNtVRvcpgtMF07">Leif - Husky Male</option>
+            <option value="94D02IUHyb3D4r3i3feh">Rashid - Deep Narrative</option>
+            <option value="UFO0Yv86wqRxAt1DmXUu">Mordred - Evil Villain</option>
           </select>
           <select id="tts-model" style="background:var(--bg-input,#1e1e30);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
-            <option value="eleven_turbo_v2">Turbo v2 (fast)</option>
-            <option value="eleven_multilingual_v2">Multilingual v2</option>
-            <option value="eleven_monolingual_v1">Monolingual v1</option>
+            <option value="eleven_turbo_v2_5">Turbo v2.5 (fastest)</option>
+            <option value="eleven_turbo_v2">Turbo v2</option>
+            <option value="eleven_multilingual_v2">Multilingual v2 (best quality)</option>
+            <option value="eleven_flash_v2_5">Flash v2.5 (ultra fast)</option>
           </select>
         </div>
-        <textarea id="tts-text" placeholder="Enter text to convert to speech…" style="width:100%;min-height:70px;background:var(--bg-input,#1e1e30);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-size:13px;resize:vertical;margin-bottom:10px;box-sizing:border-box"></textarea>
-        <button onclick="generateTTS()" style="width:100%;padding:10px;background:rgba(168,85,247,.2);border:1px solid rgba(168,85,247,.4);color:var(--accent);border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px">
-          <i class="fas fa-microphone"></i> Speak It
+        <!-- Voice stability / similarity sliders -->
+        <div style="display:flex;gap:14px;margin-bottom:10px;flex-wrap:wrap">
+          <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">
+            Stability <span id="tts-stab-val">0.5</span>
+            <input id="tts-stability" type="range" min="0" max="1" step="0.05" value="0.5"
+              oninput="document.getElementById('tts-stab-val').textContent=this.value"
+              style="width:100%;accent-color:var(--accent)">
+          </label>
+          <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">
+            Similarity <span id="tts-sim-val">0.75</span>
+            <input id="tts-similarity" type="range" min="0" max="1" step="0.05" value="0.75"
+              oninput="document.getElementById('tts-sim-val').textContent=this.value"
+              style="width:100%;accent-color:var(--accent)">
+          </label>
+          <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">
+            Style <span id="tts-style-val">0</span>
+            <input id="tts-style-ex" type="range" min="0" max="1" step="0.05" value="0"
+              oninput="document.getElementById('tts-style-val').textContent=this.value"
+              style="width:100%;accent-color:var(--accent)">
+          </label>
+        </div>
+        <textarea id="tts-text" placeholder="Enter text to convert to speech… try 'Welcome to FlowState — your AI-powered workspace.'" style="width:100%;min-height:80px;background:var(--bg-input,#1e1e30);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-size:13px;resize:vertical;margin-bottom:10px;box-sizing:border-box"></textarea>
+        <button onclick="generateTTS()" id="tts-btn" style="width:100%;padding:10px;background:linear-gradient(135deg,rgba(168,85,247,.3),rgba(6,182,212,.2));border:1px solid rgba(168,85,247,.5);color:var(--accent);border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px">
+          <i class="fas fa-microphone"></i> Generate Voice
         </button>
         <div id="tts-status" style="display:none;text-align:center">
-          <div id="tts-status-text" style="font-size:12px;color:var(--text-s);margin-bottom:6px"></div>
-          <audio id="tts-player" controls style="width:100%"></audio>
+          <div id="tts-status-text" style="font-size:12px;color:var(--text-s);margin-bottom:8px"></div>
+          <audio id="tts-player" controls style="width:100%;margin-bottom:6px"></audio>
+          <a id="tts-download" href="#" download="flowstate-tts.mp3" style="display:none;font-size:11px;color:var(--accent);text-decoration:none"><i class="fas fa-download"></i> Download MP3</a>
         </div>
       </div>
     </div>

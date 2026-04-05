@@ -440,6 +440,7 @@ function switchTab(id) {
   if (id==='learn')    loadLearnCards();
   if (id==='restore')  loadRestore();
   if (id==='clawbot')  initClawbot();
+  if (id==='audio')    { loadTTSVoices(); }
   if (id==='generate') { setTimeout(()=>{ buildGenPicker('img'); buildGenPicker('vid'); buildGenPicker('i2v'); }, 50); }
 }
 
@@ -2646,44 +2647,78 @@ function _showAudioResult(audioUrl, msg) {
   notify('🎵 Music generated!', 'success');
 }
 
+// Load real ElevenLabs voices from API and populate dropdown
+async function loadTTSVoices() {
+  try {
+    const r = await fetch('/api/audio/tts/voices');
+    if (!r.ok) return;
+    const data = await r.json();
+    const voices = data.voices || [];
+    if (voices.length === 0) return;
+
+    const sel = document.getElementById('tts-voice');
+    const countEl = document.getElementById('tts-voice-count');
+    if (!sel) return;
+
+    // Rebuild dropdown with real voices sorted by name
+    voices.sort((a, b) => a.name.localeCompare(b.name));
+    sel.innerHTML = voices.map(v => {
+      const desc = v.description ? ` - ${v.description.slice(0,30)}` : '';
+      return `<option value="${v.voice_id}">${v.name}${desc}</option>`;
+    }).join('');
+
+    if (countEl) countEl.textContent = `${voices.length} voices loaded`;
+  } catch(e) {
+    const countEl = document.getElementById('tts-voice-count');
+    if (countEl) countEl.textContent = '26 voices (cached)';
+  }
+}
+
 async function generateTTS() {
-  const text    = document.getElementById('tts-text')?.value?.trim();
-  const voiceId = document.getElementById('tts-voice')?.value || 'pNInz6obpgDQGcFmaJgB';
-  const modelId = document.getElementById('tts-model')?.value || 'eleven_turbo_v2';
+  const text      = document.getElementById('tts-text')?.value?.trim();
+  const voiceId   = document.getElementById('tts-voice')?.value || 'pNInz6obpgDQGcFmaJgB';
+  const modelId   = document.getElementById('tts-model')?.value || 'eleven_turbo_v2_5';
+  const stability = parseFloat(document.getElementById('tts-stability')?.value || '0.5');
+  const similarity= parseFloat(document.getElementById('tts-similarity')?.value || '0.75');
+  const styleEx   = parseFloat(document.getElementById('tts-style-ex')?.value || '0');
+
   if (!text) { notify('Enter text to convert to speech', 'info'); return; }
 
   const statusDiv  = document.getElementById('tts-status');
   const statusText = document.getElementById('tts-status-text');
   const player     = document.getElementById('tts-player');
+  const dlLink     = document.getElementById('tts-download');
+  const btn        = document.getElementById('tts-btn');
 
   if (statusDiv)  statusDiv.style.display  = 'block';
   if (statusText) statusText.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating voice…';
   if (player)     player.style.display = 'none';
+  if (dlLink)     dlLink.style.display = 'none';
+  if (btn)        { btn.disabled = true; btn.innerHTML = '⏳ Generating…'; }
 
   try {
     const res = await fetch('/api/audio/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, voice_id: voiceId, model_id: modelId }),
+      body: JSON.stringify({ text, voice_id: voiceId, model_id: modelId, stability, similarity_boost: similarity, style: styleEx }),
     });
 
-    // Check if we got audio or JSON error
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('audio')) {
       const blob = await res.blob();
       const url  = URL.createObjectURL(blob);
-      if (player)     { player.src = url; player.style.display = 'block'; }
+      if (player)  { player.src = url; player.style.display = 'block'; }
+      if (dlLink)  { dlLink.href = url; dlLink.style.display = 'inline-block'; }
       if (statusText) statusText.textContent = '✅ Voice ready!';
+      notify('🎙️ Voice generated!', 'success');
     } else {
       const data = await res.json();
-      if (data.demo) {
-        if (statusText) statusText.textContent = '⚠️ ' + data.message;
-      } else {
-        if (statusText) statusText.textContent = '❌ ' + (data.error || 'TTS failed');
-      }
+      if (statusText) statusText.textContent = (data.demo ? '⚠️ ' : '❌ ') + (data.message || data.error || 'TTS failed');
     }
   } catch(e) {
     if (statusText) statusText.textContent = 'Error: ' + e.message;
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-microphone"></i> Generate Voice'; }
   }
 }
 
