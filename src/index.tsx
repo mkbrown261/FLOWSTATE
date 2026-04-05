@@ -1906,8 +1906,7 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .auth-banner p{font-size:13px;color:var(--text-s);margin-bottom:13px}
 .demo-banner{background:linear-gradient(135deg,rgba(245,158,11,.08),rgba(239,68,68,.05));border:1px solid rgba(245,158,11,.3);border-radius:11px;padding:11px 16px;font-size:12px;color:var(--warn);margin-bottom:14px;display:flex;align-items:center;gap:8px}
 .spinner{width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;display:inline-block}
-select.fs-sel{background:var(--bg-card);border:1px solid var(--border);border-radius:7px;color:var(--text-p);padding:6px 11px;font-size:12px;cursor:pointer;outline:none}
-select.fs-sel:focus{border-color:var(--accent)}
+/* select.fs-sel removed — all dropdowns now use gs-model-pill pickers */
 input.fs-in{background:var(--bg-card);border:1px solid var(--border);border-radius:7px;color:var(--text-p);padding:8px 13px;font-size:13px;outline:none;width:100%}
 input.fs-in:focus{border-color:var(--accent)}
 code{background:rgba(168,85,247,.1);padding:2px 5px;border-radius:4px;font-size:12px;color:var(--accent)}
@@ -2590,11 +2589,18 @@ em{color:var(--accent);font-style:italic}
         </div>
       </div>
       <div class="clawbot-app-sel">
-        <select class="fs-sel" id="clawbot-app-ctx">
-          <option value="flowstate_hub">&#9889; Flowstate Hub</option>
-          <option value="264_pro">&#127916; 264 Pro Editor</option>
-          <option value="flowstate_audio">&#127925; Flowstate Audio</option>
-        </select>
+        <!-- App context pill picker — matches image/audio gen style -->
+        <div class="gs-gen-picker" style="position:relative" id="clawbot-ctx-picker-wrap">
+          <button class="gs-model-pill" onclick="toggleClawCtxPicker(event)" id="clawbot-ctx-pill" style="min-width:160px;justify-content:space-between">
+            <span id="clawbot-ctx-label">⚡ Flowstate Hub</span>
+            <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+          </button>
+          <div class="gs-model-dropdown" id="clawbot-ctx-dropdown" style="display:none;min-width:190px">
+            <div class="gs-model-row" onclick="setClawCtx('flowstate_hub','⚡ Flowstate Hub')"><span style="font-weight:600;font-size:13px">⚡ Flowstate Hub</span><div class="gs-radio gs-radio-active" id="ccr-hub"></div></div>
+            <div class="gs-model-row" onclick="setClawCtx('264_pro','🎬 264 Pro Editor')"><span style="font-weight:600;font-size:13px">🎬 264 Pro Editor</span><div class="gs-radio" id="ccr-264"></div></div>
+            <div class="gs-model-row" onclick="setClawCtx('flowstate_audio','🎵 Flowstate Audio')"><span style="font-weight:600;font-size:13px">🎵 Flowstate Audio</span><div class="gs-radio" id="ccr-audio"></div></div>
+          </div>
+        </div>
         <div class="clawbot-coins" id="clawbot-coins-badge">&#9889; &mdash; coins</div>
       </div>
     </div>

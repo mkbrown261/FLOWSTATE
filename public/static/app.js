@@ -2767,6 +2767,34 @@ async function generateTTS() {
   }
 }
 
+// ── Clawbot App Context Pill Picker ──────────────────────────────────────────
+let _clawCtx         = 'flowstate_hub';
+let _clawCtxPickerOpen = false;
+
+function toggleClawCtxPicker(e) {
+  e.stopPropagation();
+  _clawCtxPickerOpen = !_clawCtxPickerOpen;
+  _refreshClawCtxPicker();
+  if (_clawCtxPickerOpen) {
+    setTimeout(() => document.addEventListener('click', _closeClawCtxPicker, { once: true }), 10);
+  }
+}
+function _closeClawCtxPicker() { _clawCtxPickerOpen = false; _refreshClawCtxPicker(); }
+function _refreshClawCtxPicker() {
+  const dd = document.getElementById('clawbot-ctx-dropdown');
+  if (dd) dd.style.display = _clawCtxPickerOpen ? 'block' : 'none';
+}
+function setClawCtx(val, label) {
+  _clawCtx = val;
+  const lbl = document.getElementById('clawbot-ctx-label');
+  if (lbl) lbl.textContent = label;
+  // Update radios
+  const map = { flowstate_hub: 'ccr-hub', '264_pro': 'ccr-264', flowstate_audio: 'ccr-audio' };
+  Object.values(map).forEach(id => { const r = document.getElementById(id); if (r) r.className = 'gs-radio'; });
+  const active = document.getElementById(map[val]);
+  if (active) active.className = 'gs-radio gs-radio-active';
+  _closeClawCtxPicker();
+}
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function sendClawbotMessage() {
@@ -2776,7 +2804,7 @@ async function sendClawbotMessage() {
   if (inp) { inp.value=''; inp.style.height='42px'; }
   appendClawbotMsg('user', msg, '');
   const tid = appendClawbotTyping();
-  const appCtx = document.getElementById('clawbot-app-ctx')?.value || 'flowstate_hub';
+  const appCtx = _clawCtx || 'flowstate_hub';
   try {
     const res = await fetch('/api/clawbot/chat', {
       method:'POST', headers:{'Content-Type':'application/json'},
