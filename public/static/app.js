@@ -2482,12 +2482,20 @@ async function loadTokenBalance() {
     const r = await fetch('/api/billing/balance');
     if (!r.ok) return;
     _tokenBalance = await r.json();
-    // Update any balance displays
+    // Update compact token counter on the buy-tokens button
     const el = document.getElementById('token-balance-display');
     if (el && _tokenBalance) {
       const purchased = _tokenBalance.purchased || 0;
-      const daily = _tokenBalance.dailyLimit - _tokenBalance.dailyUsed;
-      el.textContent = `${(Math.max(0,daily)).toLocaleString()} daily + ${purchased.toLocaleString()} purchased`;
+      const dailyLeft = Math.max(0, (_tokenBalance.dailyLimit || 0) - (_tokenBalance.dailyUsed || 0));
+      const total = dailyLeft + purchased;
+      // Format: 12.3k, 1.2M, etc.
+      const fmt = n => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+'M'
+                     : n >= 1_000     ? Math.round(n/1_000)+'k'
+                     : String(n);
+      el.textContent = fmt(total);
+      // Also update the button title with full breakdown
+      const btn = document.getElementById('btn-topup');
+      if (btn) btn.title = `${fmt(dailyLeft)} daily left · ${fmt(purchased)} purchased — Click to buy more`;
     }
   } catch(e) {}
 }

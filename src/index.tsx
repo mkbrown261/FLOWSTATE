@@ -2041,11 +2041,11 @@ em{color:var(--accent);font-style:italic}
   <button class="tab-btn" id="tab-generate"><i class="fas fa-magic"></i>Generate</button>
   <button class="tab-btn" id="tab-264" style="border-color:rgba(236,72,153,.25)"><i class="fas fa-film" style="color:#ec4899"></i><span style="background:linear-gradient(135deg,#ec4899,#f59e0b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">264 Pro</span></button>
   <button class="tab-btn" id="tab-audio" style="border-color:rgba(16,185,129,.25)"><i class="fas fa-music" style="color:#10b981"></i><span style="background:linear-gradient(135deg,#10b981,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">Audio</span></button>
-  <button class="tab-btn" id="tab-clawbot" style="border-color:rgba(6,182,212,.25)"><i class="fas fa-robot" style="color:#06b6d4"></i><span style="background:linear-gradient(135deg,#a855f7,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">Clawbot</span></button>
+  <button class="tab-btn" id="tab-clawbot" style="border-color:rgba(6,182,212,.25)"><i class="fas fa-robot" style="color:#06b6d4"></i><span style="background:linear-gradient(135deg,#a855f7,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">ClawFlow</span></button>
   <button class="tab-btn demo-tab" id="tab-demo" style="display:none"><i class="fas fa-eye"></i>Demo</button>
   <div style="margin-left:auto;display:flex;gap:5px">
     <button class="btn-sm" id="btn-creds" title="API Credentials"><i class="fas fa-key"></i></button>
-    <button class="btn-sm" id="btn-topup" title="Buy More Tokens" style="background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.4);color:#10b981"><i class="fas fa-coins"></i></button>
+    <button class="btn-sm" id="btn-topup" title="Buy More Tokens" onclick="openTopupModal()" style="background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.4);color:#10b981;display:flex;align-items:center;gap:4px"><i class="fas fa-coins"></i><span id="token-balance-display" style="font-size:10px;font-weight:700;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span></button>
     <button class="btn-sm" id="btn-pricing"><i class="fas fa-star"></i> Pro</button>
     <button class="btn-sm" id="btn-invite"><i class="fas fa-user-plus"></i></button>
     <button class="btn-sm" id="btn-settings"><i class="fas fa-gear"></i></button>
@@ -2350,7 +2350,7 @@ em{color:var(--accent);font-style:italic}
       <div style="font-size:18px;font-weight:900;margin-bottom:6px">Supercharge with Clawbot &amp; ClawFlow</div>
       <div style="font-size:13px;color:var(--text-s);margin-bottom:20px;line-height:1.7">Clawbot connects directly to 264 Pro for real-time AI assistance &mdash; walkthrough generation, AI tool suggestions, export optimization, and automated editing workflows. ClawFlow subscription required ($40/month &mdash; first month $20).</div>
       <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-        <button class="clawbot-cta" style="max-width:240px;margin:0 auto" onclick="switchTab('clawbot');document.getElementById('clawbot-app-ctx').value='264_pro'">Open Clawbot for 264 Pro &rarr;</button>
+        <button class="clawbot-cta" style="max-width:240px;margin:0 auto" onclick="switchTab('clawbot');setClawCtx('264_pro','🎬 264 Pro Editor')">Open ClawFlow for 264 Pro &rarr;</button>
       </div>
     </div>
 
