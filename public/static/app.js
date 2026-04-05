@@ -1914,10 +1914,10 @@ async function generateImageToVideo() {
 // ── Utilities ──────────────────────────────────────────────────────────────
 function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-function openModal(html) {
+function openModal(html, wide=false) {
   document.getElementById('modal-ov')?.remove();
   const ov = document.createElement('div'); ov.className='modal-ov'; ov.id='modal-ov';
-  ov.innerHTML = `<div class="modal-card">${html}<div style="margin-top:14px;text-align:right"><button class="btn-sm" onclick="closeModal()">Close</button></div></div>`;
+  ov.innerHTML = `<div class="modal-card${wide?' modal-wide':''}">${html}<div style="margin-top:14px;text-align:right"><button class="btn-sm" onclick="closeModal()">Close</button></div></div>`;
   ov.addEventListener('click', e => { if(e.target===ov) closeModal(); });
   document.body.appendChild(ov);
 }
@@ -1944,19 +1944,61 @@ function startCheckout(tier) {
 
 function openCredsModal() {
   fetch('/api/credentials').then(r=>r.json()).then(d=>{
-    const cats = {core:[],recommended:[],optional:[]};
-    (d.credentials||[]).forEach(c=>{ if(cats[c.required]) cats[c.required].push(c); else cats.optional.push(c); });
-    const renderSection = (label, items, color) => items.length ? `
-      <tr><td colspan="5" style="padding:10px 7px 4px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:${color};border-bottom:1px solid var(--border)">${label} (${items.length})</td></tr>
-      ${items.map(c=>`<tr><td style="font-weight:600">${c.service}</td><td style="color:var(--text-m)">${c.purpose.slice(0,50)}${c.purpose.length>50?'…':''}</td><td style="font-family:monospace;font-size:11px">${c.envKey.split(',')[0]}</td><td><span class="badge-${c.required==='core'?'core':c.required==='recommended'?'rec':'opt'}">${c.required}</span></td><td><a href="${c.url||'#'}" target="_blank">Docs ↗</a></td></tr>`).join('')}
-    ` : '';
-    openModal(`<h2>🔑 API Credentials</h2>
-      <p style="color:var(--text-s);font-size:13px;margin-top:4px">All keys stored as Cloudflare Secrets — never in client code. Add via: <code>wrangler secret put KEY_NAME</code></p>
-      <table class="cred-tbl"><thead><tr><th>Service</th><th>Purpose</th><th>Env Key</th><th>Required</th><th>Docs</th></tr></thead><tbody>
-        ${renderSection('Core — Required for basic functionality', cats.core, 'var(--green)')}
-        ${renderSection('Recommended — Unlocks key features', cats.recommended, 'var(--warn)')}
-        ${renderSection('Optional — Advanced & integrations', cats.optional, 'var(--text-m)')}
-      </tbody></table>`);
+    // Group by required level AND by category
+    const coreItems=[], recItems=[], imgItems=[], vidItems=[], integItems=[], audioItems=[], pro264Items=[], otherItems=[];
+    const imgKeywords = ['Stability AI','Black Forest Labs','Ideogram','Recraft','Imagen','DALL-E','GPT-Image'];
+    const vidKeywords = ['Runway ML','Kling','Pika Labs','MiniMax','Luma AI','Veo','Sora'];
+    const audioKeywords = ['Suno','Udio','MusicGen','Moises','Loudme','ACRCloud','Dolby','AudioShake','ElevenLabs'];
+    const pro264Keywords = ['Replicate','Hugging Face','Cloudflare R2','Clawbot'];
+    const integKeywords = ['Microsoft','GitHub OAuth','Linear','Jira','Asana','Oura','Whoop','Plaid','Beehiiv','YouTube Embed','Spotify Embed'];
+
+    (d.credentials||[]).forEach(c=>{
+      if (c.required==='core') { coreItems.push(c); return; }
+      if (c.required==='recommended') { recItems.push(c); return; }
+      if (imgKeywords.some(k=>c.service.includes(k))) { imgItems.push(c); return; }
+      if (vidKeywords.some(k=>c.service.includes(k))) { vidItems.push(c); return; }
+      if (audioKeywords.some(k=>c.service.includes(k))) { audioItems.push(c); return; }
+      if (pro264Keywords.some(k=>c.service.includes(k))) { pro264Items.push(c); return; }
+      if (integKeywords.some(k=>c.service.includes(k))) { integItems.push(c); return; }
+      otherItems.push(c);
+    });
+
+    const pill = (r) => r==='core'
+      ? `<span style="background:rgba(16,185,129,.15);color:#10b981;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700">CORE</span>`
+      : r==='recommended'
+      ? `<span style="background:rgba(245,158,11,.15);color:#f59e0b;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700">REC</span>`
+      : `<span style="background:rgba(139,92,246,.12);color:#a78bfa;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700">OPT</span>`;
+
+    const renderSection = (label, items, accent) => !items.length ? '' : `
+      <tr><td colspan="5" style="padding:12px 8px 5px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:${accent};border-bottom:1px solid var(--border)">${label}&nbsp;&nbsp;<span style="opacity:.5;font-size:9px">${items.length} service${items.length>1?'s':''}</span></td></tr>
+      ${items.map(c=>`<tr>
+        <td style="font-weight:600;white-space:nowrap">${c.service}</td>
+        <td style="color:var(--text-m);font-size:11px;max-width:220px">${c.purpose}</td>
+        <td style="font-family:monospace;font-size:10px;color:var(--accent);white-space:nowrap">${c.envKey.split(',').map(k=>`<div>${k.trim()}</div>`).join('')}</td>
+        <td>${pill(c.required)}</td>
+        <td><a href="${c.url||'#'}" target="_blank" style="white-space:nowrap">Get Key ↗</a></td>
+      </tr>`).join('')}
+    `;
+
+    openModal(`
+      <h2 style="margin-bottom:6px">🔑 API Credentials &amp; Keys</h2>
+      <p style="color:var(--text-s);font-size:12px;margin-bottom:10px">Keys are stored as Cloudflare Secrets — never exposed in client code.<br>Add via: <code style="background:rgba(168,85,247,.15);padding:2px 6px;border-radius:4px">wrangler secret put KEY_NAME</code> or the Cloudflare dashboard.</p>
+      <div style="overflow-x:auto">
+      <table class="cred-tbl">
+        <thead><tr><th>Service</th><th>What It Powers</th><th>Env Variable(s)</th><th>Level</th><th>Get Key</th></tr></thead>
+        <tbody>
+          ${renderSection('🟢 Core — Required', coreItems, 'var(--green)')}
+          ${renderSection('🟡 Recommended — Unlocks AI Chat', recItems, 'var(--warn)')}
+          ${renderSection('🖼️ Image Generation Models', imgItems, '#a78bfa')}
+          ${renderSection('🎬 Video Generation Models', vidItems, '#60a5fa')}
+          ${renderSection('🔗 Integrations — Productivity & Team', integItems, 'var(--text-m)')}
+          ${renderSection('🎵 FlowState Audio — Music AI', audioItems, '#f472b6')}
+          ${renderSection('⚡ 264 Pro Video Editor', pro264Items, '#fb923c')}
+          ${otherItems.length ? renderSection('Other', otherItems, 'var(--text-m)') : ''}
+        </tbody>
+      </table>
+      </div>
+    `, true);
   }).catch(()=>notify('Could not load credentials','error'));
 }
 

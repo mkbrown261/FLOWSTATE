@@ -13,8 +13,8 @@
 export type SessionPhase = 'focus' | 'short_break' | 'long_break' | 'idle';
 export type ModelProvider = 'openai' | 'anthropic' | 'google' | 'xai' | 'mistral' | 'deepseek' | 'meta';
 export type TaskCapability = 'code' | 'creative' | 'analysis' | 'quick' | 'vision' | 'reasoning' | 'realtime' | 'long_form' | 'math';
-export type ImageProvider = 'dalle3' | 'imagen3' | 'sd3' | 'flux_pro' | 'ideogram2';
-export type VideoProvider = 'veo2' | 'kling16' | 'runway_gen4' | 'pika20' | 'hailuo' | 'sora' | 'minimax';
+export type ImageProvider = 'dalle3' | 'dalle4' | 'gpt-image' | 'imagen3' | 'imagen4' | 'sd3' | 'flux_pro' | 'flux_dev' | 'ideogram2' | 'recraft';
+export type VideoProvider = 'veo2' | 'veo3' | 'kling16' | 'kling21' | 'runway_gen4' | 'runway_gen4t' | 'pika20' | 'hailuo' | 'sora' | 'minimax' | 'luma';
 export type PremiumTier = 'free' | 'personal_pro' | 'team_starter' | 'team_growth' | 'enterprise';
 export type TeamRole = 'member' | 'senior_dev' | 'scrum_master' | 'admin';
 export type LearnCardType = 'language' | 'skill_tip' | 'did_you_know' | 'book_rec' | 'mental_model';
@@ -96,21 +96,40 @@ export interface VideoModelSpec {
 }
 
 export const IMAGE_MODEL_REGISTRY: Record<ImageProvider, ImageModelSpec> = {
-  dalle3: { id: 'dalle3', name: 'DALL-E 3', provider: 'OpenAI', description: 'Best quality, great text rendering', apiEndpoint: 'https://api.openai.com/v1/images/generations', envKey: 'OPENAI_API_KEY' },
-  imagen3: { id: 'imagen3', name: 'Imagen 3', provider: 'Google', description: 'Photorealistic, detail-rich', apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict', envKey: 'GOOGLE_AI_KEY' },
-  sd3: { id: 'sd3', name: 'Stable Diffusion 3', provider: 'Stability AI', description: 'Open-source powerhouse', apiEndpoint: 'https://api.stability.ai/v2beta/stable-image/generate/sd3', envKey: 'STABILITY_API_KEY' },
-  flux_pro: { id: 'flux_pro', name: 'FLUX Pro', provider: 'Black Forest Labs', description: 'Ultra-fast photorealistic', apiEndpoint: 'https://api.bfl.ml/v1/flux-pro', envKey: 'BFL_API_KEY' },
-  ideogram2: { id: 'ideogram2', name: 'Ideogram 2', provider: 'Ideogram', description: 'Text-in-image, design-forward', apiEndpoint: 'https://api.ideogram.ai/generate', envKey: 'IDEOGRAM_API_KEY' },
+  // ── OpenAI Image Models ─────────────────────────────────────────────────────
+  dalle3:    { id: 'dalle3',    name: 'DALL-E 3',      provider: 'OpenAI',           description: 'Best-in-class text rendering, photorealistic scenes',    apiEndpoint: 'https://api.openai.com/v1/images/generations',                                                                   envKey: 'OPENAI_API_KEY'    },
+  dalle4:    { id: 'dalle4',    name: 'DALL-E 4',      provider: 'OpenAI',           description: 'Latest OpenAI image model — improved coherence',         apiEndpoint: 'https://api.openai.com/v1/images/generations',                                                                   envKey: 'OPENAI_API_KEY'    },
+  'gpt-image':{ id: 'gpt-image', name: 'GPT-Image-1',  provider: 'OpenAI',           description: 'Native image editing with multi-turn context',           apiEndpoint: 'https://api.openai.com/v1/images/generations',                                                                   envKey: 'OPENAI_API_KEY'    },
+  // ── Google Image Models ─────────────────────────────────────────────────────
+  imagen3:   { id: 'imagen3',   name: 'Imagen 3',      provider: 'Google',           description: 'Photorealistic quality with fine detail and accuracy',   apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict',                    envKey: 'GOOGLE_AI_KEY'     },
+  imagen4:   { id: 'imagen4',   name: 'Imagen 4',      provider: 'Google',           description: "Google's latest — improved photorealism & composition",  apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict',                    envKey: 'GOOGLE_AI_KEY'     },
+  // ── Open-Source / Third-Party Image Models ──────────────────────────────────
+  sd3:       { id: 'sd3',       name: 'Stable Diffusion 3', provider: 'Stability AI', description: 'Open-source powerhouse — customizable & community-driven', apiEndpoint: 'https://api.stability.ai/v2beta/stable-image/generate/sd3',                                                  envKey: 'STABILITY_API_KEY' },
+  flux_pro:  { id: 'flux_pro',  name: 'FLUX Pro 1.1',  provider: 'Black Forest Labs', description: 'Ultra-high detail, accurate anatomy, exceptional realism', apiEndpoint: 'https://api.bfl.ml/v1/flux-pro',                                                                            envKey: 'BFL_API_KEY'       },
+  flux_dev:  { id: 'flux_dev',  name: 'FLUX Dev',      provider: 'Black Forest Labs', description: 'Open-weight — fast, high-quality, great for iteration',  apiEndpoint: 'https://api.bfl.ml/v1/flux-dev',                                                                            envKey: 'BFL_API_KEY'       },
+  ideogram2: { id: 'ideogram2', name: 'Ideogram 2.0',  provider: 'Ideogram',         description: 'Text-in-image specialist — logos, typography, design',   apiEndpoint: 'https://api.ideogram.ai/generate',                                                                               envKey: 'IDEOGRAM_API_KEY'  },
+  recraft:   { id: 'recraft',   name: 'Recraft V3',    provider: 'Recraft',          description: 'Vector art, brand assets, icons, consistent style',      apiEndpoint: 'https://external.api.recraft.ai/v1/images/generations',                                                          envKey: 'RECRAFT_API_KEY'   },
 };
 
 export const VIDEO_MODEL_REGISTRY: Record<VideoProvider, VideoModelSpec> = {
-  veo2: { id: 'veo2', name: 'Veo 2', provider: 'Google', description: 'Cinematic, physics-aware', apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/veo-2.0-generate-001:predictLongRunning', envKey: 'GOOGLE_AI_KEY', maxDuration: 8 },
-  kling16: { id: 'kling16', name: 'Kling 1.6', provider: 'Kuaishou', description: 'Smooth motion, consistent', apiEndpoint: 'https://api.klingai.com/v1/videos/text2video', envKey: 'KLING_API_KEY', maxDuration: 10 },
-  runway_gen4: { id: 'runway_gen4', name: 'Runway Gen-4', provider: 'Runway ML', description: 'Film-quality creative', apiEndpoint: 'https://api.runwayml.com/v1/image_to_video', envKey: 'RUNWAY_API_KEY', maxDuration: 10 },
-  pika20: { id: 'pika20', name: 'Pika 2.0', provider: 'Pika Labs', description: 'Creative effects, fast', apiEndpoint: 'https://api.pika.art/v2/generate', envKey: 'PIKA_API_KEY', maxDuration: 10 },
-  hailuo: { id: 'hailuo', name: 'Hailuo', provider: 'MiniMax', description: 'Fast, good faces', apiEndpoint: 'https://api.minimax.chat/v1/video/generation', envKey: 'MINIMAX_API_KEY', maxDuration: 6 },
-  sora: { id: 'sora', name: 'Sora', provider: 'OpenAI', description: 'World models, long-form', apiEndpoint: 'https://api.openai.com/v1/video/generations', envKey: 'OPENAI_API_KEY', maxDuration: 60 },
-  minimax: { id: 'minimax', name: 'Hailuo (MiniMax)', provider: 'MiniMax', description: 'Fast generation, good faces', apiEndpoint: 'https://api.minimax.chat/v1/video/generation', envKey: 'MINIMAX_API_KEY', maxDuration: 6 },
+  // ── Google Video Models ─────────────────────────────────────────────────────
+  veo2:        { id: 'veo2',        name: 'Veo 2',             provider: 'Google',      description: 'Cinematic quality — realistic motion & physics',       apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/veo-2.0-generate-001:predictLongRunning', envKey: 'GOOGLE_AI_KEY',  maxDuration: 8  },
+  veo3:        { id: 'veo3',        name: 'Veo 3',             provider: 'Google',      description: 'Latest Veo — native audio, improved temporal flow',    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/veo-3.0-generate-001:predictLongRunning', envKey: 'GOOGLE_AI_KEY',  maxDuration: 8  },
+  // ── OpenAI Video Models ─────────────────────────────────────────────────────
+  sora:        { id: 'sora',        name: 'Sora',              provider: 'OpenAI',      description: 'World models — consistent physics, long-form video',   apiEndpoint: 'https://api.openai.com/v1/video/generations',                                                              envKey: 'OPENAI_API_KEY', maxDuration: 60 },
+  // ── Kuaishou (Kling) Video Models ───────────────────────────────────────────
+  kling16:     { id: 'kling16',     name: 'Kling 1.6',         provider: 'Kuaishou',    description: 'Smooth motion, excellent face & body consistency',     apiEndpoint: 'https://api.klingai.com/v1/videos/text2video',                                                             envKey: 'KLING_API_KEY',  maxDuration: 10 },
+  kling21:     { id: 'kling21',     name: 'Kling 2.1',         provider: 'Kuaishou',    description: 'Latest Kling — higher quality, longer durations',      apiEndpoint: 'https://api.klingai.com/v1/videos/text2video',                                                             envKey: 'KLING_API_KEY',  maxDuration: 15 },
+  // ── Runway ML Video Models ──────────────────────────────────────────────────
+  runway_gen4: { id: 'runway_gen4', name: 'Runway Gen-4',      provider: 'Runway ML',   description: 'Film-quality creative video, professional grade',      apiEndpoint: 'https://api.runwayml.com/v1/image_to_video',                                                               envKey: 'RUNWAY_API_KEY', maxDuration: 10 },
+  runway_gen4t:{ id: 'runway_gen4t', name: 'Runway Gen-4 Turbo', provider: 'Runway ML', description: 'Fast version of Gen-4 — same quality, quicker',       apiEndpoint: 'https://api.runwayml.com/v1/image_to_video',                                                               envKey: 'RUNWAY_API_KEY', maxDuration: 10 },
+  // ── Pika Labs Video Models ──────────────────────────────────────────────────
+  pika20:      { id: 'pika20',      name: 'Pika 2.0',          provider: 'Pika Labs',   description: 'Creative effects, templates, fast generation',         apiEndpoint: 'https://api.pika.art/v2/generate',                                                                         envKey: 'PIKA_API_KEY',   maxDuration: 10 },
+  // ── MiniMax Video Models ────────────────────────────────────────────────────
+  hailuo:      { id: 'hailuo',      name: 'Hailuo 2',          provider: 'MiniMax',     description: 'Fast generation — excellent face consistency',         apiEndpoint: 'https://api.minimax.chat/v1/video/generation',                                                             envKey: 'MINIMAX_API_KEY', maxDuration: 6 },
+  minimax:     { id: 'minimax',     name: 'Hailuo (MiniMax)',   provider: 'MiniMax',     description: 'Fast generation, good faces',                          apiEndpoint: 'https://api.minimax.chat/v1/video/generation',                                                             envKey: 'MINIMAX_API_KEY', maxDuration: 6 },
+  // ── Luma AI Video Models ────────────────────────────────────────────────────
+  luma:        { id: 'luma',        name: 'Luma Dream Machine', provider: 'Luma AI',    description: 'Photorealistic motion, great for product & scenes',    apiEndpoint: 'https://api.lumalabs.ai/dream-machine/v1/generations',                                                     envKey: 'LUMA_API_KEY',   maxDuration: 5  },
 };
 
 // ─── Intent Routing ───────────────────────────────────────────────────────────
@@ -775,60 +794,124 @@ export interface CredentialEntry {
 }
 
 export const CREDENTIAL_TABLE: CredentialEntry[] = [
-  { service: 'Google OAuth 2.0', purpose: 'Auth, Calendar, Drive, Gmail scopes', envKey: 'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET', url: 'https://console.cloud.google.com', required: 'core', tier: 'free' },
-  { service: 'Notion OAuth', purpose: 'Kanban sync, pages, databases', envKey: 'NOTION_CLIENT_ID, NOTION_CLIENT_SECRET', url: 'https://notion.so/my-integrations', required: 'core', tier: 'personal_pro' },
-  { service: 'Slack OAuth', purpose: 'Team comms, bidirectional sync, standups', envKey: 'SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_BOT_TOKEN', url: 'https://api.slack.com/apps', required: 'core', tier: 'team_starter' },
-  { service: 'Stripe', purpose: 'Subscription billing, seat management, webhooks', envKey: 'STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE_KEY', url: 'https://dashboard.stripe.com', required: 'core', tier: 'personal_pro' },
-  { service: 'OpenAI', purpose: 'GPT-4o, GPT-4o-mini, DALL-E 3, Sora, TTS', envKey: 'OPENAI_API_KEY', url: 'https://platform.openai.com/api-keys', required: 'core', tier: 'free' },
-  { service: 'Anthropic', purpose: 'Claude 3.7 Sonnet — code, analysis, long docs', envKey: 'ANTHROPIC_API_KEY', url: 'https://console.anthropic.com', required: 'recommended', tier: 'personal_pro' },
-  { service: 'Google AI Studio', purpose: 'Gemini 2.0 Flash, Imagen 3, Veo 2', envKey: 'GOOGLE_AI_KEY', url: 'https://aistudio.google.com/app/apikey', required: 'recommended', tier: 'personal_pro' },
-  { service: 'xAI (Grok)', purpose: 'Grok 3 — real-time web, live data', envKey: 'XAI_API_KEY', url: 'https://console.x.ai', required: 'optional', tier: 'personal_pro' },
-  { service: 'Mistral AI', purpose: 'Mistral Large — multilingual, EU data privacy', envKey: 'MISTRAL_API_KEY', url: 'https://console.mistral.ai', required: 'optional', tier: 'personal_pro' },
-  { service: 'DeepSeek', purpose: 'DeepSeek R1 — math, deep reasoning', envKey: 'DEEPSEEK_API_KEY', url: 'https://platform.deepseek.com', required: 'optional', tier: 'personal_pro' },
-  { service: 'Together AI', purpose: 'Llama 3.3 70B open-source hosting', envKey: 'TOGETHER_API_KEY', url: 'https://api.together.xyz', required: 'optional', tier: 'personal_pro' },
-  { service: 'Microsoft OAuth', purpose: 'Teams integration, Outlook Calendar', envKey: 'MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET', url: 'https://portal.azure.com', required: 'optional', tier: 'team_starter' },
-  { service: 'GitHub OAuth', purpose: 'Commit activity, PR status, Issues sync', envKey: 'GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET', url: 'https://github.com/settings/developers', required: 'optional', tier: 'team_starter' },
-  { service: 'Linear API', purpose: 'Sprint board sync', envKey: 'LINEAR_API_KEY', url: 'https://linear.app/settings/api', required: 'optional', tier: 'team_starter' },
-  { service: 'Jira OAuth', purpose: 'Issue tracking sync', envKey: 'JIRA_CLIENT_ID, JIRA_CLIENT_SECRET', url: 'https://developer.atlassian.com', required: 'optional', tier: 'team_starter' },
-  { service: 'Asana OAuth', purpose: 'Task board sync', envKey: 'ASANA_CLIENT_ID, ASANA_CLIENT_SECRET', url: 'https://app.asana.com/0/my-apps', required: 'optional', tier: 'team_starter' },
-  { service: 'Runway ML', purpose: 'Gen-4 video generation', envKey: 'RUNWAY_API_KEY', url: 'https://dev.runwayml.com', required: 'optional', tier: 'team_growth' },
-  { service: 'Kling / Kuaishou', purpose: 'Kling 1.6 video generation', envKey: 'KLING_API_KEY', url: 'https://klingai.com/dev', required: 'optional', tier: 'team_growth' },
-  { service: 'Pika Labs', purpose: 'Pika 2.0 video generation', envKey: 'PIKA_API_KEY', url: 'https://pika.art/api', required: 'optional', tier: 'team_growth' },
-  { service: 'ElevenLabs', purpose: 'Voice-guided breathing, Restore audio', envKey: 'ELEVENLABS_API_KEY', url: 'https://elevenlabs.io/api', required: 'optional', tier: 'team_growth' },
-  { service: 'Stability AI', purpose: 'Stable Diffusion 3 image generation', envKey: 'STABILITY_API_KEY', url: 'https://platform.stability.ai', required: 'optional', tier: 'personal_pro' },
-  { service: 'Black Forest Labs', purpose: 'FLUX Pro image generation', envKey: 'BFL_API_KEY', url: 'https://api.bfl.ml', required: 'optional', tier: 'personal_pro' },
-  { service: 'Ideogram', purpose: 'Ideogram 2 — text-in-image', envKey: 'IDEOGRAM_API_KEY', url: 'https://ideogram.ai/api', required: 'optional', tier: 'personal_pro' },
-  { service: 'Plaid', purpose: 'Read-only financial account snapshots', envKey: 'PLAID_CLIENT_ID, PLAID_SECRET', url: 'https://dashboard.plaid.com', required: 'optional', tier: 'team_growth' },
-  { service: 'Oura', purpose: 'Sleep, HRV, readiness score', envKey: 'OURA_CLIENT_ID, OURA_CLIENT_SECRET', url: 'https://cloud.ouraring.com/oauth/applications', required: 'optional', tier: 'team_growth' },
-  { service: 'Whoop', purpose: 'Recovery, strain, sleep data', envKey: 'WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET', url: 'https://api.prod.whoop.com/developer', required: 'optional', tier: 'team_growth' },
-  { service: 'SendGrid / Resend', purpose: 'Transactional email, magic links, weekly digest', envKey: 'RESEND_API_KEY', url: 'https://resend.com', required: 'core', tier: 'free' },
-  { service: 'Supabase', purpose: 'Team database, auth, real-time presence', envKey: 'SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY', url: 'https://supabase.com', required: 'core', tier: 'team_starter' },
-  { service: 'Upstash Redis', purpose: 'Session cache, rate limiting, presence indicators', envKey: 'UPSTASH_REDIS_URL, UPSTASH_REDIS_TOKEN', url: 'https://upstash.com', required: 'recommended', tier: 'team_starter' },
-  { service: 'Beehiiv / ConvertKit', purpose: 'Weekly digest newsletter, onboarding emails', envKey: 'BEEHIIV_API_KEY', url: 'https://beehiiv.com', required: 'optional', tier: 'team_growth' },
-  // ── 264 Pro Video Editor AI Tools ───────────────────────────────────────────
-  { service: 'Replicate', purpose: '264 Pro: AI Upscale (Real-ESRGAN), AI Denoise (FastDVDnet), AI Face Enhance (CodeFormer), AI Stabilize, Super Slow-Mo (DAIN)', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'personal_pro' },
-  { service: 'Hugging Face', purpose: '264 Pro: Rotoscoping (SAM segment-anything), AI Colorize (FILM), AI Depth Map (MiDaS), AI Object Remove (LaMa)', envKey: 'HUGGINGFACE_API_KEY', url: 'https://huggingface.co/settings/tokens', required: 'optional', tier: 'personal_pro' },
-  { service: 'Cloudflare R2', purpose: '264 Pro: Store processed AI video outputs, export queue results, project backups', envKey: 'R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME', url: 'https://dash.cloudflare.com/?to=/:account/r2', required: 'optional', tier: 'personal_pro' },
-  // ── Clawbot / ClawFlow ───────────────────────────────────────────────────────
-  { service: 'Clawbot AI (ClawFlow)', purpose: 'Clawbot autonomous agent — walkthrough generation, agentic workflow assistance across 264 Pro, Flowstate Audio & Hub, API usage tracking, coin ledger', envKey: 'CLAWBOT_API_KEY', url: 'https://flowstatehub.com/clawflow', required: 'optional', tier: 'personal_pro' },
-  // ── FlowState Audio — Music AI APIs ─────────────────────────────────────────
-  { service: 'Suno AI', purpose: 'FlowState Audio: AI full-track & stem generation — songs, vocals, loops, instrumentals (ClawFlow required)', envKey: 'SUNO_API_KEY', url: 'https://suno.com/account', required: 'optional', tier: 'personal_pro' },
-  { service: 'MusicGen / AudioCraft (Meta)', purpose: 'FlowState Audio: AI melody, beat & instrumental composition via Replicate or HuggingFace endpoint (ClawFlow required)', envKey: 'MUSICGEN_API_KEY', url: 'https://replicate.com/meta/musicgen', required: 'optional', tier: 'personal_pro' },
-  { service: 'Udio', purpose: 'FlowState Audio: AI song generation alternative to Suno — high-quality AI vocals and full tracks (ClawFlow required)', envKey: 'UDIO_API_KEY', url: 'https://www.udio.com/api', required: 'optional', tier: 'personal_pro' },
-  { service: 'Loudme / Matchering', purpose: 'FlowState Audio: AI mastering — automatic loudness normalisation, reference-track matching, stem mastering', envKey: 'LOUDME_API_KEY', url: 'https://loudme.ai', required: 'optional', tier: 'personal_pro' },
-  { service: 'Moises AI', purpose: 'FlowState Audio: AI stem separation (vocals, drums, bass, keys, guitar), key & BPM detection', envKey: 'MOISES_API_KEY', url: 'https://developer.moises.ai', required: 'optional', tier: 'personal_pro' },
-  { service: 'ACRCloud', purpose: 'FlowState Audio: Audio fingerprinting, BPM detection, key detection, real-time pitch correction reference', envKey: 'ACRCLOUD_ACCESS_KEY, ACRCLOUD_ACCESS_SECRET', url: 'https://console.acrcloud.com', required: 'optional', tier: 'personal_pro' },
-  { service: 'Dolby.io Media APIs', purpose: 'FlowState Audio: AI noise suppression, speech enhancement, audio analysis, loudness correction', envKey: 'DOLBY_API_KEY', url: 'https://dashboard.dolby.io', required: 'optional', tier: 'personal_pro' },
-  { service: 'AudioShake', purpose: 'FlowState Audio: Professional stem separation for licensed music and original recordings', envKey: 'AUDIOSHAKE_API_KEY', url: 'https://app.audioshake.ai', required: 'optional', tier: 'team_growth' },
-  // ── New Video Models ─────────────────────────────────────────────────────────
-  { service: 'Pika Labs', purpose: 'Pika 2.0 — Creative video generation with effects and templates', envKey: 'PIKA_API_KEY', url: 'https://pika.art/api', required: 'optional', tier: 'team_growth' },
-  { service: 'MiniMax (Hailuo)', purpose: 'Hailuo video generation — fast, good face consistency', envKey: 'MINIMAX_API_KEY', url: 'https://api.minimax.chat', required: 'optional', tier: 'team_growth' },
-  { service: 'Kling / Kuaishou', purpose: 'Kling 1.6 text-to-video and image-to-video generation', envKey: 'KLING_API_KEY', url: 'https://klingai.com/dev', required: 'optional', tier: 'team_growth' },
-  // ── YouTube & Spotify (no API key required — embed-based) ───────────────────
-  { service: 'YouTube Embed', purpose: 'Pomodoro music: embed YouTube videos/playlists during focus sessions (no API key — use embed URL in Settings)', envKey: 'N/A — browser embed via Settings', url: 'https://developers.google.com/youtube/iframe_api', required: 'optional', tier: 'free' },
-  { service: 'Spotify Embed', purpose: 'Pomodoro music: embed Spotify playlists during focus sessions (Spotify Premium required for autoplay; use URI in Settings)', envKey: 'N/A — browser embed via Settings', url: 'https://developer.spotify.com/documentation/embeds', required: 'optional', tier: 'free' },
-  // ── Additional Image Models ──────────────────────────────────────────────────
-  { service: 'Google Imagen 3', purpose: 'Imagen 3 photorealistic image generation via Google AI Studio', envKey: 'GOOGLE_AI_KEY', url: 'https://aistudio.google.com/app/apikey', required: 'optional', tier: 'personal_pro' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── CORE — REQUIRED FOR BASIC FUNCTIONALITY ─────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'Google OAuth 2.0', purpose: 'Auth, Calendar sync, Drive, Gmail scopes', envKey: 'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET', url: 'https://console.cloud.google.com', required: 'core', tier: 'free' },
+  { service: 'OpenAI', purpose: 'GPT-4o/5 chat, DALL-E 3/4, GPT-Image-1, Sora video, TTS voice', envKey: 'OPENAI_API_KEY', url: 'https://platform.openai.com/api-keys', required: 'core', tier: 'free' },
+  { service: 'SendGrid / Resend', purpose: 'Transactional email, magic links, weekly digest emails', envKey: 'RESEND_API_KEY', url: 'https://resend.com', required: 'core', tier: 'free' },
+  { service: 'Stripe', purpose: 'Subscription billing, seat management, webhook events', envKey: 'STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE_KEY', url: 'https://dashboard.stripe.com', required: 'core', tier: 'personal_pro' },
+  { service: 'Notion OAuth', purpose: 'Kanban board sync, pages, database integration', envKey: 'NOTION_CLIENT_ID, NOTION_CLIENT_SECRET', url: 'https://notion.so/my-integrations', required: 'core', tier: 'personal_pro' },
+  { service: 'Slack OAuth', purpose: 'Team comms, bidirectional sync, standups, burnout alerts', envKey: 'SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_BOT_TOKEN', url: 'https://api.slack.com/apps', required: 'core', tier: 'team_starter' },
+  { service: 'Supabase', purpose: 'Team database, auth backend, real-time presence', envKey: 'SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY', url: 'https://supabase.com', required: 'core', tier: 'team_starter' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── RECOMMENDED — AI CHAT MODELS ───────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'Anthropic', purpose: 'Claude Sonnet 4.6 / Opus 4.6 / Haiku 4.5 — code, analysis, long docs', envKey: 'ANTHROPIC_API_KEY', url: 'https://console.anthropic.com', required: 'recommended', tier: 'personal_pro' },
+  { service: 'Google AI Studio', purpose: 'Gemini 2.5 Pro / 2.5 Flash / 2.0 Flash + Imagen 3/4 + Veo 2/3', envKey: 'GOOGLE_AI_KEY', url: 'https://aistudio.google.com/app/apikey', required: 'recommended', tier: 'personal_pro' },
+  { service: 'xAI (Grok)', purpose: 'Grok 3 / Grok 3 Mini — real-time web search, live data, trends', envKey: 'XAI_API_KEY', url: 'https://console.x.ai', required: 'recommended', tier: 'personal_pro' },
+  { service: 'Upstash Redis', purpose: 'Session cache, rate limiting, real-time presence indicators', envKey: 'UPSTASH_REDIS_URL, UPSTASH_REDIS_TOKEN', url: 'https://upstash.com', required: 'recommended', tier: 'team_starter' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── OPTIONAL — ADDITIONAL AI CHAT MODELS ───────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'Mistral AI', purpose: 'Mistral Large / Codestral — multilingual, EU data privacy, fast code', envKey: 'MISTRAL_API_KEY', url: 'https://console.mistral.ai', required: 'optional', tier: 'personal_pro' },
+  { service: 'DeepSeek', purpose: 'DeepSeek R2 / V3 — math, deep reasoning, code, extremely cost-efficient', envKey: 'DEEPSEEK_API_KEY', url: 'https://platform.deepseek.com', required: 'optional', tier: 'personal_pro' },
+  { service: 'Together AI', purpose: 'Llama 4 Maverick / Scout (Meta) — open-source, privacy-first hosting', envKey: 'TOGETHER_API_KEY', url: 'https://api.together.xyz', required: 'optional', tier: 'personal_pro' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── IMAGE GENERATION MODELS ─────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // OpenAI key covers: DALL-E 3, DALL-E 4, GPT-Image-1
+  // Google AI key covers: Imagen 3, Imagen 4
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'Stability AI', purpose: 'Stable Diffusion 3 — open-source image generation, fine-tunable', envKey: 'STABILITY_API_KEY', url: 'https://platform.stability.ai', required: 'optional', tier: 'personal_pro' },
+  { service: 'Black Forest Labs (BFL)', purpose: 'FLUX Pro 1.1 + FLUX Dev — ultra-high detail, accurate anatomy, open-weight', envKey: 'BFL_API_KEY', url: 'https://api.bfl.ml', required: 'optional', tier: 'personal_pro' },
+  { service: 'Ideogram', purpose: 'Ideogram 2.0 — text-in-image specialist, logos, typography, design', envKey: 'IDEOGRAM_API_KEY', url: 'https://ideogram.ai/api', required: 'optional', tier: 'personal_pro' },
+  { service: 'Recraft', purpose: 'Recraft V3 — vector art, brand assets, icons, consistent visual style', envKey: 'RECRAFT_API_KEY', url: 'https://recraft.ai/profile', required: 'optional', tier: 'personal_pro' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── VIDEO GENERATION MODELS ─────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // OpenAI key covers: Sora
+  // Google AI key covers: Veo 2, Veo 3
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'Runway ML', purpose: 'Runway Gen-4 + Gen-4 Turbo — film-quality video, image-to-video', envKey: 'RUNWAY_API_KEY', url: 'https://dev.runwayml.com', required: 'optional', tier: 'team_growth' },
+  { service: 'Kling / Kuaishou', purpose: 'Kling 1.6 + Kling 2.1 — smooth motion, text-to-video, image-to-video', envKey: 'KLING_API_KEY', url: 'https://klingai.com/dev', required: 'optional', tier: 'team_growth' },
+  { service: 'Pika Labs', purpose: 'Pika 2.0 — creative effects, templates, fast video generation', envKey: 'PIKA_API_KEY', url: 'https://pika.art/api', required: 'optional', tier: 'team_growth' },
+  { service: 'MiniMax (Hailuo)', purpose: 'Hailuo 2 — fast video gen, excellent face & character consistency', envKey: 'MINIMAX_API_KEY', url: 'https://api.minimax.chat', required: 'optional', tier: 'team_growth' },
+  { service: 'Luma AI', purpose: 'Luma Dream Machine — photorealistic video, great for product & lifestyle shots', envKey: 'LUMA_API_KEY', url: 'https://lumalabs.ai/dream-machine/api', required: 'optional', tier: 'team_growth' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── INTEGRATIONS — PRODUCTIVITY & TEAM ─────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'Microsoft OAuth', purpose: 'Teams integration, Outlook Calendar, SharePoint sync', envKey: 'MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET', url: 'https://portal.azure.com', required: 'optional', tier: 'team_starter' },
+  { service: 'GitHub OAuth', purpose: 'Commit activity feed, PR status, Issues sync in board', envKey: 'GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET', url: 'https://github.com/settings/developers', required: 'optional', tier: 'team_starter' },
+  { service: 'Linear API', purpose: 'Sprint board & issue sync for engineering teams', envKey: 'LINEAR_API_KEY', url: 'https://linear.app/settings/api', required: 'optional', tier: 'team_starter' },
+  { service: 'Jira OAuth', purpose: 'Issue tracking sync for Jira-based workflows', envKey: 'JIRA_CLIENT_ID, JIRA_CLIENT_SECRET', url: 'https://developer.atlassian.com', required: 'optional', tier: 'team_starter' },
+  { service: 'Asana OAuth', purpose: 'Task board sync for Asana-based teams', envKey: 'ASANA_CLIENT_ID, ASANA_CLIENT_SECRET', url: 'https://app.asana.com/0/my-apps', required: 'optional', tier: 'team_starter' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── WELLNESS & BIOMETRIC INTEGRATIONS ──────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'Oura Ring', purpose: 'Sleep quality, HRV, readiness score for FlowScore', envKey: 'OURA_CLIENT_ID, OURA_CLIENT_SECRET', url: 'https://cloud.ouraring.com/oauth/applications', required: 'optional', tier: 'team_growth' },
+  { service: 'Whoop', purpose: 'Recovery %, strain, sleep stages for burnout detection', envKey: 'WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET', url: 'https://api.prod.whoop.com/developer', required: 'optional', tier: 'team_growth' },
+  { service: 'Plaid', purpose: 'Read-only financial account snapshots for financial wellness tab', envKey: 'PLAID_CLIENT_ID, PLAID_SECRET', url: 'https://dashboard.plaid.com', required: 'optional', tier: 'team_growth' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── AUDIO & VOICE ────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'ElevenLabs', purpose: 'Voice-guided breathing exercises, Restore ambient narration', envKey: 'ELEVENLABS_API_KEY', url: 'https://elevenlabs.io/api', required: 'optional', tier: 'team_growth' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── 264 PRO VIDEO EDITOR — AI TOOLS ────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'Replicate', purpose: '264 Pro: AI Upscale (Real-ESRGAN), AI Denoise (FastDVDnet), AI Face Enhance (CodeFormer), Super Slow-Mo (DAIN), AI Stabilize', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'personal_pro' },
+  { service: 'Hugging Face', purpose: '264 Pro: AI Rotoscoping (SAM), AI Colorize (FILM), Depth Map (MiDaS), AI Object Remove (LaMa)', envKey: 'HUGGINGFACE_API_KEY', url: 'https://huggingface.co/settings/tokens', required: 'optional', tier: 'personal_pro' },
+  { service: 'Cloudflare R2', purpose: '264 Pro: Store AI-processed video outputs, export queue, project backups', envKey: 'R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME', url: 'https://dash.cloudflare.com/?to=/:account/r2', required: 'optional', tier: 'personal_pro' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── CLAWBOT / CLAWFLOW ───────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'Clawbot AI (ClawFlow)', purpose: 'Autonomous agent — walkthrough generation, agentic tasks across 264 Pro, Flowstate Audio & Hub, coin ledger', envKey: 'CLAWBOT_API_KEY', url: 'https://flowstatehub.com/clawflow', required: 'optional', tier: 'personal_pro' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── FLOWSTATE AUDIO — MUSIC AI ─────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'Suno AI', purpose: 'FlowState Audio: AI full-track & stem generation — songs, vocals, loops, instrumentals', envKey: 'SUNO_API_KEY', url: 'https://suno.com/account', required: 'optional', tier: 'personal_pro' },
+  { service: 'Udio', purpose: 'FlowState Audio: AI song generation — high-quality vocals and full tracks', envKey: 'UDIO_API_KEY', url: 'https://www.udio.com/api', required: 'optional', tier: 'personal_pro' },
+  { service: 'MusicGen / AudioCraft (Meta)', purpose: 'FlowState Audio: AI melody, beat & instrumental composition via Replicate', envKey: 'MUSICGEN_API_KEY', url: 'https://replicate.com/meta/musicgen', required: 'optional', tier: 'personal_pro' },
+  { service: 'Moises AI', purpose: 'FlowState Audio: AI stem separation (vocals, drums, bass, keys, guitar), BPM detection', envKey: 'MOISES_API_KEY', url: 'https://developer.moises.ai', required: 'optional', tier: 'personal_pro' },
+  { service: 'Loudme / Matchering', purpose: 'FlowState Audio: AI mastering — loudness normalisation, reference-track matching', envKey: 'LOUDME_API_KEY', url: 'https://loudme.ai', required: 'optional', tier: 'personal_pro' },
+  { service: 'ACRCloud', purpose: 'FlowState Audio: Audio fingerprinting, BPM & key detection, pitch correction', envKey: 'ACRCLOUD_ACCESS_KEY, ACRCLOUD_ACCESS_SECRET', url: 'https://console.acrcloud.com', required: 'optional', tier: 'personal_pro' },
+  { service: 'Dolby.io Media APIs', purpose: 'FlowState Audio: AI noise suppression, speech enhancement, loudness correction', envKey: 'DOLBY_API_KEY', url: 'https://dashboard.dolby.io', required: 'optional', tier: 'personal_pro' },
+  { service: 'AudioShake', purpose: 'FlowState Audio: Professional stem separation for licensed & original recordings', envKey: 'AUDIOSHAKE_API_KEY', url: 'https://app.audioshake.ai', required: 'optional', tier: 'team_growth' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── MARKETING & COMMUNICATIONS ──────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'Beehiiv / ConvertKit', purpose: 'Weekly digest newsletter, onboarding email sequences', envKey: 'BEEHIIV_API_KEY', url: 'https://beehiiv.com', required: 'optional', tier: 'team_growth' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── EMBED-ONLY (NO API KEY NEEDED) ──────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'YouTube Embed', purpose: 'Pomodoro music — embed YouTube videos/playlists during focus sessions (paste embed URL in Settings)', envKey: 'N/A — browser embed via Settings', url: 'https://developers.google.com/youtube/iframe_api', required: 'optional', tier: 'free' },
+  { service: 'Spotify Embed', purpose: 'Pomodoro music — embed Spotify playlists during focus sessions (Spotify Premium for autoplay; paste URI in Settings)', envKey: 'N/A — browser embed via Settings', url: 'https://developer.spotify.com/documentation/embeds', required: 'optional', tier: 'free' },
 ];
 
 // ─── Clawbot / ClawFlow ───────────────────────────────────────────────────────

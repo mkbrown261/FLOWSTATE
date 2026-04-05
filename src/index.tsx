@@ -28,18 +28,16 @@ type Bindings = {
   STRIPE_SECRET_KEY: string; STRIPE_PUBLISHABLE_KEY: string; STRIPE_WEBHOOK_SECRET: string
   RESEND_API_KEY: string; SESSION_SECRET: string
   CLAWBOT_API_KEY: string;
-  KLING_API_KEY: string; PIKA_API_KEY: string; MINIMAX_API_KEY: string;
+  // Image generation models
+  IDEOGRAM_API_KEY: string; STABILITY_API_KEY: string; BFL_API_KEY: string; RECRAFT_API_KEY: string;
+  // Video generation models
+  RUNWAY_API_KEY: string; KLING_API_KEY: string; PIKA_API_KEY: string; MINIMAX_API_KEY: string; LUMA_API_KEY: string;
+  // AI inference
   REPLICATE_API_KEY: string; HUGGINGFACE_API_KEY: string;
   // FlowState Audio — Music AI
-  SUNO_API_KEY: string;
-  MUSICGEN_API_KEY: string;
-  UDIO_API_KEY: string;
-  LOUDME_API_KEY: string;
-  MOISES_API_KEY: string;
-  DOLBY_API_KEY: string;
-  ACRCLOUD_ACCESS_KEY: string;
-  ACRCLOUD_ACCESS_SECRET: string;
-  AUDIOSHAKE_API_KEY: string;
+  SUNO_API_KEY: string; MUSICGEN_API_KEY: string; UDIO_API_KEY: string;
+  LOUDME_API_KEY: string; MOISES_API_KEY: string; DOLBY_API_KEY: string;
+  ACRCLOUD_ACCESS_KEY: string; ACRCLOUD_ACCESS_SECRET: string; AUDIOSHAKE_API_KEY: string;
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -1236,6 +1234,7 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 @keyframes spin{to{transform:rotate(360deg)}}
 .modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;z-index:3000;backdrop-filter:blur(8px);padding:14px}
 .modal-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:18px;padding:28px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto}
+.modal-card.modal-wide{max-width:900px}
 .modal-card h2{font-size:18px;font-weight:800;margin-bottom:5px}
 .tier-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px;margin:14px 0}
 .t-card{padding:15px;border-radius:13px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:.2s}
