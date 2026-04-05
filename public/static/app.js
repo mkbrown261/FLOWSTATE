@@ -312,7 +312,7 @@ function showMainApp(isDemo=false) {
 }
 
 function setupTabListeners() {
-  ['focus','chat','calendar','metrics','board','team','learn','restore','generate','audio','clawbot','demo'].forEach(id => {
+  ['focus','chat','calendar','metrics','board','team','learn','restore','generate','audio','264','clawbot','demo'].forEach(id => {
     const btn = document.getElementById('tab-'+id);
     if (btn) btn.addEventListener('click', () => switchTab(id));
   });

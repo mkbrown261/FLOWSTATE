@@ -974,7 +974,7 @@ app.get('/', (c) => {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FlowState — Intelligent Workspace</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+<link rel="icon" href="/static/fs-audio-icon.png" type="image/png">
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -1423,6 +1423,7 @@ em{color:var(--accent);font-style:italic}
   <button class="tab-btn" id="tab-learn"><i class="fas fa-graduation-cap"></i>Learn</button>
   <button class="tab-btn" id="tab-restore"><i class="fas fa-leaf"></i>Restore</button>
   <button class="tab-btn" id="tab-generate"><i class="fas fa-magic"></i>Generate</button>
+  <button class="tab-btn" id="tab-264" style="border-color:rgba(236,72,153,.25)"><i class="fas fa-film" style="color:#ec4899"></i><span style="background:linear-gradient(135deg,#ec4899,#f59e0b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">264 Pro</span></button>
   <button class="tab-btn" id="tab-audio" style="border-color:rgba(16,185,129,.25)"><i class="fas fa-music" style="color:#10b981"></i><span style="background:linear-gradient(135deg,#10b981,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">Audio</span></button>
   <button class="tab-btn" id="tab-clawbot" style="border-color:rgba(6,182,212,.25)"><i class="fas fa-robot" style="color:#06b6d4"></i><span style="background:linear-gradient(135deg,#a855f7,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:900">Clawbot</span></button>
   <button class="tab-btn demo-tab" id="tab-demo" style="display:none"><i class="fas fa-eye"></i>Demo</button>
@@ -1647,14 +1648,78 @@ em{color:var(--accent);font-style:italic}
   </div>
 </div>
 
+<!-- 264 PRO TAB — Download / Landing Page -->
+<div class="tab-pane" id="tab-pane-264" style="display:none;padding:0;overflow-y:auto">
+  <div style="min-height:100%;background:linear-gradient(160deg,#0f0f1a 0%,#1a0d1a 50%,#0f0f1a 100%);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:48px 24px">
+
+    <!-- Hero -->
+    <div style="text-align:center;max-width:700px;margin-bottom:52px">
+      <div style="font-size:64px;margin-bottom:12px">&#127916;</div>
+      <h1 style="font-size:48px;font-weight:900;margin:0 0 10px;background:linear-gradient(135deg,#ec4899,#f59e0b,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1.1">264 Pro</h1>
+      <p style="font-size:18px;color:var(--text-s);margin:0 0 8px;line-height:1.6">Professional AI Video Editor. Desktop Native.</p>
+      <p style="font-size:14px;color:var(--text-m);margin:0 0 32px">A standalone desktop video editor with AI-powered tools &mdash; timeline editing, colour grading, audio mixing, AI upscale, AI denoise, slow-mo, face enhance, and Clawbot integration. Download and run it locally.</p>
+      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+        <a href="https://github.com/mkbrown261/264-pro-video-editor/releases/latest/download/264Pro-mac.dmg" class="aud-dl-btn aud-mac"><i class="fab fa-apple"></i> Download for macOS</a>
+        <a href="https://github.com/mkbrown261/264-pro-video-editor/releases/latest/download/264Pro-win.exe" class="aud-dl-btn aud-win"><i class="fab fa-windows"></i> Download for Windows</a>
+        <a href="https://github.com/mkbrown261/264-pro-video-editor/releases/latest/download/264Pro-linux.AppImage" class="aud-dl-btn aud-linux"><i class="fab fa-linux"></i> Download for Linux</a>
+      </div>
+      <div style="margin-top:16px;font-size:12px;color:var(--text-m)">Free to download &nbsp;&#xB7;&nbsp; ClawFlow subscription unlocks AI tools &nbsp;&#xB7;&nbsp; <a href="https://github.com/mkbrown261/264-pro-video-editor" target="_blank" style="color:var(--accent)">View on GitHub</a></div>
+    </div>
+
+    <!-- Feature grid -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;max-width:860px;width:100%;margin-bottom:52px">
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#ec4899"><i class="fas fa-layer-group"></i></div><div class="aud-feat-title">Multi-Track Timeline</div><div class="aud-feat-desc">Unlimited video &amp; audio tracks, magnetic snapping, ripple/roll edits, nested sequences, compound clips.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#a855f7"><i class="fas fa-palette"></i></div><div class="aud-feat-title">Colour Grading</div><div class="aud-feat-desc">Built-in LUT support, curves, HSL wheels, scopes (waveform, vectorscope), film grain overlays.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#06b6d4"><i class="fas fa-sliders"></i></div><div class="aud-feat-title">Audio Mixer</div><div class="aud-feat-desc">Per-track EQ, compression, reverb &amp; delay sends, per-channel automation, stereo bus with limiter.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#f59e0b"><i class="fas fa-robot"></i></div><div class="aud-feat-title">AI Upscale &amp; Denoise</div><div class="aud-feat-desc">Real-ESRGAN upscaling to 4K. FastDVDnet temporal noise suppression. Powered by Replicate.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#10b981"><i class="fas fa-person-running"></i></div><div class="aud-feat-title">AI Slow-Motion</div><div class="aud-feat-desc">DAIN frame interpolation for buttery 2x–8x slow-mo from any footage. No high-speed camera needed.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#ec4899"><i class="fas fa-face-smile"></i></div><div class="aud-feat-title">AI Face Enhance</div><div class="aud-feat-desc">CodeFormer face restoration — sharpen, de-blur, and recolour faces in degraded footage.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#a855f7"><i class="fas fa-scissors"></i></div><div class="aud-feat-title">AI Rotoscoping</div><div class="aud-feat-desc">Segment-Anything (SAM) background removal on any frame or clip. Export with alpha channel.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#06b6d4"><i class="fas fa-file-export"></i></div><div class="aud-feat-title">Pro Export</div><div class="aud-feat-desc">H.264, H.265, ProRes, DNxHD, GIF. Custom bitrate, resolution, framerate. Hardware encoding.</div></div>
+    </div>
+
+    <!-- AI Tools callout -->
+    <div style="max-width:680px;width:100%;background:linear-gradient(135deg,rgba(236,72,153,.1),rgba(245,158,11,.07));border:1px solid rgba(236,72,153,.3);border-radius:18px;padding:28px 32px;text-align:center;margin-bottom:40px">
+      <div style="font-size:32px;margin-bottom:8px">&#x1F9BE;</div>
+      <div style="font-size:18px;font-weight:900;margin-bottom:6px">Supercharge with Clawbot &amp; ClawFlow</div>
+      <div style="font-size:13px;color:var(--text-s);margin-bottom:20px;line-height:1.7">Clawbot connects directly to 264 Pro for real-time AI assistance &mdash; walkthrough generation, AI tool suggestions, export optimization, and automated editing workflows. ClawFlow subscription required ($40/month &mdash; first month $20).</div>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+        <button class="clawbot-cta" style="max-width:240px;margin:0 auto" onclick="switchTab('clawbot');document.getElementById('clawbot-app-ctx').value='264_pro'">Open Clawbot for 264 Pro &rarr;</button>
+      </div>
+    </div>
+
+    <!-- Required API Keys -->
+    <div style="max-width:680px;width:100%;margin-bottom:32px">
+      <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:12px">AI Tools &mdash; Required API Keys</div>
+      <div style="display:flex;flex-direction:column;gap:8px;font-size:12px">
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px;display:flex;justify-content:space-between;align-items:center"><div><span style="font-weight:700">Replicate</span><span style="color:var(--text-m);margin-left:8px">AI Upscale, Denoise, Slow-Mo, Face Enhance</span></div><span style="color:var(--warn);font-size:10px;font-weight:700">REPLICATE_API_KEY</span></div>
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px;display:flex;justify-content:space-between;align-items:center"><div><span style="font-weight:700">Hugging Face</span><span style="color:var(--text-m);margin-left:8px">Rotoscoping, AI Colorize, Depth Map</span></div><span style="color:var(--warn);font-size:10px;font-weight:700">HUGGINGFACE_API_KEY</span></div>
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px;display:flex;justify-content:space-between;align-items:center"><div><span style="font-weight:700">Cloudflare R2</span><span style="color:var(--text-m);margin-left:8px">AI output storage, export queue, project backups</span></div><span style="color:var(--warn);font-size:10px;font-weight:700">R2_*</span></div>
+      </div>
+      <button class="btn-sm" style="margin-top:12px" onclick="openCredsModal()"><i class="fas fa-key"></i> View All API Credentials</button>
+    </div>
+
+    <!-- System requirements -->
+    <div style="max-width:680px;width:100%;margin-bottom:32px">
+      <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:12px">System Requirements</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;font-size:12px">
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px"><div style="font-weight:700;margin-bottom:4px"><i class="fab fa-apple"></i> macOS</div><div style="color:var(--text-m)">macOS 12+ (Monterey)<br>Apple Silicon or Intel<br>16GB RAM, 4GB disk</div></div>
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px"><div style="font-weight:700;margin-bottom:4px"><i class="fab fa-windows"></i> Windows</div><div style="color:var(--text-m)">Windows 10/11 (64-bit)<br>Dedicated GPU recommended<br>16GB RAM, 4GB disk</div></div>
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px"><div style="font-weight:700;margin-bottom:4px"><i class="fab fa-linux"></i> Linux</div><div style="color:var(--text-m)">Ubuntu 20.04+ / Arch<br>NVIDIA GPU recommended<br>16GB RAM, 4GB disk</div></div>
+      </div>
+    </div>
+
+    <div style="text-align:center;font-size:12px;color:var(--text-m)">264 Pro is open source &mdash; <a href="https://github.com/mkbrown261/264-pro-video-editor" target="_blank" style="color:var(--accent)">github.com/mkbrown261/264-pro-video-editor</a></div>
+  </div>
+</div>
+
 <!-- FLOWSTATE AUDIO TAB — Download / Landing Page -->
 <div class="tab-pane" id="tab-pane-audio" style="display:none;padding:0;overflow-y:auto">
   <div style="min-height:100%;background:linear-gradient(160deg,#0f0f1a 0%,#0d1a1f 50%,#0f0f1a 100%);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:48px 24px">
 
     <!-- Hero -->
     <div style="text-align:center;max-width:700px;margin-bottom:52px">
-      <div style="font-size:64px;margin-bottom:12px">&#127925;</div>
-      <h1 style="font-size:48px;font-weight:900;margin:0 0 10px;background:linear-gradient(135deg,#10b981,#06b6d4,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1.1">Flowstate Audio</h1>
+      <img src="/static/fs-audio-logo.png" alt="Flowstate Audio" style="max-width:480px;width:90%;margin-bottom:24px;border-radius:16px">
       <p style="font-size:18px;color:var(--text-s);margin:0 0 8px;line-height:1.6">Professional DAW. AI-Powered. Yours.</p>
       <p style="font-size:14px;color:var(--text-m);margin:0 0 32px">A standalone desktop application inspired by Logic Pro &mdash; multi-track recording, VST plugins, AI music generation, and Clawbot integration. Download and run it locally.</p>
       <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
@@ -1696,6 +1761,7 @@ em{color:var(--accent);font-style:italic}
     </div>
 
     <div style="text-align:center;font-size:12px;color:var(--text-m)">Flowstate Audio is open source &mdash; <a href="https://github.com/mkbrown261/FS-AUDIO" target="_blank" style="color:var(--accent)">github.com/mkbrown261/FS-AUDIO</a></div>
+    <div style="margin-top:40px;opacity:.4"><img src="/static/fs-audio-banner.png" alt="Flowstate" style="max-width:500px;width:80%;border-radius:12px"></div>
   </div>
 </div>
 
