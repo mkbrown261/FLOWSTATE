@@ -18,13 +18,15 @@ import {
 } from './intent-layer'
 
 type Bindings = {
-  OPENAI_API_KEY: string; ANTHROPIC_API_KEY: string; GOOGLE_AI_KEY: string
+  // ── AI Chat (single OpenRouter key covers ALL chat models) ──────────────────
+  OPENROUTER_API_KEY: string  // replaces OPENAI_API_KEY — covers GPT, Claude, Gemini, Grok, Llama, Mistral, DeepSeek etc.
+  ANTHROPIC_API_KEY: string   // optional: direct Anthropic (fallback if OpenRouter down)
+  GOOGLE_AI_KEY: string       // required: Gemini stream + Imagen + Veo
   GOOGLE_CLIENT_ID: string; GOOGLE_CLIENT_SECRET: string
   NOTION_CLIENT_ID: string; NOTION_CLIENT_SECRET: string
   SLACK_CLIENT_ID: string; SLACK_CLIENT_SECRET: string; SLACK_BOT_TOKEN: string
   XAI_API_KEY: string; MISTRAL_API_KEY: string; DEEPSEEK_API_KEY: string
-  TOGETHER_API_KEY: string; ELEVENLABS_API_KEY: string; STABILITY_API_KEY: string
-  BFL_API_KEY: string; RUNWAY_API_KEY: string; IDEOGRAM_API_KEY: string
+  TOGETHER_API_KEY: string; ELEVENLABS_API_KEY: string
   STRIPE_SECRET_KEY: string; STRIPE_PUBLISHABLE_KEY: string; STRIPE_WEBHOOK_SECRET: string
   RESEND_API_KEY: string; SESSION_SECRET: string
   CLAWBOT_API_KEY: string;
@@ -296,20 +298,42 @@ app.post('/api/chat/stream', async (c) => {
   const intent = declareModelRouting(message, preferredModel)
   const spec = MODEL_REGISTRY[intent.routedModel]
   if (!spec) return c.json({ error: 'Unknown model' }, 400)
-  const apiKey = (c.env as any)?.[spec.envKey]
+
+  // Resolve API key — OpenRouter covers everything except Google (which needs direct key for streaming)
+  const apiKey = spec.provider === 'google'
+    ? c.env?.GOOGLE_AI_KEY
+    : (c.env?.OPENROUTER_API_KEY || (c.env as any)?.[spec.envKey])
+
   if (!apiKey) return c.text(getDemoResponse(message, spec.name), 200, { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel, 'X-Routing-Reason': intent.reasoning })
+
   const systemMsg = systemOverride || intent.systemPrompt
   const allMessages = [...history.slice(-10), { role: 'user', content: message }]
   try {
-    if (spec.provider === 'anthropic') {
-      const res = await fetch(spec.apiEndpoint, { method: 'POST', headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, body: JSON.stringify({ model: spec.apiModel, max_tokens: 2048, system: systemMsg, messages: allMessages, stream: true }) })
-      return new Response(await extractAnthropicStream(res), { headers: { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel } })
-    }
+    // Google Gemini — direct API (SSE streaming format differs from OpenAI)
     if (spec.provider === 'google') {
-      const res = await fetch(spec.apiEndpoint + '?key=' + apiKey + '&alt=sse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system_instruction: { parts: [{ text: systemMsg }] }, contents: allMessages.map((m: any) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig: { maxOutputTokens: 2048 } }) })
+      const res = await fetch(spec.apiEndpoint + '?key=' + apiKey + '&alt=sse', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ system_instruction: { parts: [{ text: systemMsg }] }, contents: allMessages.map((m: any) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig: { maxOutputTokens: 2048 } })
+      })
       return new Response(await extractGeminiStream(res), { headers: { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel } })
     }
-    const res = await fetch(spec.apiEndpoint, { method: 'POST', headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: spec.apiModel, messages: [{ role: 'system', content: systemMsg }, ...allMessages], stream: true, max_tokens: 2048 }) })
+    // All other providers (OpenAI, Anthropic, xAI, Mistral, DeepSeek, Meta) — via OpenRouter
+    // OpenRouter uses OpenAI-compatible format for all models
+    const res = await fetch(spec.apiEndpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + apiKey,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://flowstate-67g.pages.dev',
+        'X-Title': 'FlowState Hub',
+      },
+      body: JSON.stringify({
+        model: spec.apiModel,
+        messages: [{ role: 'system', content: systemMsg }, ...allMessages],
+        stream: true,
+        max_tokens: 2048,
+      })
+    })
     return new Response(await extractOpenAIStream(res), { headers: { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel, 'X-Routing-Reason': intent.reasoning } })
   } catch (err: any) { return c.text('[Error: ' + err.message + '] ' + getDemoResponse(message, spec.name), 200, { 'Content-Type': 'text/plain' }) }
 })
@@ -672,9 +696,8 @@ app.post('/api/clawbot/chat', async (c) => {
   const systemPrompt = declareClawbotSystemPrompt(appCtx, 'clawflow')
   const coinEntry    = declareCoinLedgerEntry('chat_message', appCtx, 2, 'clawbot')
 
-  // Prefer Anthropic for Clawbot responses; fall back to OpenAI
-  const useAnthropic = !!c.env?.ANTHROPIC_API_KEY
-  const apiKey       = useAnthropic ? c.env?.ANTHROPIC_API_KEY : c.env?.OPENAI_API_KEY
+  // Use OpenRouter for Clawbot — routes to Claude Sonnet 4.5 (best for agentic tasks)
+  const apiKey = c.env?.OPENROUTER_API_KEY || c.env?.ANTHROPIC_API_KEY
 
   if (!apiKey) {
     // Demo mode — return a canned response
@@ -688,8 +711,10 @@ app.post('/api/clawbot/chat', async (c) => {
 
   try {
     let reply = ''
-    if (useAnthropic) {
-      const res  = await fetch('https://api.anthropic.com/v1/messages', {
+    // OpenRouter — use Claude Sonnet as Clawbot's brain (best agentic reasoning)
+    const useDirectAnthropic = !c.env?.OPENROUTER_API_KEY && !!c.env?.ANTHROPIC_API_KEY
+    if (useDirectAnthropic) {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -702,11 +727,17 @@ app.post('/api/clawbot/chat', async (c) => {
       const data: any = await res.json()
       reply = data.content?.[0]?.text || 'No response from Clawbot.'
     } else {
-      const res  = await fetch('https://api.openai.com/v1/chat/completions', {
+      // OpenRouter — Claude Sonnet 4.5 as Clawbot brain
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
-        headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: 'Bearer ' + apiKey,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://flowstate-67g.pages.dev',
+          'X-Title': 'FlowState Clawbot',
+        },
         body: JSON.stringify({
-          model: 'gpt-4o',
+          model: 'anthropic/claude-sonnet-4-5',
           max_tokens: 1024,
           messages: [{ role: 'system', content: systemPrompt }, ...(history as any[]).slice(-6), { role: 'user', content: message }],
         }),
@@ -716,7 +747,7 @@ app.post('/api/clawbot/chat', async (c) => {
     }
     return c.json({
       reply,
-      model: useAnthropic ? 'claude-3-5-sonnet' : 'gpt-4o',
+      model: useDirectAnthropic ? 'claude-3-5-sonnet' : 'claude-sonnet-4-5 (OpenRouter)',
       coinCost: coinEntry.coinCost,
       app: appCtx,
     })

@@ -33,54 +33,118 @@ export interface ModelSpec {
   badge?: string; color?: string;
 }
 
+// ─── OpenRouter endpoint — one URL, one key, all models ──────────────────────
+const OR = 'https://openrouter.ai/api/v1/chat/completions'
+
 export const MODEL_REGISTRY: Record<string, ModelSpec> = {
+  // ── OpenAI models via OpenRouter ───────────────────────────────────────────
   'gpt-4o': {
     id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', providerLabel: 'OpenAI',
     description: 'Fast Q&A, writing, vision', capabilities: ['quick', 'creative', 'vision', 'code'],
-    apiEndpoint: 'https://api.openai.com/v1/chat/completions', apiModel: 'gpt-4o',
-    contextWindow: 128000, streaming: true, envKey: 'OPENAI_API_KEY', color: '#10b981',
-  },
-  'claude-3-7-sonnet': {
-    id: 'claude-3-7-sonnet', name: 'Claude 3.7', provider: 'anthropic', providerLabel: 'Anthropic',
-    description: 'Analysis, long docs, reasoning', capabilities: ['analysis', 'reasoning', 'long_form', 'code'],
-    apiEndpoint: 'https://api.anthropic.com/v1/messages', apiModel: 'claude-3-5-sonnet-20241022',
-    contextWindow: 200000, streaming: true, envKey: 'ANTHROPIC_API_KEY', color: '#f59e0b',
-  },
-  'gemini-2-flash': {
-    id: 'gemini-2-flash', name: 'Gemini 2.0 Flash', provider: 'google', providerLabel: 'Google',
-    description: 'Speed, multimodal, 1M context', capabilities: ['quick', 'realtime', 'vision', 'creative'],
-    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent',
-    apiModel: 'gemini-2.0-flash', contextWindow: 1000000, streaming: true, envKey: 'GOOGLE_AI_KEY', color: '#3b82f6',
-  },
-  'grok-3': {
-    id: 'grok-3', name: 'Grok 3', provider: 'xai', providerLabel: 'xAI',
-    description: 'Real-time web, fearless takes', capabilities: ['realtime', 'creative', 'quick', 'reasoning'],
-    apiEndpoint: 'https://api.x.ai/v1/chat/completions', apiModel: 'grok-3',
-    contextWindow: 131072, streaming: true, envKey: 'XAI_API_KEY', color: '#8b5cf6',
-  },
-  'mistral-large': {
-    id: 'mistral-large', name: 'Mistral Large', provider: 'mistral', providerLabel: 'Mistral',
-    description: 'EU privacy, multilingual', capabilities: ['code', 'analysis', 'reasoning', 'creative'],
-    apiEndpoint: 'https://api.mistral.ai/v1/chat/completions', apiModel: 'mistral-large-latest',
-    contextWindow: 128000, streaming: true, envKey: 'MISTRAL_API_KEY', color: '#06b6d4',
-  },
-  'deepseek-r1': {
-    id: 'deepseek-r1', name: 'DeepSeek R1', provider: 'deepseek', providerLabel: 'DeepSeek',
-    description: 'Math, deep reasoning, code', capabilities: ['math', 'reasoning', 'code', 'analysis'],
-    apiEndpoint: 'https://api.deepseek.com/v1/chat/completions', apiModel: 'deepseek-reasoner',
-    contextWindow: 64000, streaming: true, envKey: 'DEEPSEEK_API_KEY', color: '#a855f7',
-  },
-  'llama-3-3': {
-    id: 'llama-3-3', name: 'Llama 3.3 70B', provider: 'meta', providerLabel: 'Meta',
-    description: 'Open-source, privacy-first', capabilities: ['code', 'creative', 'analysis', 'quick'],
-    apiEndpoint: 'https://api.together.xyz/v1/chat/completions', apiModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
-    contextWindow: 131072, streaming: true, envKey: 'TOGETHER_API_KEY', color: '#3b82f6',
+    apiEndpoint: OR, apiModel: 'openai/gpt-4o',
+    contextWindow: 128000, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#10b981',
   },
   'gpt-4o-mini': {
     id: 'gpt-4o-mini', name: 'GPT-4o mini', provider: 'openai', providerLabel: 'OpenAI',
-    description: 'Fast, cheap, free tier', capabilities: ['quick', 'creative'],
-    apiEndpoint: 'https://api.openai.com/v1/chat/completions', apiModel: 'gpt-4o-mini',
-    contextWindow: 128000, streaming: true, envKey: 'OPENAI_API_KEY', badge: 'Free', color: '#10b981',
+    description: 'Fast, cost-efficient', capabilities: ['quick', 'creative'],
+    apiEndpoint: OR, apiModel: 'openai/gpt-4o-mini',
+    contextWindow: 128000, streaming: true, envKey: 'OPENROUTER_API_KEY', badge: 'Fast', color: '#10b981',
+  },
+  'gpt-5': {
+    id: 'gpt-5', name: 'GPT-5', provider: 'openai', providerLabel: 'OpenAI',
+    description: 'Most capable OpenAI model', capabilities: ['quick', 'creative', 'vision', 'code', 'reasoning'],
+    apiEndpoint: OR, apiModel: 'openai/gpt-4o', // alias until GPT-5 is on OR
+    contextWindow: 128000, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#10b981',
+  },
+  // ── Anthropic models via OpenRouter ───────────────────────────────────────
+  'claude-3-7-sonnet': {
+    id: 'claude-3-7-sonnet', name: 'Claude Sonnet 4.6', provider: 'anthropic', providerLabel: 'Anthropic',
+    description: 'Analysis, long docs, code', capabilities: ['analysis', 'reasoning', 'long_form', 'code'],
+    apiEndpoint: OR, apiModel: 'anthropic/claude-sonnet-4-5',
+    contextWindow: 200000, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#f59e0b',
+  },
+  'claude-opus': {
+    id: 'claude-opus', name: 'Claude Opus 4.6', provider: 'anthropic', providerLabel: 'Anthropic',
+    description: 'Most powerful Claude — complex reasoning', capabilities: ['analysis', 'reasoning', 'long_form', 'code'],
+    apiEndpoint: OR, apiModel: 'anthropic/claude-opus-4-5',
+    contextWindow: 200000, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#f59e0b',
+  },
+  'claude-haiku': {
+    id: 'claude-haiku', name: 'Claude Haiku 4.5', provider: 'anthropic', providerLabel: 'Anthropic',
+    description: 'Fastest Claude — quick tasks', capabilities: ['quick', 'creative', 'code'],
+    apiEndpoint: OR, apiModel: 'anthropic/claude-haiku-4-5',
+    contextWindow: 200000, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#f59e0b',
+  },
+  // ── Google models — still via direct Google AI (needs GOOGLE_AI_KEY for streaming) ──
+  'gemini-2-flash': {
+    id: 'gemini-2-flash', name: 'Gemini 2.5 Flash', provider: 'google', providerLabel: 'Google',
+    description: 'Speed, multimodal, 1M context', capabilities: ['quick', 'realtime', 'vision', 'creative'],
+    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:streamGenerateContent',
+    apiModel: 'gemini-2.5-flash', contextWindow: 1000000, streaming: true, envKey: 'GOOGLE_AI_KEY', color: '#3b82f6',
+  },
+  'gemini-2-pro': {
+    id: 'gemini-2-pro', name: 'Gemini 2.5 Pro', provider: 'google', providerLabel: 'Google',
+    description: 'Most capable Gemini — deep reasoning', capabilities: ['analysis', 'reasoning', 'long_form', 'vision'],
+    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-03-25:streamGenerateContent',
+    apiModel: 'gemini-2.5-pro', contextWindow: 1000000, streaming: true, envKey: 'GOOGLE_AI_KEY', color: '#3b82f6',
+  },
+  // ── xAI Grok via OpenRouter ────────────────────────────────────────────────
+  'grok-3': {
+    id: 'grok-3', name: 'Grok 3', provider: 'xai', providerLabel: 'xAI',
+    description: 'Real-time web, live data', capabilities: ['realtime', 'creative', 'quick', 'reasoning'],
+    apiEndpoint: OR, apiModel: 'x-ai/grok-3',
+    contextWindow: 131072, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#8b5cf6',
+  },
+  'grok-3-mini': {
+    id: 'grok-3-mini', name: 'Grok 3 Mini', provider: 'xai', providerLabel: 'xAI',
+    description: 'Fast Grok — efficient reasoning', capabilities: ['realtime', 'quick', 'reasoning'],
+    apiEndpoint: OR, apiModel: 'x-ai/grok-3-mini',
+    contextWindow: 131072, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#8b5cf6',
+  },
+  // ── Meta Llama via OpenRouter ──────────────────────────────────────────────
+  'llama-4-maverick': {
+    id: 'llama-4-maverick', name: 'Llama 4 Maverick', provider: 'meta', providerLabel: 'Meta',
+    description: 'Open-source powerhouse, privacy-first', capabilities: ['code', 'creative', 'analysis', 'quick'],
+    apiEndpoint: OR, apiModel: 'meta-llama/llama-4-maverick',
+    contextWindow: 131072, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#3b82f6',
+  },
+  'llama-4-scout': {
+    id: 'llama-4-scout', name: 'Llama 4 Scout', provider: 'meta', providerLabel: 'Meta',
+    description: 'Fast open-source, great for code', capabilities: ['code', 'quick', 'creative'],
+    apiEndpoint: OR, apiModel: 'meta-llama/llama-4-scout',
+    contextWindow: 131072, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#3b82f6',
+  },
+  'llama-3-3': {
+    id: 'llama-3-3', name: 'Llama 3.3 70B', provider: 'meta', providerLabel: 'Meta',
+    description: 'Proven open-source, versatile', capabilities: ['code', 'creative', 'analysis', 'quick'],
+    apiEndpoint: OR, apiModel: 'meta-llama/llama-3.3-70b-instruct',
+    contextWindow: 131072, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#3b82f6',
+  },
+  // ── Mistral via OpenRouter ─────────────────────────────────────────────────
+  'mistral-large': {
+    id: 'mistral-large', name: 'Mistral Large', provider: 'mistral', providerLabel: 'Mistral',
+    description: 'EU privacy, multilingual, code', capabilities: ['code', 'analysis', 'reasoning', 'creative'],
+    apiEndpoint: OR, apiModel: 'mistralai/mistral-large',
+    contextWindow: 128000, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#06b6d4',
+  },
+  'codestral': {
+    id: 'codestral', name: 'Codestral', provider: 'mistral', providerLabel: 'Mistral',
+    description: 'Best-in-class code model by Mistral', capabilities: ['code', 'reasoning'],
+    apiEndpoint: OR, apiModel: 'mistralai/codestral-2501',
+    contextWindow: 256000, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#06b6d4',
+  },
+  // ── DeepSeek via OpenRouter ────────────────────────────────────────────────
+  'deepseek-r1': {
+    id: 'deepseek-r1', name: 'DeepSeek R1', provider: 'deepseek', providerLabel: 'DeepSeek',
+    description: 'Math, deep reasoning, chain-of-thought', capabilities: ['math', 'reasoning', 'code', 'analysis'],
+    apiEndpoint: OR, apiModel: 'deepseek/deepseek-r1',
+    contextWindow: 64000, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#a855f7',
+  },
+  'deepseek-v3': {
+    id: 'deepseek-v3', name: 'DeepSeek V3', provider: 'deepseek', providerLabel: 'DeepSeek',
+    description: 'Fast, cost-efficient, strong reasoning', capabilities: ['code', 'analysis', 'quick', 'reasoning'],
+    apiEndpoint: OR, apiModel: 'deepseek/deepseek-chat',
+    contextWindow: 64000, streaming: true, envKey: 'OPENROUTER_API_KEY', color: '#a855f7',
   },
 };
 
@@ -800,7 +864,7 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   // ═══════════════════════════════════════════════════════════════════════════
 
   { service: 'Google OAuth 2.0', purpose: 'Auth, Calendar sync, Drive, Gmail scopes', envKey: 'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET', url: 'https://console.cloud.google.com', required: 'core', tier: 'free' },
-  { service: 'OpenAI', purpose: 'GPT-4o/5 chat, DALL-E 3/4, GPT-Image-1, Sora video, TTS voice', envKey: 'OPENAI_API_KEY', url: 'https://platform.openai.com/api-keys', required: 'core', tier: 'free' },
+  { service: 'OpenRouter', purpose: 'Single key for ALL AI chat models — GPT-5, Claude Sonnet/Opus/Haiku, Grok 3, Llama 4, Mistral, DeepSeek R1/V3, Codestral and more. One bill, one key.', envKey: 'OPENROUTER_API_KEY', url: 'https://openrouter.ai/keys', required: 'core', tier: 'free' },
   { service: 'SendGrid / Resend', purpose: 'Transactional email, magic links, weekly digest emails', envKey: 'RESEND_API_KEY', url: 'https://resend.com', required: 'core', tier: 'free' },
   { service: 'Stripe', purpose: 'Subscription billing, seat management, webhook events', envKey: 'STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE_KEY', url: 'https://dashboard.stripe.com', required: 'core', tier: 'personal_pro' },
   { service: 'Notion OAuth', purpose: 'Kanban board sync, pages, database integration', envKey: 'NOTION_CLIENT_ID, NOTION_CLIENT_SECRET', url: 'https://notion.so/my-integrations', required: 'core', tier: 'personal_pro' },
@@ -811,18 +875,16 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   // ── RECOMMENDED — AI CHAT MODELS ───────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Anthropic', purpose: 'Claude Sonnet 4.6 / Opus 4.6 / Haiku 4.5 — code, analysis, long docs', envKey: 'ANTHROPIC_API_KEY', url: 'https://console.anthropic.com', required: 'recommended', tier: 'personal_pro' },
-  { service: 'Google AI Studio', purpose: 'Gemini 2.5 Pro / 2.5 Flash / 2.0 Flash + Imagen 3/4 + Veo 2/3', envKey: 'GOOGLE_AI_KEY', url: 'https://aistudio.google.com/app/apikey', required: 'recommended', tier: 'personal_pro' },
-  { service: 'xAI (Grok)', purpose: 'Grok 3 / Grok 3 Mini — real-time web search, live data, trends', envKey: 'XAI_API_KEY', url: 'https://console.x.ai', required: 'recommended', tier: 'personal_pro' },
+  { service: 'Google AI Studio', purpose: 'Gemini 2.5 Pro / 2.5 Flash streaming + Imagen 3/4 image gen + Veo 2/3 video gen — direct key needed for Google models', envKey: 'GOOGLE_AI_KEY', url: 'https://aistudio.google.com/app/apikey', required: 'recommended', tier: 'personal_pro' },
+  { service: 'Anthropic (direct fallback)', purpose: 'Optional: direct Claude API if OpenRouter is down. OpenRouter already covers Claude — only needed as backup.', envKey: 'ANTHROPIC_API_KEY', url: 'https://console.anthropic.com', required: 'optional', tier: 'personal_pro' },
   { service: 'Upstash Redis', purpose: 'Session cache, rate limiting, real-time presence indicators', envKey: 'UPSTASH_REDIS_URL, UPSTASH_REDIS_TOKEN', url: 'https://upstash.com', required: 'recommended', tier: 'team_starter' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── OPTIONAL — ADDITIONAL AI CHAT MODELS ───────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Mistral AI', purpose: 'Mistral Large / Codestral — multilingual, EU data privacy, fast code', envKey: 'MISTRAL_API_KEY', url: 'https://console.mistral.ai', required: 'optional', tier: 'personal_pro' },
-  { service: 'DeepSeek', purpose: 'DeepSeek R2 / V3 — math, deep reasoning, code, extremely cost-efficient', envKey: 'DEEPSEEK_API_KEY', url: 'https://platform.deepseek.com', required: 'optional', tier: 'personal_pro' },
-  { service: 'Together AI', purpose: 'Llama 4 Maverick / Scout (Meta) — open-source, privacy-first hosting', envKey: 'TOGETHER_API_KEY', url: 'https://api.together.xyz', required: 'optional', tier: 'personal_pro' },
+  // Note: xAI Grok, Mistral, DeepSeek, Meta Llama are all covered by OPENROUTER_API_KEY above.
+  // No separate keys needed for those models.
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── IMAGE GENERATION MODELS ─────────────────────────────────────────────
