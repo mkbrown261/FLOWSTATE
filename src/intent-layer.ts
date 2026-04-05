@@ -15,7 +15,7 @@ export type ModelProvider = 'openai' | 'anthropic' | 'google' | 'xai' | 'mistral
 export type TaskCapability = 'code' | 'creative' | 'analysis' | 'quick' | 'vision' | 'reasoning' | 'realtime' | 'long_form' | 'math';
 export type ImageProvider = 'dalle3' | 'dalle4' | 'gpt-image' | 'imagen3' | 'imagen4' | 'sd3' | 'flux_pro' | 'flux_dev' | 'ideogram2' | 'recraft';
 export type VideoProvider = 'veo2' | 'veo3' | 'kling16' | 'kling21' | 'runway_gen4' | 'runway_gen4t' | 'pika20' | 'hailuo' | 'sora' | 'minimax' | 'luma';
-export type PremiumTier = 'free' | 'personal_pro' | 'team_starter' | 'team_growth' | 'enterprise';
+export type PremiumTier = 'free' | 'pro' | 'team' | 'clawflow' | 'enterprise' | 'personal_pro' | 'team_starter' | 'team_growth';
 export type TeamRole = 'member' | 'senior_dev' | 'scrum_master' | 'admin';
 export type LearnCardType = 'language' | 'skill_tip' | 'did_you_know' | 'book_rec' | 'mental_model';
 export type RestoreMode = 'breathing' | 'quote' | 'body_reset' | 'gratitude' | 'micro_win';
@@ -751,12 +751,15 @@ export function declareTierCapabilities(tier: PremiumTier): TierIntent {
   switch (tier) {
     case 'free':
       return { tier, monthlyPrice: 0, seats: 1, features: ['Pomodoro timer', 'GPT-4o-mini chat', 'Manual Kanban', 'Basic metrics', 'Learn + Restore tabs'], modelRoutingActive: false, behaviorSystemActive: false, teamFeaturesActive: false, sprintHealthActive: false, slackActive: false, imageGenActive: false, videoGenActive: false, availableModels: freeModels };
+    case 'pro':
     case 'personal_pro':
-      return { tier, monthlyPrice: 12, seats: 1, annualDiscount: 20, features: ['All 7 AI models + smart routing', 'Google Calendar + Notion sync', 'Image generation (5 models)', 'AI Tip Bubbles + FlowScore', 'Full celebrations + NotebookLM', 'Behavior Intelligence'], modelRoutingActive: true, behaviorSystemActive: true, teamFeaturesActive: false, sprintHealthActive: false, slackActive: false, imageGenActive: true, videoGenActive: false, availableModels: allModels, stripeProductId: 'price_personal_pro' };
+      return { tier: 'pro', monthlyPrice: 18, annualPrice: 14, seats: 1, annualDiscount: 22, features: ['All AI models (GPT-5, Claude, Gemini, Grok)', '100k tokens/day', 'Google Calendar sync', 'Notion + Slack integration', 'Advanced metrics & insights', 'Image & video generation'], modelRoutingActive: true, behaviorSystemActive: true, teamFeaturesActive: false, sprintHealthActive: false, slackActive: true, imageGenActive: true, videoGenActive: true, availableModels: allModels, stripeProductId: 'price_1TIupZLsf0qSbSh0LPiXhi1O' };
+    case 'team':
     case 'team_starter':
-      return { tier, monthlyPrice: 49, seats: 5, annualDiscount: 20, features: ['Everything in Personal Pro', 'Team Hub + Pulse presence', 'Shared Kanban (Notion/Linear/Jira)', 'Slack bidirectional sync', 'Team AI Chat (shared, searchable)', 'Up to 5 seats'], modelRoutingActive: true, behaviorSystemActive: true, teamFeaturesActive: true, sprintHealthActive: false, slackActive: true, imageGenActive: true, videoGenActive: false, availableModels: allModels, stripeProductId: 'price_team_starter' };
     case 'team_growth':
-      return { tier, monthlyPrice: 149, seats: 20, annualDiscount: 20, features: ['Everything in Team Starter', 'Sprint Health Dashboard', 'Deadline Intelligence AI (48h + 24h)', 'Burnout risk indicators', 'Video generation (6 models)', 'Mindful Minimum policy', 'Ceremony scheduling', 'Up to 20 seats'], modelRoutingActive: true, behaviorSystemActive: true, teamFeaturesActive: true, sprintHealthActive: true, slackActive: true, imageGenActive: true, videoGenActive: true, availableModels: allModels, stripeProductId: 'price_team_growth' };
+      return { tier: 'team', monthlyPrice: 15, annualPrice: 12, seats: -1, annualDiscount: 20, features: ['Everything in Pro', 'Sprint Health & velocity', 'Burnout Monitor', 'Team Pulse & standups', 'Deadline alerts', 'Role-gated controls', 'Per seat pricing'], modelRoutingActive: true, behaviorSystemActive: true, teamFeaturesActive: true, sprintHealthActive: true, slackActive: true, imageGenActive: true, videoGenActive: true, availableModels: allModels, stripeProductId: 'price_1TIupjLsf0qSbSh0IN6UfOBp' };
+    case 'clawflow':
+      return { tier: 'clawflow', monthlyPrice: 40, annualPrice: 35, seats: 1, annualDiscount: 12, features: ['ClawFlow AI across all Flowstate apps', '500 coins/month', 'Walkthrough generation', 'Agentic workflow automation', 'Priority AI routing', '264 Pro deep integration', 'Flowstate Audio deep integration'], modelRoutingActive: true, behaviorSystemActive: true, teamFeaturesActive: false, sprintHealthActive: false, slackActive: false, imageGenActive: true, videoGenActive: true, availableModels: allModels, stripeProductId: 'price_1TIupyLsf0qSbSh0NTc5xoT8' };
     case 'enterprise':
       return { tier, monthlyPrice: 0, seats: 9999, features: ['Everything in Team Growth', 'SSO / SAML', 'Custom integrations', 'SLA guarantee', 'Dedicated success manager', 'Custom AI routing policy', 'Unlimited seats', 'Priority support'], modelRoutingActive: true, behaviorSystemActive: true, teamFeaturesActive: true, sprintHealthActive: true, slackActive: true, imageGenActive: true, videoGenActive: true, availableModels: allModels };
   }
@@ -865,19 +868,20 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
 
   { service: 'Google OAuth 2.0', purpose: 'Auth, Calendar sync, Drive, Gmail scopes', envKey: 'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET', url: 'https://console.cloud.google.com', required: 'core', tier: 'free' },
   { service: 'OpenRouter', purpose: 'Single key for ALL AI chat models — GPT-5, Claude Sonnet/Opus/Haiku, Grok 3, Llama 4, Mistral, DeepSeek R1/V3, Codestral and more. One bill, one key.', envKey: 'OPENROUTER_API_KEY', url: 'https://openrouter.ai/keys', required: 'core', tier: 'free' },
+  { service: 'Upstash Redis', purpose: '⚠️ REQUIRED for billing — stores subscription tier, enforces token limits, rate limiting, session cache. Without this, all users get Free limits regardless of payment.', envKey: 'UPSTASH_REDIS_URL, UPSTASH_REDIS_TOKEN', url: 'https://upstash.com', required: 'core', tier: 'free' },
+  { service: 'Stripe ✅ Live', purpose: 'Subscription billing — Pro ($18/mo), Team ($15/seat), ClawFlow ($40/mo). Webhook auto-upgrades tiers on payment. Keys + webhook secret configured.', envKey: 'STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET', url: 'https://dashboard.stripe.com', required: 'core', tier: 'pro' },
   { service: 'SendGrid / Resend', purpose: 'Transactional email, magic links, weekly digest emails', envKey: 'RESEND_API_KEY', url: 'https://resend.com', required: 'core', tier: 'free' },
-  { service: 'Stripe', purpose: 'Subscription billing, seat management, webhook events', envKey: 'STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE_KEY', url: 'https://dashboard.stripe.com', required: 'core', tier: 'personal_pro' },
-  { service: 'Notion OAuth', purpose: 'Kanban board sync, pages, database integration', envKey: 'NOTION_CLIENT_ID, NOTION_CLIENT_SECRET', url: 'https://notion.so/my-integrations', required: 'core', tier: 'personal_pro' },
-  { service: 'Slack OAuth', purpose: 'Team comms, bidirectional sync, standups, burnout alerts', envKey: 'SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_BOT_TOKEN', url: 'https://api.slack.com/apps', required: 'core', tier: 'team_starter' },
-  { service: 'Supabase', purpose: 'Team database, auth backend, real-time presence', envKey: 'SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY', url: 'https://supabase.com', required: 'core', tier: 'team_starter' },
+  { service: 'Notion OAuth', purpose: 'Kanban board sync, pages, database integration', envKey: 'NOTION_CLIENT_ID, NOTION_CLIENT_SECRET', url: 'https://notion.so/my-integrations', required: 'core', tier: 'pro' },
+  { service: 'Slack OAuth', purpose: 'Team comms, bidirectional sync, standups, burnout alerts', envKey: 'SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_BOT_TOKEN', url: 'https://api.slack.com/apps', required: 'core', tier: 'team' },
+  { service: 'Supabase', purpose: 'Team database, auth backend, real-time presence', envKey: 'SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY', url: 'https://supabase.com', required: 'core', tier: 'team' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── RECOMMENDED — AI CHAT MODELS ───────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Google AI Studio', purpose: 'Gemini 2.5 Pro / 2.5 Flash streaming + Imagen 3/4 image gen + Veo 2/3 video gen — direct key needed for Google models', envKey: 'GOOGLE_AI_KEY', url: 'https://aistudio.google.com/app/apikey', required: 'recommended', tier: 'personal_pro' },
-  { service: 'Anthropic (direct fallback)', purpose: 'Optional: direct Claude API if OpenRouter is down. OpenRouter already covers Claude — only needed as backup.', envKey: 'ANTHROPIC_API_KEY', url: 'https://console.anthropic.com', required: 'optional', tier: 'personal_pro' },
-  { service: 'Upstash Redis', purpose: 'Session cache, rate limiting, real-time presence indicators', envKey: 'UPSTASH_REDIS_URL, UPSTASH_REDIS_TOKEN', url: 'https://upstash.com', required: 'recommended', tier: 'team_starter' },
+  { service: 'Google AI Studio', purpose: 'Gemini 2.5 Pro / 2.5 Flash streaming + Imagen 3/4 image gen + Veo 2/3 video gen — direct key needed for Google models', envKey: 'GOOGLE_AI_KEY', url: 'https://aistudio.google.com/app/apikey', required: 'recommended', tier: 'pro' },
+  { service: 'xAI (Grok)', purpose: 'Grok 3 / Grok 3 Mini — direct key enables live web search mode. Already covered by OpenRouter but direct key unlocks real-time data.', envKey: 'XAI_API_KEY', url: 'https://console.x.ai', required: 'recommended', tier: 'pro' },
+  { service: 'Anthropic (direct fallback)', purpose: 'Optional: direct Claude API if OpenRouter is down. OpenRouter already covers Claude — only needed as backup.', envKey: 'ANTHROPIC_API_KEY', url: 'https://console.anthropic.com', required: 'optional', tier: 'pro' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── OPTIONAL — ADDITIONAL AI CHAT MODELS ───────────────────────────────
@@ -893,10 +897,10 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   // Google AI key covers: Imagen 3, Imagen 4
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Stability AI', purpose: 'Stable Diffusion 3 — open-source image generation, fine-tunable', envKey: 'STABILITY_API_KEY', url: 'https://platform.stability.ai', required: 'optional', tier: 'personal_pro' },
-  { service: 'Black Forest Labs (BFL)', purpose: 'FLUX Pro 1.1 + FLUX Dev — ultra-high detail, accurate anatomy, open-weight', envKey: 'BFL_API_KEY', url: 'https://api.bfl.ml', required: 'optional', tier: 'personal_pro' },
-  { service: 'Ideogram', purpose: 'Ideogram 2.0 — text-in-image specialist, logos, typography, design', envKey: 'IDEOGRAM_API_KEY', url: 'https://ideogram.ai/api', required: 'optional', tier: 'personal_pro' },
-  { service: 'Recraft', purpose: 'Recraft V3 — vector art, brand assets, icons, consistent visual style', envKey: 'RECRAFT_API_KEY', url: 'https://recraft.ai/profile', required: 'optional', tier: 'personal_pro' },
+  { service: 'Stability AI', purpose: 'Stable Diffusion 3 — open-source image generation, fine-tunable', envKey: 'STABILITY_API_KEY', url: 'https://platform.stability.ai', required: 'optional', tier: 'pro' },
+  { service: 'Black Forest Labs (BFL)', purpose: 'FLUX Pro 1.1 + FLUX Dev — ultra-high detail, accurate anatomy, open-weight', envKey: 'BFL_API_KEY', url: 'https://api.bfl.ml', required: 'optional', tier: 'pro' },
+  { service: 'Ideogram', purpose: 'Ideogram 2.0 — text-in-image specialist, logos, typography, design', envKey: 'IDEOGRAM_API_KEY', url: 'https://ideogram.ai/api', required: 'optional', tier: 'pro' },
+  { service: 'Recraft', purpose: 'Recraft V3 — vector art, brand assets, icons, consistent visual style', envKey: 'RECRAFT_API_KEY', url: 'https://recraft.ai/profile', required: 'optional', tier: 'pro' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── VIDEO GENERATION MODELS ─────────────────────────────────────────────
@@ -905,68 +909,68 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   // Google AI key covers: Veo 2, Veo 3
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Runway ML', purpose: 'Runway Gen-4 + Gen-4 Turbo — film-quality video, image-to-video', envKey: 'RUNWAY_API_KEY', url: 'https://dev.runwayml.com', required: 'optional', tier: 'team_growth' },
-  { service: 'Kling / Kuaishou', purpose: 'Kling 1.6 + Kling 2.1 — smooth motion, text-to-video, image-to-video', envKey: 'KLING_API_KEY', url: 'https://klingai.com/dev', required: 'optional', tier: 'team_growth' },
-  { service: 'Pika Labs', purpose: 'Pika 2.0 — creative effects, templates, fast video generation', envKey: 'PIKA_API_KEY', url: 'https://pika.art/api', required: 'optional', tier: 'team_growth' },
-  { service: 'MiniMax (Hailuo)', purpose: 'Hailuo 2 — fast video gen, excellent face & character consistency', envKey: 'MINIMAX_API_KEY', url: 'https://api.minimax.chat', required: 'optional', tier: 'team_growth' },
-  { service: 'Luma AI', purpose: 'Luma Dream Machine — photorealistic video, great for product & lifestyle shots', envKey: 'LUMA_API_KEY', url: 'https://lumalabs.ai/dream-machine/api', required: 'optional', tier: 'team_growth' },
+  { service: 'Runway ML', purpose: 'Runway Gen-4 + Gen-4 Turbo — film-quality video, image-to-video', envKey: 'RUNWAY_API_KEY', url: 'https://dev.runwayml.com', required: 'optional', tier: 'pro' },
+  { service: 'Kling / Kuaishou', purpose: 'Kling 1.6 + Kling 2.1 — smooth motion, text-to-video, image-to-video', envKey: 'KLING_API_KEY', url: 'https://klingai.com/dev', required: 'optional', tier: 'pro' },
+  { service: 'Pika Labs', purpose: 'Pika 2.0 — creative effects, templates, fast video generation', envKey: 'PIKA_API_KEY', url: 'https://pika.art/api', required: 'optional', tier: 'pro' },
+  { service: 'MiniMax (Hailuo)', purpose: 'Hailuo 2 — fast video gen, excellent face & character consistency', envKey: 'MINIMAX_API_KEY', url: 'https://api.minimax.chat', required: 'optional', tier: 'pro' },
+  { service: 'Luma AI', purpose: 'Luma Dream Machine — photorealistic video, great for product & lifestyle shots', envKey: 'LUMA_API_KEY', url: 'https://lumalabs.ai/dream-machine/api', required: 'optional', tier: 'pro' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── INTEGRATIONS — PRODUCTIVITY & TEAM ─────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Microsoft OAuth', purpose: 'Teams integration, Outlook Calendar, SharePoint sync', envKey: 'MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET', url: 'https://portal.azure.com', required: 'optional', tier: 'team_starter' },
-  { service: 'GitHub OAuth', purpose: 'Commit activity feed, PR status, Issues sync in board', envKey: 'GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET', url: 'https://github.com/settings/developers', required: 'optional', tier: 'team_starter' },
-  { service: 'Linear API', purpose: 'Sprint board & issue sync for engineering teams', envKey: 'LINEAR_API_KEY', url: 'https://linear.app/settings/api', required: 'optional', tier: 'team_starter' },
-  { service: 'Jira OAuth', purpose: 'Issue tracking sync for Jira-based workflows', envKey: 'JIRA_CLIENT_ID, JIRA_CLIENT_SECRET', url: 'https://developer.atlassian.com', required: 'optional', tier: 'team_starter' },
-  { service: 'Asana OAuth', purpose: 'Task board sync for Asana-based teams', envKey: 'ASANA_CLIENT_ID, ASANA_CLIENT_SECRET', url: 'https://app.asana.com/0/my-apps', required: 'optional', tier: 'team_starter' },
+  { service: 'Microsoft OAuth', purpose: 'Teams integration, Outlook Calendar, SharePoint sync', envKey: 'MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET', url: 'https://portal.azure.com', required: 'optional', tier: 'team' },
+  { service: 'GitHub OAuth', purpose: 'Commit activity feed, PR status, Issues sync in board', envKey: 'GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET', url: 'https://github.com/settings/developers', required: 'optional', tier: 'team' },
+  { service: 'Linear API', purpose: 'Sprint board & issue sync for engineering teams', envKey: 'LINEAR_API_KEY', url: 'https://linear.app/settings/api', required: 'optional', tier: 'team' },
+  { service: 'Jira OAuth', purpose: 'Issue tracking sync for Jira-based workflows', envKey: 'JIRA_CLIENT_ID, JIRA_CLIENT_SECRET', url: 'https://developer.atlassian.com', required: 'optional', tier: 'team' },
+  { service: 'Asana OAuth', purpose: 'Task board sync for Asana-based teams', envKey: 'ASANA_CLIENT_ID, ASANA_CLIENT_SECRET', url: 'https://app.asana.com/0/my-apps', required: 'optional', tier: 'team' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── WELLNESS & BIOMETRIC INTEGRATIONS ──────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Oura Ring', purpose: 'Sleep quality, HRV, readiness score for FlowScore', envKey: 'OURA_CLIENT_ID, OURA_CLIENT_SECRET', url: 'https://cloud.ouraring.com/oauth/applications', required: 'optional', tier: 'team_growth' },
-  { service: 'Whoop', purpose: 'Recovery %, strain, sleep stages for burnout detection', envKey: 'WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET', url: 'https://api.prod.whoop.com/developer', required: 'optional', tier: 'team_growth' },
-  { service: 'Plaid', purpose: 'Read-only financial account snapshots for financial wellness tab', envKey: 'PLAID_CLIENT_ID, PLAID_SECRET', url: 'https://dashboard.plaid.com', required: 'optional', tier: 'team_growth' },
+  { service: 'Oura Ring', purpose: 'Sleep quality, HRV, readiness score for FlowScore', envKey: 'OURA_CLIENT_ID, OURA_CLIENT_SECRET', url: 'https://cloud.ouraring.com/oauth/applications', required: 'optional', tier: 'pro' },
+  { service: 'Whoop', purpose: 'Recovery %, strain, sleep stages for burnout detection', envKey: 'WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET', url: 'https://api.prod.whoop.com/developer', required: 'optional', tier: 'pro' },
+  { service: 'Plaid', purpose: 'Read-only financial account snapshots for financial wellness tab', envKey: 'PLAID_CLIENT_ID, PLAID_SECRET', url: 'https://dashboard.plaid.com', required: 'optional', tier: 'team' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── AUDIO & VOICE ────────────────────────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'ElevenLabs', purpose: 'Voice-guided breathing exercises, Restore ambient narration', envKey: 'ELEVENLABS_API_KEY', url: 'https://elevenlabs.io/api', required: 'optional', tier: 'team_growth' },
+  { service: 'ElevenLabs', purpose: 'Voice-guided breathing exercises, Restore ambient narration', envKey: 'ELEVENLABS_API_KEY', url: 'https://elevenlabs.io/api', required: 'optional', tier: 'pro' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── 264 PRO VIDEO EDITOR — AI TOOLS ────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Replicate', purpose: '264 Pro: AI Upscale (Real-ESRGAN), AI Denoise (FastDVDnet), AI Face Enhance (CodeFormer), Super Slow-Mo (DAIN), AI Stabilize', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'personal_pro' },
-  { service: 'Hugging Face', purpose: '264 Pro: AI Rotoscoping (SAM), AI Colorize (FILM), Depth Map (MiDaS), AI Object Remove (LaMa)', envKey: 'HUGGINGFACE_API_KEY', url: 'https://huggingface.co/settings/tokens', required: 'optional', tier: 'personal_pro' },
-  { service: 'Cloudflare R2', purpose: '264 Pro: Store AI-processed video outputs, export queue, project backups', envKey: 'R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME', url: 'https://dash.cloudflare.com/?to=/:account/r2', required: 'optional', tier: 'personal_pro' },
+  { service: 'Replicate', purpose: '264 Pro: AI Upscale (Real-ESRGAN), AI Denoise (FastDVDnet), AI Face Enhance (CodeFormer), Super Slow-Mo (DAIN), AI Stabilize', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'pro' },
+  { service: 'Hugging Face', purpose: '264 Pro: AI Rotoscoping (SAM), AI Colorize (FILM), Depth Map (MiDaS), AI Object Remove (LaMa)', envKey: 'HUGGINGFACE_API_KEY', url: 'https://huggingface.co/settings/tokens', required: 'optional', tier: 'pro' },
+  { service: 'Cloudflare R2', purpose: '264 Pro: Store AI-processed video outputs, export queue, project backups', envKey: 'R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME', url: 'https://dash.cloudflare.com/?to=/:account/r2', required: 'optional', tier: 'pro' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── CLAWBOT / CLAWFLOW ───────────────────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Clawbot AI (ClawFlow)', purpose: 'Autonomous agent — walkthrough generation, agentic tasks across 264 Pro, Flowstate Audio & Hub, coin ledger', envKey: 'CLAWBOT_API_KEY', url: 'https://flowstatehub.com/clawflow', required: 'optional', tier: 'personal_pro' },
+  { service: 'Clawbot AI (ClawFlow)', purpose: 'Autonomous agent — walkthrough generation, agentic tasks across 264 Pro, Flowstate Audio & Hub, coin ledger. $40/mo first month $20.', envKey: 'CLAWBOT_API_KEY', url: 'https://flowstatehub.com/clawflow', required: 'optional', tier: 'clawflow' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── FLOWSTATE AUDIO — MUSIC AI ─────────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Suno AI', purpose: 'FlowState Audio: AI full-track & stem generation — songs, vocals, loops, instrumentals', envKey: 'SUNO_API_KEY', url: 'https://suno.com/account', required: 'optional', tier: 'personal_pro' },
-  { service: 'Udio', purpose: 'FlowState Audio: AI song generation — high-quality vocals and full tracks', envKey: 'UDIO_API_KEY', url: 'https://www.udio.com/api', required: 'optional', tier: 'personal_pro' },
-  { service: 'MusicGen / AudioCraft (Meta)', purpose: 'FlowState Audio: AI melody, beat & instrumental composition via Replicate', envKey: 'MUSICGEN_API_KEY', url: 'https://replicate.com/meta/musicgen', required: 'optional', tier: 'personal_pro' },
-  { service: 'Moises AI', purpose: 'FlowState Audio: AI stem separation (vocals, drums, bass, keys, guitar), BPM detection', envKey: 'MOISES_API_KEY', url: 'https://developer.moises.ai', required: 'optional', tier: 'personal_pro' },
-  { service: 'Loudme / Matchering', purpose: 'FlowState Audio: AI mastering — loudness normalisation, reference-track matching', envKey: 'LOUDME_API_KEY', url: 'https://loudme.ai', required: 'optional', tier: 'personal_pro' },
-  { service: 'ACRCloud', purpose: 'FlowState Audio: Audio fingerprinting, BPM & key detection, pitch correction', envKey: 'ACRCLOUD_ACCESS_KEY, ACRCLOUD_ACCESS_SECRET', url: 'https://console.acrcloud.com', required: 'optional', tier: 'personal_pro' },
-  { service: 'Dolby.io Media APIs', purpose: 'FlowState Audio: AI noise suppression, speech enhancement, loudness correction', envKey: 'DOLBY_API_KEY', url: 'https://dashboard.dolby.io', required: 'optional', tier: 'personal_pro' },
-  { service: 'AudioShake', purpose: 'FlowState Audio: Professional stem separation for licensed & original recordings', envKey: 'AUDIOSHAKE_API_KEY', url: 'https://app.audioshake.ai', required: 'optional', tier: 'team_growth' },
+  { service: 'Suno AI', purpose: 'FlowState Audio: AI full-track & stem generation — songs, vocals, loops, instrumentals', envKey: 'SUNO_API_KEY', url: 'https://suno.com/account', required: 'optional', tier: 'clawflow' },
+  { service: 'Udio', purpose: 'FlowState Audio: AI song generation — high-quality vocals and full tracks', envKey: 'UDIO_API_KEY', url: 'https://www.udio.com/api', required: 'optional', tier: 'clawflow' },
+  { service: 'MusicGen / AudioCraft (Meta)', purpose: 'FlowState Audio: AI melody, beat & instrumental composition via Replicate', envKey: 'MUSICGEN_API_KEY', url: 'https://replicate.com/meta/musicgen', required: 'optional', tier: 'clawflow' },
+  { service: 'Moises AI', purpose: 'FlowState Audio: AI stem separation (vocals, drums, bass, keys, guitar), BPM detection', envKey: 'MOISES_API_KEY', url: 'https://developer.moises.ai', required: 'optional', tier: 'clawflow' },
+  { service: 'Loudme / Matchering', purpose: 'FlowState Audio: AI mastering — loudness normalisation, reference-track matching', envKey: 'LOUDME_API_KEY', url: 'https://loudme.ai', required: 'optional', tier: 'clawflow' },
+  { service: 'ACRCloud', purpose: 'FlowState Audio: Audio fingerprinting, BPM & key detection, pitch correction', envKey: 'ACRCLOUD_ACCESS_KEY, ACRCLOUD_ACCESS_SECRET', url: 'https://console.acrcloud.com', required: 'optional', tier: 'clawflow' },
+  { service: 'Dolby.io Media APIs', purpose: 'FlowState Audio: AI noise suppression, speech enhancement, loudness correction', envKey: 'DOLBY_API_KEY', url: 'https://dashboard.dolby.io', required: 'optional', tier: 'clawflow' },
+  { service: 'AudioShake', purpose: 'FlowState Audio: Professional stem separation for licensed & original recordings', envKey: 'AUDIOSHAKE_API_KEY', url: 'https://app.audioshake.ai', required: 'optional', tier: 'clawflow' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── MARKETING & COMMUNICATIONS ──────────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Beehiiv / ConvertKit', purpose: 'Weekly digest newsletter, onboarding email sequences', envKey: 'BEEHIIV_API_KEY', url: 'https://beehiiv.com', required: 'optional', tier: 'team_growth' },
+  { service: 'Beehiiv / ConvertKit', purpose: 'Weekly digest newsletter, onboarding email sequences', envKey: 'BEEHIIV_API_KEY', url: 'https://beehiiv.com', required: 'optional', tier: 'team' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── EMBED-ONLY (NO API KEY NEEDED) ──────────────────────────────────────
