@@ -1017,17 +1017,21 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .tab-pane{display:none;flex:1;overflow-y:auto;padding:18px}
 .tab-pane.active{display:flex;flex-direction:column}
 /* ── Genspark-style model picker ── */
-.model-bar{display:flex;align-items:center;gap:6px;padding:8px 14px 8px;background:transparent;margin-bottom:6px;position:relative}
-.gs-model-pill{display:inline-flex;align-items:center;gap:4px;padding:6px 12px;border-radius:999px;background:var(--bg-card);border:1px solid var(--border-h);color:var(--text-p);cursor:pointer;font-size:13px;font-weight:500;transition:all .18s;white-space:nowrap}
+.model-bar{display:flex;align-items:center;gap:6px;padding:0;background:transparent;margin-bottom:0;position:relative}
+.gs-model-pill{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:999px;background:var(--bg-card);border:1px solid var(--border-h);color:var(--text-p);cursor:pointer;font-size:13px;font-weight:500;transition:all .18s;white-space:nowrap;user-select:none}
 .gs-model-pill:hover{border-color:var(--accent);background:var(--bg-panel)}
-.gs-model-dropdown{position:absolute;bottom:calc(100% + 6px);left:0;min-width:320px;max-width:360px;background:#1c1c2e;border:1px solid var(--border-h);border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,.55);padding:8px;z-index:9999;max-height:480px;overflow-y:auto}
+/* Chat dropdown — opens upward above the input box */
+#model-bar .gs-model-dropdown{bottom:calc(100% + 8px);top:auto}
+/* Gen-tab dropdowns — open downward */
+.gs-gen-picker .gs-model-dropdown{top:calc(100% + 6px);bottom:auto}
+.gs-model-dropdown{position:absolute;left:0;min-width:300px;max-width:360px;background:#16162a;border:1px solid var(--border-h);border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.7);padding:8px;z-index:99999;max-height:420px;overflow-y:auto}
 .gs-model-row{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:10px;cursor:pointer;transition:background .15s;gap:8px}
-.gs-model-row:hover{background:rgba(168,85,247,.12)}
-.gs-model-selected{background:rgba(168,85,247,.08)}
-.gs-radio{width:18px;height:18px;border-radius:50%;border:2px solid var(--border-h);flex-shrink:0;transition:.15s}
-.gs-radio-active{border-color:#3b82f6;background:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.25)}
-/* gen-tab picker wrapper */
-.gs-gen-picker{position:relative;display:inline-block;margin-bottom:10px}
+.gs-model-row:hover{background:rgba(168,85,247,.14)}
+.gs-model-selected{background:rgba(168,85,247,.1)}
+.gs-radio{width:18px;height:18px;border-radius:50%;border:2px solid rgba(255,255,255,.2);flex-shrink:0;transition:.15s}
+.gs-radio-active{border-color:#3b82f6;background:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.3)}
+/* gen picker wrapper — needs relative positioning for dropdown */
+.gs-gen-picker{position:relative;display:inline-block}
 .r-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
 .timer-wrap{display:flex;flex-direction:column;align-items:center;gap:18px;max-width:460px;margin:0 auto;width:100%}
 .ring-outer{position:relative;width:220px;height:220px}
@@ -1186,14 +1190,30 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .r-btn:hover{background:rgba(255,255,255,.2)}
 .grat-in{width:100%;max-width:340px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.3);border-radius:11px;padding:13px 16px;font-size:14px;color:#fff;font-family:inherit;outline:none;margin-bottom:11px;text-align:center}
 .grat-in::placeholder{color:rgba(255,255,255,.5)}
-.gen-panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px}
-.gen-title{font-size:13px;font-weight:700;margin-bottom:11px;display:flex;align-items:center;gap:7px}
-.gen-pmt{width:100%;background:var(--bg-card);border:1px solid var(--border);border-radius:11px;padding:11px 15px;color:var(--text-p);font-size:14px;font-family:inherit;resize:vertical;min-height:76px;outline:none;margin-bottom:11px}
+/* ── Generate tab layout ── */
+.gen-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.gen-panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:12px}
+.gen-i2v-panel{margin-bottom:0}
+.gen-section-header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.gen-title{font-size:14px;font-weight:700;margin:0}
+.gen-picker-wrap{position:relative;display:flex;flex-direction:column;gap:6px}
+.gen-model-desc{font-size:12px;color:var(--text-s);line-height:1.55;padding:8px 12px;background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.15);border-radius:9px}
+.gen-pmt{width:100%;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:12px 15px;color:var(--text-p);font-size:14px;font-family:inherit;resize:vertical;outline:none;box-sizing:border-box}
 .gen-pmt:focus{border-color:var(--accent)}
-.btn-gen{padding:9px 22px;border-radius:11px;background:var(--grad);border:none;color:#fff;font-size:13px;font-weight:700;cursor:pointer;transition:.2s}
-.btn-gen:hover{opacity:.85;transform:scale(1.02)}
+.gen-dur-row{display:flex;gap:6px;flex-wrap:wrap}
+.gen-dur-btn{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--text-s);font-size:12px;font-weight:600;cursor:pointer;transition:.15s}
+.gen-dur-btn:hover{border-color:var(--accent);color:var(--text-p)}
+.gen-dur-btn.active{background:var(--grad);border-color:transparent;color:#fff}
+.gen-new-badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:5px;background:rgba(6,182,212,.15);color:var(--cyan)}
+.btn-gen{padding:10px 22px;border-radius:12px;background:var(--grad);border:none;color:#fff;font-size:13px;font-weight:700;cursor:pointer;transition:.2s;display:flex;align-items:center;gap:7px;justify-content:center}
+.btn-gen:hover{opacity:.88;transform:translateY(-1px)}
 .btn-gen:disabled{opacity:.4;cursor:not-allowed;transform:none}
-.gen-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:11px;margin-top:13px}
+.btn-gen-i2v{width:100%;background:linear-gradient(135deg,#a855f7,#ec4899)}
+.gen-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:11px;margin-top:4px}
+/* Image→Video layout */
+.gen-i2v-body{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.gen-i2v-upload{display:flex;flex-direction:column;gap:8px}
+.gen-i2v-right{display:flex;flex-direction:column;gap:10px}
 .gen-img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:11px;border:1px solid var(--border);cursor:pointer;transition:.2s}
 .gen-img:hover{border-color:var(--accent);transform:scale(1.02)}
 .tip-bub{position:fixed;bottom:76px;right:18px;max-width:290px;background:var(--bg-panel);border:1px solid var(--border-h);border-radius:14px;padding:14px;box-shadow:0 8px 30px rgba(0,0,0,.4);z-index:1000;animation:slideR .3s ease}
@@ -1364,10 +1384,10 @@ em{color:var(--accent);font-style:italic}
 .team-tab-btn:hover{border-color:var(--border-h);color:var(--text-p)}
 .team-tab-btn.active{background:rgba(168,85,247,.12);border-color:rgba(168,85,247,.35);color:var(--accent)}
 /* ── Image Upload ─────────────────────────────────────────────── */
-.file-drop{border:2px dashed var(--border);border-radius:11px;padding:22px;text-align:center;cursor:pointer;transition:.2s;background:rgba(168,85,247,.02)}
-.file-drop:hover{border-color:var(--accent);background:rgba(168,85,247,.05)}
+.file-drop{border:2px dashed rgba(168,85,247,.35);border-radius:14px;padding:32px 20px;text-align:center;cursor:pointer;transition:.2s;background:rgba(168,85,247,.04);display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:140px}
+.file-drop:hover{border-color:var(--accent);background:rgba(168,85,247,.09)}
 .file-drop input[type=file]{display:none}
-.img2vid-preview{width:100%;border-radius:8px;margin-top:8px;display:none;border:1px solid var(--border)}
+.img2vid-preview{width:100%;border-radius:12px;display:none;border:1px solid var(--border);object-fit:cover;max-height:200px}
 /* ── Spaced Repetition ────────────────────────────────────────── */
 .learn-sr-panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:13px;padding:14px;margin-top:14px}
 </style>
@@ -1599,48 +1619,96 @@ em{color:var(--accent);font-style:italic}
 </div>
 
 <!-- GENERATE TAB -->
-<div class="tab-pane" id="tab-pane-generate" style="display:none">
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+<div class="tab-pane" id="tab-pane-generate" style="display:none;padding:16px;overflow-y:auto">
+  <div class="gen-grid">
+
+    <!-- ── IMAGE GENERATION ─────────────────────────────── -->
     <div class="gen-panel">
-      <div class="gen-title"><i class="fas fa-image" style="color:var(--accent)"></i> Image Generation</div>
-      <div class="gs-gen-picker" id="gs-img-picker"></div>
-      <textarea class="gen-pmt" id="img-prompt" placeholder="Describe the image you want to generate&#8230;"></textarea>
+      <div class="gen-section-header">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="width:28px;height:28px;border-radius:8px;background:rgba(168,85,247,.2);display:flex;align-items:center;justify-content:center"><i class="fas fa-image" style="color:var(--accent);font-size:13px"></i></span>
+          <span class="gen-title" style="margin:0">Image Generation</span>
+        </div>
+      </div>
+      <!-- Model picker -->
+      <div class="gen-picker-wrap" id="gs-img-picker-wrap">
+        <div class="gs-gen-picker" id="gs-img-picker"></div>
+        <div class="gen-model-desc" id="img-model-desc">OpenAI DALL-E 3 — Best-in-class text rendering, photorealistic scenes, and creative illustrations.</div>
+      </div>
+      <!-- Prompt -->
+      <textarea class="gen-pmt" id="img-prompt" placeholder="Describe the image you want to generate&#8230; e.g. 'A futuristic city at sunset, neon reflections on rain-slicked streets'" rows="4"></textarea>
+      <!-- Action -->
       <button class="btn-gen" id="btn-gen-img"><i class="fas fa-wand-magic-sparkles"></i>&nbsp; Generate Image</button>
       <div class="gen-results" id="img-results"></div>
     </div>
+
+    <!-- ── VIDEO GENERATION ─────────────────────────────── -->
     <div class="gen-panel">
-      <div class="gen-title"><i class="fas fa-video" style="color:var(--pink)"></i> Video Generation</div>
-      <div class="gs-gen-picker" id="gs-vid-picker"></div>
-      <textarea class="gen-pmt" id="vid-prompt" placeholder="Describe the video you want to generate&#8230;"></textarea>
-      <select class="fs-sel" id="vid-dur" style="margin-bottom:10px">
-        <option value="5">5 seconds</option>
-        <option value="8">8 seconds</option>
-        <option value="10">10 seconds</option>
-      </select>
+      <div class="gen-section-header">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="width:28px;height:28px;border-radius:8px;background:rgba(236,72,153,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-video" style="color:var(--pink);font-size:13px"></i></span>
+          <span class="gen-title" style="margin:0">Video Generation</span>
+        </div>
+      </div>
+      <!-- Model picker -->
+      <div class="gen-picker-wrap" id="gs-vid-picker-wrap">
+        <div class="gs-gen-picker" id="gs-vid-picker"></div>
+        <div class="gen-model-desc" id="vid-model-desc">Google Veo 2 — Cinematic quality video with realistic motion, lighting, and depth of field.</div>
+      </div>
+      <!-- Prompt -->
+      <textarea class="gen-pmt" id="vid-prompt" placeholder="Describe the video you want to generate&#8230; e.g. 'Drone shot over misty mountain peaks at golden hour'" rows="4"></textarea>
+      <!-- Duration row -->
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <label style="font-size:12px;color:var(--text-s);white-space:nowrap">Duration</label>
+        <div class="gen-dur-row">
+          <button class="gen-dur-btn active" data-dur="4" onclick="setVidDur(this,4)">4s</button>
+          <button class="gen-dur-btn" data-dur="5" onclick="setVidDur(this,5)">5s</button>
+          <button class="gen-dur-btn" data-dur="8" onclick="setVidDur(this,8)">8s</button>
+          <button class="gen-dur-btn" data-dur="10" onclick="setVidDur(this,10)">10s</button>
+          <button class="gen-dur-btn" data-dur="15" onclick="setVidDur(this,15)">15s</button>
+        </div>
+      </div>
+      <!-- Action -->
       <button class="btn-gen" id="btn-gen-vid"><i class="fas fa-film"></i>&nbsp; Generate Video</button>
       <div id="vid-result" style="margin-top:12px;font-size:13px;color:var(--text-s)"></div>
     </div>
+
   </div>
-  <!-- Image to Video -->
-  <div class="gen-panel" style="margin-top:14px">
-    <div class="gen-title"><i class="fas fa-photo-film" style="color:var(--cyan)"></i> Image &#8594; Video <span style="font-size:11px;font-weight:600;padding:2px 7px;border-radius:5px;background:rgba(6,182,212,.15);color:var(--cyan);margin-left:6px">NEW</span></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">
-      <div>
-        <label class="file-drop" for="img2vid-upload">
-          <input type="file" id="img2vid-upload" accept="image/*">
-          <i class="fas fa-cloud-upload-alt" style="font-size:24px;color:var(--accent);display:block;margin-bottom:7px"></i>
-          <div style="font-size:13px;font-weight:700">Drop image here or click to upload</div>
-          <div style="font-size:11px;color:var(--text-m);margin-top:3px">JPG, PNG, WebP &#8226; Max 10MB</div>
-        </label>
-        <img id="img2vid-preview" class="img2vid-preview" alt="Preview">
+
+  <!-- ── IMAGE → VIDEO ──────────────────────────────────── -->
+  <div class="gen-panel gen-i2v-panel">
+    <div class="gen-section-header">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="width:28px;height:28px;border-radius:8px;background:rgba(6,182,212,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-photo-film" style="color:var(--cyan);font-size:13px"></i></span>
+        <span class="gen-title" style="margin:0">Image &#8594; Video</span>
+        <span class="gen-new-badge">NEW</span>
       </div>
-      <div>
-        <textarea class="gen-pmt" id="img2vid-prompt" placeholder="Describe the motion you want&#8230; e.g. 'Zoom out slowly, dramatic lighting'" style="margin-bottom:8px"></textarea>
-        <button class="btn-gen" id="btn-img2vid" style="width:100%"><i class="fas fa-video"></i>&nbsp; Generate Video from Image</button>
+      <div class="gen-picker-wrap" id="gs-i2v-picker-wrap" style="flex:1;max-width:280px">
+        <div class="gs-gen-picker" id="gs-i2v-picker"></div>
+      </div>
+    </div>
+    <div class="gen-model-desc" id="i2v-model-desc" style="margin-bottom:14px">Select a video model above, then upload an image and describe the motion.</div>
+    <div class="gen-i2v-body">
+      <!-- Upload zone -->
+      <div class="gen-i2v-upload">
+        <label class="file-drop" for="img2vid-upload" id="i2v-drop-label">
+          <input type="file" id="img2vid-upload" accept="image/*" style="display:none">
+          <i class="fas fa-cloud-upload-alt" style="font-size:32px;color:var(--accent);margin-bottom:10px"></i>
+          <div style="font-size:14px;font-weight:700;color:var(--text-p)">Drop image here or click to upload</div>
+          <div style="font-size:12px;color:var(--text-m);margin-top:4px">JPG, PNG, WebP &#8226; Max 10MB</div>
+        </label>
+        <img id="img2vid-preview" class="img2vid-preview" alt="Preview" style="display:none">
+      </div>
+      <!-- Right side -->
+      <div class="gen-i2v-right">
+        <textarea class="gen-pmt" id="img2vid-prompt" placeholder="Describe the motion&#8230; e.g. 'Camera slowly zooms out, leaves gently swaying in the breeze'" rows="4" style="flex:1;min-height:100px"></textarea>
+        <button class="btn-gen btn-gen-i2v" id="btn-img2vid"><i class="fas fa-video"></i>&nbsp; Generate Video from Image</button>
         <div id="img2vid-result" style="margin-top:10px;font-size:13px;color:var(--text-s)"></div>
       </div>
     </div>
   </div>
+
+  <input type="hidden" id="vid-dur" value="4">
 </div>
 
 <!-- 264 PRO TAB — Download / Landing Page -->

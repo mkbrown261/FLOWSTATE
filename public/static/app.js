@@ -10,7 +10,7 @@ let state = {
   restore: { scenes:[], idx:0, meditationTimer:null, meditationSeconds:0 },
   team:    { members:[], role:'member', activeTab:'sprint' },
   settings:{ focusMin:25, sound:null, isDemo:false },
-  gen:     { imgModel:'dalle3', vidModel:'veo2', imgPickerOpen:false, vidPickerOpen:false }
+  gen:     { imgModel:'dalle3', vidModel:'veo2', i2vModel:'kling16', imgPickerOpen:false, vidPickerOpen:false, i2vPickerOpen:false }
 };
 
 // ── Ambient Sound Engine ────────────────────────────────────────────────────
@@ -335,6 +335,19 @@ function setupTabListeners() {
   document.getElementById('btn-gen-img')?.addEventListener('click', generateImage);
   document.getElementById('btn-gen-vid')?.addEventListener('click', generateVideo);
   document.getElementById('btn-img2vid')?.addEventListener('click', generateImageToVideo);
+  // Image→Video file upload preview
+  document.getElementById('img2vid-upload')?.addEventListener('change', function() {
+    const preview = document.getElementById('img2vid-preview');
+    const dropLabel = document.getElementById('i2v-drop-label');
+    if (this.files && this.files[0]) {
+      const reader = new FileReader();
+      reader.onload = e => {
+        if (preview) { preview.src = e.target.result; preview.style.display = 'block'; }
+        if (dropLabel) dropLabel.style.display = 'none';
+      };
+      reader.readAsDataURL(this.files[0]);
+    }
+  });
   document.getElementById('board-notion-btn')?.addEventListener('click', connectNotion);
   document.getElementById('board-db-refresh')?.addEventListener('click', loadNotionDbs);
   document.getElementById('btn-slack-team')?.addEventListener('click', openSlackModal);
@@ -356,7 +369,7 @@ function switchTab(id) {
   if (id==='learn')    loadLearnCards();
   if (id==='restore')  loadRestore();
   if (id==='clawbot')  initClawbot();
-  if (id==='generate') { setTimeout(()=>{ buildGenPicker('img'); buildGenPicker('vid'); }, 50); }
+  if (id==='generate') { setTimeout(()=>{ buildGenPicker('img'); buildGenPicker('vid'); buildGenPicker('i2v'); }, 50); }
 }
 
 function startClock() {
@@ -761,58 +774,98 @@ const VID_MODELS = [
   { id:'luma',         label:'Luma Dream Machine','sub':'Luma AI — Photorealistic',     icon:'🌙'      },
 ];
 
+// Map of model IDs to full descriptions shown under the pill
+const MODEL_DESCS = {
+  // Image
+  'dalle3':    'OpenAI DALL-E 3 — Best-in-class text rendering, photorealistic scenes, and creative illustrations.',
+  'dalle4':    'OpenAI DALL-E 4 — Latest generation with improved coherence and detail at every scale.',
+  'gpt-image': 'OpenAI GPT-Image-1 — Natively integrated image generation with editing and multi-turn context.',
+  'imagen3':   'Google Imagen 3 — Photorealistic quality with accurate prompt following and fine detail.',
+  'imagen4':   'Google Imagen 4 — Google\'s latest model with improved photorealism and composition.',
+  'flux_pro':  'FLUX Pro 1.1 by Black Forest Labs — Ultra-high detail, accurate anatomy, exceptional realism.',
+  'flux_dev':  'FLUX Dev by Black Forest Labs — Open-weight model. Fast, high-quality, great for iteration.',
+  'ideogram2': 'Ideogram 2.0 — Design-forward with excellent typography, logos, and stylized illustration.',
+  'sd3':       'Stable Diffusion 3 — Open-source model by Stability AI. Customizable and community-supported.',
+  'recraft':   'Recraft V3 — Specialist in vector art, brand assets, icons, and consistent visual styles.',
+  // Video
+  'veo2':         'Google Veo 2 — Cinematic quality video with realistic motion, lighting, and depth of field.',
+  'veo3':         'Google Veo 3 — Latest Veo with native audio generation and improved temporal consistency.',
+  'sora':         'OpenAI Sora — World model understanding for consistent physics and long-form video.',
+  'kling16':      'Kling 1.6 by Kuaishou — Smooth motion, excellent face/body consistency, up to 10s.',
+  'kling21':      'Kling 2.1 by Kuaishou — Latest version with improved quality and longer durations.',
+  'runway_gen4':  'Runway Gen-4 — Film-quality output, precise motion control, and professional-grade results.',
+  'runway_gen4t': 'Runway Gen-4 Turbo — Faster generation at near-identical quality to Gen-4 standard.',
+  'pika20':       'Pika 2.0 — Creative effects, style transfer, and expressive motion. Great for stylised content.',
+  'hailuo':       'Hailuo 2 by MiniMax — Fast generation with strong face consistency and natural dialogue motion.',
+  'luma':         'Luma Dream Machine — Photorealistic video with smooth camera motion and environmental detail.',
+};
+
 function buildGenPicker(type) {
+  // type: 'img' | 'vid' | 'i2v'
   const isImg = type === 'img';
+  const isI2v = type === 'i2v';
   const models = isImg ? IMG_MODELS : VID_MODELS;
-  const curId  = isImg ? state.gen.imgModel : state.gen.vidModel;
+  const stateKey = isImg ? 'imgModel' : (isI2v ? 'i2vModel' : 'vidModel');
+  const openKey  = isImg ? 'imgPickerOpen' : (isI2v ? 'i2vPickerOpen' : 'vidPickerOpen');
+  const curId  = state.gen[stateKey] || models[0].id;
   const cur    = models.find(m => m.id === curId) || models[0];
-  const openKey = isImg ? 'imgPickerOpen' : 'vidPickerOpen';
-  const othKey  = isImg ? 'vidPickerOpen' : 'imgPickerOpen';
-  const elId   = `gs-${type}-picker`;
-  const el     = document.getElementById(elId);
+  const el     = document.getElementById(`gs-${type}-picker`);
   if (!el) return;
+
   el.innerHTML = `
     <button class="gs-model-pill" onclick="toggleGenPicker(event,'${type}')">
       ${modelIconHtml(cur.icon, 16)}
-      <span style="margin:0 5px 0 6px;font-weight:600;font-size:13px">${cur.label}</span>
-      <i class="fas fa-chevron-${state.gen[openKey]?'up':'down'}" style="font-size:9px;opacity:.7"></i>
+      <span style="font-weight:600;font-size:13px">${cur.label}</span>
+      <i class="fas fa-chevron-${state.gen[openKey]?'up':'down'}" style="font-size:9px;opacity:.6;margin-left:2px"></i>
     </button>
-    <div class="gs-model-dropdown" style="display:${state.gen[openKey]?'block':'none'};position:absolute;top:36px;left:0;z-index:999">
+    <div class="gs-model-dropdown" style="display:${state.gen[openKey]?'block':'none'}">
       ${models.map(m => `
         <div class="gs-model-row ${m.id===curId?'gs-model-selected':''}" onclick="selectGenModel('${type}','${m.id}')">
-          <div style="display:flex;align-items:center;gap:10px;flex:1">
-            ${modelIconHtml(m.icon, 20)}
-            <div>
+          <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
+            ${modelIconHtml(m.icon, 22)}
+            <div style="min-width:0">
               <div style="font-weight:600;font-size:13px;color:var(--text-p)">${m.label}</div>
-              ${m.sub?`<div style="font-size:11px;color:var(--text-s);margin-top:1px">${m.sub}</div>`:''}
+              ${m.sub?`<div style="font-size:11px;color:var(--text-s);margin-top:2px;line-height:1.4">${m.sub}</div>`:''}
             </div>
           </div>
           <div class="gs-radio ${m.id===curId?'gs-radio-active':''}"></div>
         </div>
       `).join('')}
     </div>`;
+
+  // Update description text
+  const descId = isImg ? 'img-model-desc' : (isI2v ? 'i2v-model-desc' : 'vid-model-desc');
+  const descEl = document.getElementById(descId);
+  if (descEl && MODEL_DESCS[curId]) descEl.textContent = MODEL_DESCS[curId];
 }
 
 function toggleGenPicker(e, type) {
   e.stopPropagation();
-  const openKey = type==='img' ? 'imgPickerOpen' : 'vidPickerOpen';
-  const othKey  = type==='img' ? 'vidPickerOpen' : 'imgPickerOpen';
-  state.gen[othKey] = false;
+  const openKey = type==='img' ? 'imgPickerOpen' : (type==='i2v' ? 'i2vPickerOpen' : 'vidPickerOpen');
+  // Close all others
+  ['imgPickerOpen','vidPickerOpen','i2vPickerOpen'].forEach(k => { if(k!==openKey) state.gen[k]=false; });
   state.gen[openKey] = !state.gen[openKey];
-  buildGenPicker('img'); buildGenPicker('vid');
+  buildGenPicker('img'); buildGenPicker('vid'); buildGenPicker('i2v');
   if (state.gen[openKey]) setTimeout(() => document.addEventListener('click', closeGenPickers, {once:true}), 10);
 }
 
 function closeGenPickers() {
-  state.gen.imgPickerOpen = false; state.gen.vidPickerOpen = false;
-  buildGenPicker('img'); buildGenPicker('vid');
+  state.gen.imgPickerOpen = false; state.gen.vidPickerOpen = false; state.gen.i2vPickerOpen = false;
+  buildGenPicker('img'); buildGenPicker('vid'); buildGenPicker('i2v');
 }
 
 function selectGenModel(type, id) {
   if (type==='img') state.gen.imgModel = id;
+  else if (type==='i2v') state.gen.i2vModel = id;
   else state.gen.vidModel = id;
-  state.gen.imgPickerOpen = false; state.gen.vidPickerOpen = false;
-  buildGenPicker('img'); buildGenPicker('vid');
+  closeGenPickers();
+}
+
+function setVidDur(btn, val) {
+  document.querySelectorAll('.gen-dur-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  const hiddenDur = document.getElementById('vid-dur');
+  if (hiddenDur) hiddenDur.value = val;
 }
 
 // ── Chat ───────────────────────────────────────────────────────────────────
@@ -1812,7 +1865,7 @@ async function generateImage() {
 async function generateVideo() {
   const prompt = document.getElementById('vid-prompt').value.trim();
   const model  = state.gen?.vidModel || 'veo2';
-  const dur    = document.getElementById('vid-dur').value;
+  const dur    = document.getElementById('vid-dur')?.value || '5';
   if (!prompt) { notify('Enter a prompt','error'); return; }
   const btn = document.getElementById('btn-gen-vid'); btn.disabled=true; btn.textContent='Queuing...';
   try {
@@ -1826,7 +1879,7 @@ async function generateVideo() {
 async function generateImageToVideo() {
   const fileInput = document.getElementById('img2vid-upload');
   const prompt = document.getElementById('img2vid-prompt').value.trim();
-  const model  = state.gen?.vidModel || 'veo2';
+  const model  = state.gen?.i2vModel || 'kling16';
   if (!fileInput?.files?.length && !prompt) { notify('Upload an image or enter a prompt','error'); return; }
   const btn = document.getElementById('btn-img2vid'); btn.disabled=true; btn.textContent='Processing...';
   const resultEl = document.getElementById('img2vid-result');
