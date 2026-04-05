@@ -315,13 +315,15 @@ async function checkAntiAbuse(c: any, userId: string): Promise<Response | null> 
 
   const date    = new Date().toISOString().slice(0, 10)
   const minute  = Math.floor(Date.now() / 60000)
-  const tierKey = `tier:${userId}`
+  const tierKey      = `tier:${userId}`
+  const tierEmailKey = `tier_email:${userId}` // set by Stripe webhook (keyed by email)
   const dayKey  = `daily_tokens_used:${userId}:${date}`
   const velKey  = `velocity:${userId}:${minute}`
 
-  // Read all 3 keys + write increments in one pipeline (atomic, one round-trip)
+  // Read tier from both sources + velocity/usage in one pipeline
   const results = await redisPipeline(url, token, [
     ['GET', tierKey],
+    ['GET', tierEmailKey],
     ['GET', dayKey],
     ['GET', velKey],
     ['INCR', velKey],
@@ -330,13 +332,16 @@ async function checkAntiAbuse(c: any, userId: string): Promise<Response | null> 
     ['EXPIRE', dayKey, 86400],
   ])
 
-  // results[0..2] = reads (before increment), results[3..6] = writes
-  const tier     = results[0] as string | null
-  const dayUsed  = results[1] as string | null
-  const velCount = results[2] as string | null
+  // Prefer webhook-set tier (tier_email) over session tier
+  const tierSession = results[0] as string | null
+  const tierEmail   = results[1] as string | null
+  const tier        = tierEmail || tierSession
+  const dayUsed     = results[2] as string | null
+  const velCount    = results[3] as string | null
 
-  const isPro    = tier === 'pro'
-  const limit    = isPro ? 100_000 : 5_000
+  const isPaid   = tier === 'pro' || tier === 'team'
+  const isTeam   = tier === 'team'
+  const limit    = isPaid ? 100_000 : 5_000
   const used     = parseInt(dayUsed || '0')
   const velocity = parseInt(velCount || '0')
 
@@ -345,17 +350,17 @@ async function checkAntiAbuse(c: any, userId: string): Promise<Response | null> 
     return c.json({ error: 'Too many requests — slow down for 60 seconds.', code: 'VELOCITY_EXCEEDED' }, 429)
   }
 
-  // Daily token budget check (check pre-increment value)
+  // Daily token budget check
   if (used >= limit) {
-    const msg = isPro
-      ? 'Daily Pro limit reached (100k tokens). Resets at midnight UTC.'
+    const msg = isPaid
+      ? `Daily ${isTeam ? 'Team' : 'Pro'} limit reached (100k tokens). Resets at midnight UTC.`
       : 'Free daily limit reached (5k tokens). Upgrade to Pro for 100k/day.'
-    return c.json({ error: msg, code: 'DAILY_LIMIT', used, limit, isPro }, 429)
+    return c.json({ error: msg, code: 'DAILY_LIMIT', used, limit, isPaid }, 429)
   }
 
-  // Soft warning at 80% budget
+  // Soft warning at 80% budget for free users
   const newUsed = used + 500
-  if (!isPro && newUsed >= limit * 0.8) {
+  if (!isPaid && newUsed >= limit * 0.8) {
     c.header('X-Budget-Warning', `${limit - newUsed} tokens left today`)
   }
 
@@ -720,28 +725,144 @@ app.post('/api/billing/portal', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
   if (!c.env?.STRIPE_SECRET_KEY) return c.json({ demo: true, message: 'Stripe not configured' })
-  // Create a real Stripe billing portal session
+
+  // Look up stored Stripe customer ID from Redis (set by webhook on first checkout)
+  let customerId: string | null = null
+  if (c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+    try {
+      const r = await fetch(`${c.env.UPSTASH_REDIS_URL}/get/stripe_customer:${encodeURIComponent(session.email)}`, {
+        headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
+      })
+      const data: any = await r.json()
+      customerId = data?.result || null
+    } catch (_) {}
+  }
+
+  if (!customerId) {
+    return c.json({ demo: true, message: 'No active subscription found. Subscribe first to manage billing.' })
+  }
+
   try {
     const portalRes = await fetch('https://api.stripe.com/v1/billing_portal/sessions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        'customer': session.email, // In production, store Stripe customer ID on first checkout
+        'customer': customerId,
         'return_url': new URL(c.req.url).origin + '/',
       }),
     })
     const portalData: any = await portalRes.json()
     if (portalData.url) return c.json({ portalUrl: portalData.url })
-  } catch (_) {}
-  return c.json({ portalUrl: 'https://billing.stripe.com/p/login/test_demo' })
+    return c.json({ error: portalData.error?.message || 'Portal error' }, 500)
+  } catch (_) {
+    return c.json({ error: 'Could not open billing portal' }, 500)
+  }
 })
 
 app.post('/api/billing/webhook', async (c) => {
-  // Stripe webhook handler — verify signature and update user tier
   const body = await c.req.text()
-  const sig = c.req.header('stripe-signature') || ''
-  if (!c.env?.STRIPE_WEBHOOK_SECRET) return c.json({ received: true })
-  // In production: verify Stripe webhook signature, update KV/D1 with new tier
+  const sig  = c.req.header('stripe-signature') || ''
+  const secret = c.env?.STRIPE_WEBHOOK_SECRET
+
+  // ── Signature verification (Web Crypto — no Node.js crypto needed) ──────────
+  if (secret) {
+    try {
+      // Parse Stripe-Signature header: t=timestamp,v1=hmac
+      const parts: Record<string, string> = {}
+      sig.split(',').forEach(part => {
+        const [k, v] = part.split('=')
+        parts[k] = v
+      })
+      const timestamp = parts['t']
+      const expected  = parts['v1']
+      if (!timestamp || !expected) return c.json({ error: 'invalid_signature' }, 400)
+
+      // Verify timestamp within 5 minutes (replay attack protection)
+      const now = Math.floor(Date.now() / 1000)
+      if (Math.abs(now - parseInt(timestamp)) > 300) {
+        return c.json({ error: 'timestamp_too_old' }, 400)
+      }
+
+      // Compute HMAC-SHA256
+      const signedPayload = `${timestamp}.${body}`
+      const keyData = new TextEncoder().encode(secret)
+      const msgData = new TextEncoder().encode(signedPayload)
+      const cryptoKey = await crypto.subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+      const signatureBuffer = await crypto.subtle.sign('HMAC', cryptoKey, msgData)
+      const computed = Array.from(new Uint8Array(signatureBuffer)).map(b => b.toString(16).padStart(2, '0')).join('')
+
+      if (computed !== expected) {
+        return c.json({ error: 'signature_mismatch' }, 400)
+      }
+    } catch (err) {
+      return c.json({ error: 'verification_failed' }, 400)
+    }
+  }
+
+  // ── Parse event ──────────────────────────────────────────────────────────────
+  let event: any
+  try { event = JSON.parse(body) } catch { return c.json({ error: 'invalid_json' }, 400) }
+
+  const type = event.type as string
+
+  // ── Map Stripe price IDs → tier names ────────────────────────────────────────
+  const priceToTier: Record<string, string> = {
+    'price_1TIupZLsf0qSbSh0LPiXhi1O': 'pro',      // Pro monthly
+    'price_1TIupZLsf0qSbSh0GOyUxvwR': 'pro',      // Pro annual
+    'price_1TIupjLsf0qSbSh0IN6UfOBp': 'team',     // Team monthly
+    'price_1TIupkLsf0qSbSh0WB8czudd': 'team',     // Team annual
+    'price_1TIupyLsf0qSbSh0NTc5xoT8': 'clawflow', // ClawFlow monthly
+    'price_1TIupyLsf0qSbSh0UZANfNYx': 'clawflow', // ClawFlow annual
+  }
+
+  // ── Handle events ─────────────────────────────────────────────────────────────
+  if (type === 'checkout.session.completed') {
+    const session = event.data.object
+    const email   = session.customer_details?.email || session.customer_email
+    const priceId = session.line_items?.data?.[0]?.price?.id
+      || session.metadata?.price_id
+    const tier = priceToTier[priceId] || session.metadata?.tier || 'pro'
+
+    if (email && c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+      // Store tier in Redis keyed by email (persists across sessions)
+      await fetch(`${c.env.UPSTASH_REDIS_URL}/set/tier_email:${encodeURIComponent(email)}/${tier}`, {
+        headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
+      })
+      // Also store Stripe customer ID for portal access
+      if (session.customer) {
+        await fetch(`${c.env.UPSTASH_REDIS_URL}/set/stripe_customer:${encodeURIComponent(email)}/${session.customer}`, {
+          headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
+        })
+      }
+    }
+  }
+
+  if (type === 'customer.subscription.updated') {
+    const sub     = event.data.object
+    const email   = sub.customer_email || sub.metadata?.email
+    const priceId = sub.items?.data?.[0]?.price?.id
+    const tier    = priceToTier[priceId] || 'pro'
+    const active  = ['active', 'trialing'].includes(sub.status)
+
+    if (email && c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+      const newTier = active ? tier : 'free'
+      await fetch(`${c.env.UPSTASH_REDIS_URL}/set/tier_email:${encodeURIComponent(email)}/${newTier}`, {
+        headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
+      })
+    }
+  }
+
+  if (type === 'customer.subscription.deleted') {
+    const sub   = event.data.object
+    const email = sub.customer_email || sub.metadata?.email
+    if (email && c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+      // Downgrade to free
+      await fetch(`${c.env.UPSTASH_REDIS_URL}/set/tier_email:${encodeURIComponent(email)}/free`, {
+        headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
+      })
+    }
+  }
+
   return c.json({ received: true })
 })
 
