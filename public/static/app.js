@@ -179,8 +179,39 @@ function showLogin() {
   document.getElementById('login-screen').style.display = 'flex';
 }
 
+// Reusable OAuth popup opener — used for Google login AND calendar connect
+function openAuthPopup(url, onSuccess) {
+  const w = 520, h = 640;
+  const left = Math.round(screen.width/2 - w/2);
+  const top  = Math.round(screen.height/2 - h/2);
+  const popup = window.open(url, 'fs_auth_popup',
+    `width=${w},height=${h},left=${left},top=${top},toolbar=no,menubar=no,scrollbars=yes`);
+  if (!popup) {
+    // Popups blocked — fall back to same-tab redirect
+    window.location.href = url;
+    return;
+  }
+  function onAuthMessage(e) {
+    if (e.origin !== window.location.origin) return;
+    if (e.data?.type === 'FS_AUTH_SUCCESS') {
+      window.removeEventListener('message', onAuthMessage);
+      if (!popup.closed) { try { popup.close(); } catch(_){} }
+      if (onSuccess) { onSuccess(); } else { window.location.reload(); }
+    }
+  }
+  window.addEventListener('message', onAuthMessage);
+  // Fallback: if popup closes without sending message, reload anyway
+  const poll = setInterval(() => {
+    if (popup.closed) {
+      clearInterval(poll);
+      window.removeEventListener('message', onAuthMessage);
+      if (onSuccess) { onSuccess(); } else { window.location.reload(); }
+    }
+  }, 800);
+}
+
 document.getElementById('btn-google-login').addEventListener('click', () => {
-  window.location.href = '/api/auth/google';
+  openAuthPopup('/api/auth/google');
 });
 
 document.getElementById('btn-magic-login').addEventListener('click', () => {
@@ -310,23 +341,43 @@ function showMainApp(isDemo=false) {
   setupAmbientChips();
   maybeShowTip();
   checkBillingReturn();
+  loadTokenBalance();
   switchTab('focus');
 }
 
 function checkBillingReturn() {
   const params = new URLSearchParams(window.location.search);
   const billing = params.get('billing');
+  const topup   = params.get('topup');
+
   if (billing === 'success') {
-    const tier = params.get('tier') || 'pro';
-    const cycle = params.get('cycle') || 'monthly';
+    const tier  = params.get('tier') || 'pro';
     const label = tier === 'clawflow' ? 'ClawFlow' : tier.charAt(0).toUpperCase() + tier.slice(1);
     setTimeout(() => {
       notify(`🎉 Welcome to FlowState ${label}! Your subscription is active.`, 'success');
     }, 800);
-    // Clean URL without reloading
     window.history.replaceState({}, '', window.location.pathname);
+
   } else if (billing === 'cancelled') {
     setTimeout(() => notify('Checkout cancelled — you can upgrade anytime from the Pro button.', 'info'), 500);
+    window.history.replaceState({}, '', window.location.pathname);
+
+  } else if (topup === 'success') {
+    const tokens = parseInt(params.get('tokens') || '0');
+    const label  = tokens >= 1_000_000
+      ? (tokens / 1_000_000).toFixed(1) + 'M'
+      : tokens >= 1_000
+      ? Math.round(tokens / 1_000) + 'k'
+      : String(tokens);
+    setTimeout(() => {
+      notify(`✅ ${label} tokens added to your account! They never expire.`, 'success');
+      // Refresh balance display if visible
+      if (typeof loadTokenBalance === 'function') loadTokenBalance();
+    }, 800);
+    window.history.replaceState({}, '', window.location.pathname);
+
+  } else if (topup === 'cancelled') {
+    setTimeout(() => notify('Top-up cancelled — your balance is unchanged.', 'info'), 500);
     window.history.replaceState({}, '', window.location.pathname);
   }
 }
@@ -337,6 +388,7 @@ function setupTabListeners() {
     if (btn) btn.addEventListener('click', () => switchTab(id));
   });
   document.getElementById('btn-creds')?.addEventListener('click', openCredsModal);
+  document.getElementById('btn-topup')?.addEventListener('click', openTopupModal);
   document.getElementById('btn-pricing')?.addEventListener('click', openPricingModal);
   document.getElementById('btn-invite')?.addEventListener('click', openInviteModal);
   document.getElementById('btn-settings')?.addEventListener('click', openSettingsModal);
@@ -344,7 +396,7 @@ function setupTabListeners() {
   document.getElementById('logo-home')?.addEventListener('click', () => switchTab('focus'));
   document.getElementById('dt-widget')?.addEventListener('click', () => switchTab('calendar'));
   document.getElementById('fs-score-badge')?.addEventListener('click', () => switchTab('metrics'));
-  document.getElementById('cal-connect-btn')?.addEventListener('click', () => window.location.href='/api/auth/google');
+  document.getElementById('cal-connect-btn')?.addEventListener('click', () => openAuthPopup('/api/auth/google'));
   document.getElementById('cal-prev')?.addEventListener('click', () => calNav(-1));
   document.getElementById('cal-next')?.addEventListener('click', () => calNav(1));
   document.getElementById('cal-add-btn')?.addEventListener('click', () => { document.getElementById('add-ev-form').classList.toggle('show'); });
@@ -2420,6 +2472,222 @@ function startClawFlowCheckout(cycle) {
     else notify(d.message || 'Add CLAWBOT_API_KEY to Cloudflare secrets to activate','info');
   }).catch(() => notify('Add CLAWBOT_API_KEY to Cloudflare secrets to activate ClawFlow','info'));
 }
+
+// ── Token Top-Up Modal ────────────────────────────────────────────────────────
+let _tokenBalance = null;
+
+async function loadTokenBalance() {
+  try {
+    const r = await fetch('/api/billing/balance');
+    if (!r.ok) return;
+    _tokenBalance = await r.json();
+    // Update any balance displays
+    const el = document.getElementById('token-balance-display');
+    if (el && _tokenBalance) {
+      const purchased = _tokenBalance.purchased || 0;
+      const daily = _tokenBalance.dailyLimit - _tokenBalance.dailyUsed;
+      el.textContent = `${(Math.max(0,daily)).toLocaleString()} daily + ${purchased.toLocaleString()} purchased`;
+    }
+  } catch(e) {}
+}
+
+function openTopupModal() {
+  if (!FS_USER && !state.settings.isDemo) {
+    notify('Sign in to purchase tokens', 'info');
+    return;
+  }
+  const packs = [
+    { id: 'pack_50k',  tokens: 50000,  price: 5,  label: '50k Tokens',  badge: '' },
+    { id: 'pack_200k', tokens: 200000, price: 15, label: '200k Tokens', badge: 'BEST VALUE' },
+    { id: 'pack_500k', tokens: 500000, price: 30, label: '500k Tokens', badge: 'POWER USER' },
+  ];
+
+  const balHtml = _tokenBalance
+    ? `<div style="background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.25);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:13px">
+        <span style="color:var(--text-s)">Current balance: </span>
+        <span style="color:var(--accent);font-weight:700">${(_tokenBalance.purchased||0).toLocaleString()} purchased</span>
+        <span style="color:var(--text-s)"> · </span>
+        <span style="color:var(--text)">${Math.max(0,_tokenBalance.dailyLimit-_tokenBalance.dailyUsed).toLocaleString()} daily remaining</span>
+      </div>`
+    : '';
+
+  const cards = packs.map(p => {
+    const perK = (p.price / (p.tokens/1000)).toFixed(2);
+    const badge = p.badge ? `<div style="background:var(--accent);color:#fff;font-size:9px;font-weight:800;letter-spacing:1px;border-radius:4px;padding:2px 7px;margin-bottom:6px;display:inline-block">${p.badge}</div>` : '<div style="height:20px"></div>';
+    return `
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;text-align:center;cursor:pointer;transition:border-color .2s" onclick="startTopup('${p.id}')" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+        ${badge}
+        <div style="font-size:22px;font-weight:800;color:var(--text);margin:4px 0">${(p.tokens/1000).toFixed(0)}k</div>
+        <div style="font-size:11px;color:var(--text-s);margin-bottom:10px">tokens</div>
+        <div style="font-size:20px;font-weight:700;color:var(--accent)">$${p.price}</div>
+        <div style="font-size:10px;color:var(--text-s);margin-bottom:12px">$${perK}/1k tokens</div>
+        <button style="width:100%;padding:8px;border-radius:8px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:13px;font-weight:600">Buy Now</button>
+      </div>`;
+  }).join('');
+
+  openModal(`
+    <h2 style="text-align:center">💰 Buy More Tokens</h2>
+    <p style="color:var(--text-s);font-size:13px;margin:6px 0 14px;text-align:center">Tokens never expire. Use them across all AI features when your daily limit runs out.</p>
+    ${balHtml}
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">${cards}</div>
+    <p style="color:var(--text-s);font-size:11px;text-align:center">One-time purchase · No subscription · Instant credit after payment</p>
+  `);
+  // Load fresh balance
+  loadTokenBalance();
+}
+
+function startTopup(packId) {
+  if (!FS_USER && !state.settings.isDemo) { notify('Sign in to purchase tokens','info'); return; }
+  notify('Opening secure checkout…', 'info');
+  fetch('/api/billing/topup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pack_id: packId }),
+  }).then(r=>r.json()).then(d => {
+    if (d.checkoutUrl) {
+      window.open(d.checkoutUrl, '_blank');
+    } else if (d.demo) {
+      notify(d.message || 'Demo mode — add Stripe key to enable', 'info');
+    } else {
+      notify(d.error || 'Unable to open checkout', 'error');
+    }
+  }).catch(() => notify('Checkout error — please try again', 'error'));
+}
+
+// ── Audio Tab: AI Music Generator & TTS ──────────────────────────────────────
+let _audioTool = 'generate_track';
+let _audioPollTimer = null;
+
+function setAudioTool(tool) {
+  _audioTool = tool;
+  ['track','melody','beat'].forEach(t => {
+    const btn = document.getElementById('aud-tool-' + t);
+    if (btn) btn.classList.toggle('active-tool', 'generate_' + t === tool);
+  });
+}
+
+async function generateAudioTrack() {
+  const prompt = document.getElementById('aud-prompt')?.value?.trim();
+  if (!prompt) { notify('Enter a prompt to describe your music', 'info'); return; }
+  const style    = document.getElementById('aud-style')?.value?.trim() || '';
+  const duration = parseInt(document.getElementById('aud-duration')?.value || '30');
+  const bpm      = document.getElementById('aud-bpm')?.value || '';
+
+  const statusDiv  = document.getElementById('aud-status');
+  const statusText = document.getElementById('aud-status-text');
+  const player     = document.getElementById('aud-player');
+  const dlLink     = document.getElementById('aud-download-link');
+  const genBtn     = document.getElementById('aud-gen-btn');
+
+  if (statusDiv)  { statusDiv.style.display  = 'block'; }
+  if (player)     { player.style.display     = 'none';  }
+  if (dlLink)     { dlLink.style.display     = 'none';  }
+  if (statusText) { statusText.innerHTML     = '<i class="fas fa-spinner fa-spin"></i> Generating… this takes 20-60 seconds'; }
+  if (genBtn)     { genBtn.disabled = true; genBtn.textContent = '⏳ Generating…'; }
+
+  try {
+    const res  = await fetch('/api/audio/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool: _audioTool, prompt, style, durationSeconds: duration, bpm: bpm ? parseInt(bpm) : undefined }),
+    });
+    const data = await res.json();
+
+    if (data.audioUrl) {
+      _showAudioResult(data.audioUrl, data.message || 'Track ready!');
+    } else if (data.predictionId || data.pollUrl) {
+      // Replicate async — poll for completion
+      if (statusText) statusText.innerHTML = '<i class="fas fa-spinner fa-spin"></i> MusicGen is processing… polling for result';
+      _pollAudioPrediction(data.predictionId, 0);
+    } else {
+      if (statusText) statusText.textContent = data.message || 'No audio generated — check your API keys in Cloudflare secrets.';
+    }
+  } catch(e) {
+    if (statusText) statusText.textContent = 'Error: ' + e.message;
+  } finally {
+    if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-music"></i> Generate Music'; }
+  }
+}
+
+async function _pollAudioPrediction(predictionId, attempts) {
+  if (attempts > 60) {
+    const st = document.getElementById('aud-status-text');
+    if (st) st.textContent = 'Timed out waiting for MusicGen. Try again.';
+    return;
+  }
+  await new Promise(r => setTimeout(r, 3000));
+  try {
+    const res  = await fetch('/api/audio/generate/poll/' + predictionId);
+    const data = await res.json();
+    if (data.status === 'succeeded' && data.audioUrl) {
+      _showAudioResult(data.audioUrl, 'MusicGen track ready!');
+    } else if (data.status === 'failed') {
+      const st = document.getElementById('aud-status-text');
+      if (st) st.textContent = 'MusicGen failed — try a different prompt.';
+    } else {
+      // Still processing
+      const st = document.getElementById('aud-status-text');
+      if (st) st.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Processing… (attempt ${attempts+1})`;
+      _pollAudioPrediction(predictionId, attempts + 1);
+    }
+  } catch(e) {
+    const st = document.getElementById('aud-status-text');
+    if (st) st.textContent = 'Poll error: ' + e.message;
+  }
+}
+
+function _showAudioResult(audioUrl, msg) {
+  const statusText = document.getElementById('aud-status-text');
+  const player     = document.getElementById('aud-player');
+  const dlLink     = document.getElementById('aud-download-link');
+  if (statusText) statusText.textContent = '✅ ' + msg;
+  if (player)  { player.src = audioUrl; player.style.display = 'block'; }
+  if (dlLink)  { dlLink.href = audioUrl; dlLink.style.display = 'inline-block'; }
+  notify('🎵 Music generated!', 'success');
+}
+
+async function generateTTS() {
+  const text    = document.getElementById('tts-text')?.value?.trim();
+  const voiceId = document.getElementById('tts-voice')?.value || 'pNInz6obpgDQGcFmaJgB';
+  const modelId = document.getElementById('tts-model')?.value || 'eleven_turbo_v2';
+  if (!text) { notify('Enter text to convert to speech', 'info'); return; }
+
+  const statusDiv  = document.getElementById('tts-status');
+  const statusText = document.getElementById('tts-status-text');
+  const player     = document.getElementById('tts-player');
+
+  if (statusDiv)  statusDiv.style.display  = 'block';
+  if (statusText) statusText.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating voice…';
+  if (player)     player.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/audio/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voice_id: voiceId, model_id: modelId }),
+    });
+
+    // Check if we got audio or JSON error
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('audio')) {
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      if (player)     { player.src = url; player.style.display = 'block'; }
+      if (statusText) statusText.textContent = '✅ Voice ready!';
+    } else {
+      const data = await res.json();
+      if (data.demo) {
+        if (statusText) statusText.textContent = '⚠️ ' + data.message;
+      } else {
+        if (statusText) statusText.textContent = '❌ ' + (data.error || 'TTS failed');
+      }
+    }
+  } catch(e) {
+    if (statusText) statusText.textContent = 'Error: ' + e.message;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function sendClawbotMessage() {
   const inp = document.getElementById('clawbot-in');

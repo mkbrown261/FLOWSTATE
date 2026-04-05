@@ -350,18 +350,33 @@ async function checkAntiAbuse(c: any, userId: string): Promise<Response | null> 
     return c.json({ error: 'Too many requests — slow down for 60 seconds.', code: 'VELOCITY_EXCEEDED' }, 429)
   }
 
-  // Daily token budget check
+  // Daily token budget check — also check purchased token balance as overflow
   if (used >= limit) {
+    // Check purchased token balance
+    const balKey = `token_balance:${encodeURIComponent(userId)}`
+    const balRes = await fetch(`${url}/getdel/${balKey}`, { headers: { Authorization: `Bearer ${token}` } })
+    const balData: any = await balRes.json().catch(() => ({}))
+    const balance = parseInt(balData?.result || '0')
+
+    if (balance >= 500) {
+      // Deduct from purchased balance and allow through
+      const newBal = balance - 500
+      await fetch(`${url}/set/${balKey}/${newBal}`, { headers: { Authorization: `Bearer ${token}` } })
+      c.header('X-Token-Source', 'purchased')
+      c.header('X-Purchased-Balance', String(newBal))
+      return null // allow through using purchased tokens
+    }
+
     const msg = isPaid
-      ? `Daily ${isTeam ? 'Team' : 'Pro'} limit reached (100k tokens). Resets at midnight UTC.`
-      : 'Free daily limit reached (5k tokens). Upgrade to Pro for 100k/day.'
-    return c.json({ error: msg, code: 'DAILY_LIMIT', used, limit, isPaid }, 429)
+      ? `Daily ${isTeam ? 'Team' : 'Pro'} limit reached (100k tokens). Buy a token pack or wait for reset at midnight UTC.`
+      : 'Free daily limit reached (5k tokens). Upgrade to Pro or buy a token pack.'
+    return c.json({ error: msg, code: 'DAILY_LIMIT', used, limit, isPaid, canTopUp: true }, 429)
   }
 
   // Soft warning at 80% budget for free users
   const newUsed = used + 500
   if (!isPaid && newUsed >= limit * 0.8) {
-    c.header('X-Budget-Warning', `${limit - newUsed} tokens left today`)
+    c.header('X-Budget-Warning', `${limit - newUsed} tokens left today — buy a token pack to continue`)
   }
 
   return null // allow through
@@ -819,20 +834,59 @@ app.post('/api/billing/webhook', async (c) => {
   if (type === 'checkout.session.completed') {
     const session = event.data.object
     const email   = session.customer_details?.email || session.customer_email
-    const priceId = session.line_items?.data?.[0]?.price?.id
-      || session.metadata?.price_id
-    const tier = priceToTier[priceId] || session.metadata?.tier || 'pro'
+    const meta    = session.metadata || {}
 
     if (email && c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
-      // Store tier in Redis keyed by email (persists across sessions)
-      await fetch(`${c.env.UPSTASH_REDIS_URL}/set/tier_email:${encodeURIComponent(email)}/${tier}`, {
-        headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
-      })
-      // Also store Stripe customer ID for portal access
+      const url   = c.env.UPSTASH_REDIS_URL
+      const token = c.env.UPSTASH_REDIS_TOKEN
+
+      // Store Stripe customer ID for portal access
       if (session.customer) {
-        await fetch(`${c.env.UPSTASH_REDIS_URL}/set/stripe_customer:${encodeURIComponent(email)}/${session.customer}`, {
-          headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
+        await fetch(`${url}/set/stripe_customer:${encodeURIComponent(email)}/${session.customer}`, {
+          headers: { Authorization: `Bearer ${token}` }
         })
+      }
+
+      // ── Revenue tracking ──────────────────────────────────────────────────
+      // amountTotal is in cents; Stripe takes 2.9% + 30¢
+      const gross  = (session.amount_total || 0) / 100  // USD
+      const month  = new Date().toISOString().slice(0, 7)  // YYYY-MM
+      // Approximate cost ratios:
+      //   Pro $18/mo → ~40% to API costs ($7.20), 60% platform ($10.80)
+      //   Team $15/seat → ~45% API ($6.75), 55% platform ($8.25)
+      //   ClawFlow $40/mo → ~70% API ($28), 30% platform ($12)
+      //   Token packs → ~60% API cost, 40% platform margin
+      const isClawFlow   = meta.type === 'clawflow' || (priceToTier[meta.price_id || ''] === 'clawflow')
+      const isTokenPack  = meta.type === 'token_pack'
+      const apiCostRatio = isClawFlow ? 0.70 : isTokenPack ? 0.60 : 0.40
+      const stripeFee    = gross * 0.029 + 0.30
+      const net          = gross - stripeFee
+      const apiAlloc     = parseFloat((net * apiCostRatio).toFixed(2))
+      const platformCut  = parseFloat((net * (1 - apiCostRatio)).toFixed(2))
+
+      // Store monthly revenue aggregates in Redis
+      await fetch(`${url}/incrbyfloat/rev:gross:${month}/${gross.toFixed(2)}`,        { headers: { Authorization: `Bearer ${token}` } })
+      await fetch(`${url}/incrbyfloat/rev:api_alloc:${month}/${apiAlloc.toFixed(2)}`, { headers: { Authorization: `Bearer ${token}` } })
+      await fetch(`${url}/incrbyfloat/rev:platform:${month}/${platformCut.toFixed(2)}`,{ headers: { Authorization: `Bearer ${token}` } })
+      await fetch(`${url}/incr/rev:count:${month}`,                                    { headers: { Authorization: `Bearer ${token}` } })
+
+      // Log individual transaction
+      const txKey = `rev:tx:${Date.now()}:${encodeURIComponent(email)}`
+      const txVal = JSON.stringify({ email, gross, net, apiAlloc, platformCut, type: isTokenPack ? 'topup' : 'subscription', tier: meta.tier || priceToTier[meta.price_id || ''] || 'pro', ts: new Date().toISOString() })
+      await fetch(`${url}/set/${txKey}/${encodeURIComponent(txVal)}`, { headers: { Authorization: `Bearer ${token}` } })
+      await fetch(`${url}/expire/${txKey}/7776000`, { headers: { Authorization: `Bearer ${token}` } }) // 90 day log retention
+
+      if (meta.type === 'token_pack' && meta.tokens) {
+        // ── Token pack purchase — add tokens to user's balance ──────────────
+        const addTokens = parseInt(meta.tokens)
+        const balKey = `token_balance:${encodeURIComponent(email)}`
+        await fetch(`${url}/incrby/${balKey}/${addTokens}`, { headers: { Authorization: `Bearer ${token}` } })
+        await fetch(`${url}/expire/${balKey}/315360000`,    { headers: { Authorization: `Bearer ${token}` } }) // 10yr TTL
+      } else {
+        // ── Subscription checkout — set tier ────────────────────────────────
+        const priceId = meta.price_id || session.line_items?.data?.[0]?.price?.id
+        const tier = priceToTier[priceId] || meta.tier || 'pro'
+        await fetch(`${url}/set/tier_email:${encodeURIComponent(email)}/${tier}`, { headers: { Authorization: `Bearer ${token}` } })
       }
     }
   }
@@ -864,6 +918,153 @@ app.post('/api/billing/webhook', async (c) => {
   }
 
   return c.json({ received: true })
+})
+
+// ─── Token Top-Up ─────────────────────────────────────────────────────────────
+// One-time purchase packs: tokens credited to user's Redis balance
+const TOKEN_PACKS: Record<string, { tokens: number; price: number; priceId: string }> = {
+  pack_50k:  { tokens:  50_000, price:  5, priceId: 'price_1TIvjTLsf0qSbSh0ruQlu4tk' },
+  pack_200k: { tokens: 200_000, price: 15, priceId: 'price_1TIvjULsf0qSbSh0wpzT2ODJ' },
+  pack_500k: { tokens: 500_000, price: 30, priceId: 'price_1TIvjULsf0qSbSh0wjbz2RX0' },
+}
+
+app.get('/api/billing/token-packs', (c) => {
+  return c.json({ packs: Object.entries(TOKEN_PACKS).map(([id, p]) => ({ id, ...p })) })
+})
+
+app.post('/api/billing/topup', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const { pack_id } = await c.req.json()
+  const pack = TOKEN_PACKS[pack_id]
+  if (!pack) return c.json({ error: 'invalid_pack', available: Object.keys(TOKEN_PACKS) }, 400)
+  if (!c.env?.STRIPE_SECRET_KEY) {
+    return c.json({ demo: true, message: `Demo: Would add ${pack.tokens.toLocaleString()} tokens for $${pack.price}` })
+  }
+  const origin = new URL(c.req.url).origin
+  const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${c.env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      'payment_method_types[]': 'card',
+      'mode': 'payment',  // one-time, not subscription
+      'customer_email': session.email,
+      'line_items[0][price]': pack.priceId,
+      'line_items[0][quantity]': '1',
+      'metadata[type]': 'token_pack',
+      'metadata[pack_id]': pack_id,
+      'metadata[tokens]': String(pack.tokens),
+      'metadata[email]': session.email,
+      'success_url': `${origin}/?topup=success&pack=${pack_id}&tokens=${pack.tokens}`,
+      'cancel_url':  `${origin}/?topup=cancelled`,
+    }),
+  })
+  const data: any = await stripeRes.json()
+  if (data.error) return c.json({ error: data.error.message }, 500)
+  return c.json({ checkoutUrl: data.url, tokens: pack.tokens, price: pack.price })
+})
+
+// ─── Revenue Analytics (Admin) ───────────────────────────────────────────────
+// GET /api/billing/revenue?months=3 — returns monthly revenue + split breakdown
+// Secured: requires a valid session (owner/admin check via email)
+app.get('/api/billing/revenue', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  // Basic admin guard — only let the account owner see revenue data
+  // In production, add a proper admin role check
+  const adminEmail = c.env?.ADMIN_EMAIL
+  if (adminEmail && session.email !== adminEmail) return c.json({ error: 'forbidden' }, 403)
+
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ error: 'Redis not configured' }, 503)
+
+  const months = Math.min(parseInt(String(c.req.query('months') || '3')), 12)
+  const results: any[] = []
+
+  for (let i = 0; i < months; i++) {
+    const d = new Date()
+    d.setMonth(d.getMonth() - i)
+    const month = d.toISOString().slice(0, 7)
+
+    const [gross, apiAlloc, platform, count] = await Promise.all([
+      fetch(`${url}/get/rev:gross:${month}`,    { headers: { Authorization: `Bearer ${token}` } }).then(r=>r.json()).then((d:any)=>parseFloat(d.result||'0')),
+      fetch(`${url}/get/rev:api_alloc:${month}`,{ headers: { Authorization: `Bearer ${token}` } }).then(r=>r.json()).then((d:any)=>parseFloat(d.result||'0')),
+      fetch(`${url}/get/rev:platform:${month}`, { headers: { Authorization: `Bearer ${token}` } }).then(r=>r.json()).then((d:any)=>parseFloat(d.result||'0')),
+      fetch(`${url}/get/rev:count:${month}`,    { headers: { Authorization: `Bearer ${token}` } }).then(r=>r.json()).then((d:any)=>parseInt(d.result||'0')),
+    ])
+
+    const stripeFees = gross > 0 ? parseFloat((gross * 0.029 + count * 0.30).toFixed(2)) : 0
+    const net        = parseFloat((gross - stripeFees).toFixed(2))
+
+    results.push({
+      month, gross, net, stripeFees,
+      apiAlloc: parseFloat(apiAlloc.toFixed(2)),
+      platformCut: parseFloat(platform.toFixed(2)),
+      transactions: count,
+      // Recommended: use apiAlloc to top up OpenRouter/Replicate/ElevenLabs monthly
+      apiTopupRecommendation: {
+        openrouter: parseFloat((apiAlloc * 0.55).toFixed(2)),  // 55% of API budget to chat AI
+        replicate:  parseFloat((apiAlloc * 0.25).toFixed(2)),  // 25% to MusicGen/video
+        elevenlabs: parseFloat((apiAlloc * 0.20).toFixed(2)),  // 20% to TTS
+      }
+    })
+  }
+
+  return c.json({
+    summary: {
+      totalGross:    parseFloat(results.reduce((s,r)=>s+r.gross,0).toFixed(2)),
+      totalNet:      parseFloat(results.reduce((s,r)=>s+r.net,0).toFixed(2)),
+      totalApiAlloc: parseFloat(results.reduce((s,r)=>s+r.apiAlloc,0).toFixed(2)),
+      totalPlatform: parseFloat(results.reduce((s,r)=>s+r.platformCut,0).toFixed(2)),
+      totalTx:       results.reduce((s,r)=>s+r.transactions,0),
+    },
+    months: results,
+    note: 'apiTopupRecommendation shows suggested monthly credit purchases per service based on actual revenue. Top up OpenRouter at openrouter.ai/credits, Replicate at replicate.com/billing, ElevenLabs at elevenlabs.io/subscription.'
+  })
+})
+
+// ─── ElevenLabs TTS ──────────────────────────────────────────────────────────
+app.post('/api/audio/tts', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const { text, voice_id = 'pNInz6obpgDQGcFmaJgB', model_id = 'eleven_turbo_v2' } = await c.req.json()
+  if (!text) return c.json({ error: 'text required' }, 400)
+
+  const elKey = c.env?.ELEVENLABS_API_KEY
+  if (!elKey) return c.json({ demo: true, message: 'ElevenLabs TTS requires ELEVENLABS_API_KEY in Cloudflare secrets.' })
+
+  try {
+    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice_id}/stream`, {
+      method: 'POST',
+      headers: { 'xi-api-key': elKey, 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
+      body: JSON.stringify({ text, model_id, voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
+    })
+    if (!res.ok) {
+      const err: any = await res.json().catch(() => ({}))
+      return c.json({ error: err?.detail?.message || 'ElevenLabs error' }, 500)
+    }
+    // Stream audio directly back to client
+    return new Response(res.body, {
+      headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-cache', 'Transfer-Encoding': 'chunked' },
+    })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+app.get('/api/audio/tts/voices', async (c) => {
+  const elKey = c.env?.ELEVENLABS_API_KEY
+  if (!elKey) return c.json({ voices: [
+    { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam (demo)', preview_url: null },
+    { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella (demo)', preview_url: null },
+    { voice_id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel (demo)', preview_url: null },
+  ]})
+  try {
+    const res = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': elKey } })
+    const data: any = await res.json()
+    return c.json({ voices: (data.voices || []).map((v: any) => ({ voice_id: v.voice_id, name: v.name, preview_url: v.preview_url })) })
+  } catch { return c.json({ voices: [] }) }
 })
 
 // ─── Mindful Minimum ──────────────────────────────────────────────────────────
@@ -1254,15 +1455,71 @@ app.get('/api/tier/capabilities', (c) => c.json(declareTierCapabilities((c.req.q
 app.get('/api/credentials', (c) => c.json({ credentials: CREDENTIAL_TABLE }))
 app.get('/api/models', (c) => c.json({ models: MODEL_REGISTRY, imageModels: IMAGE_MODEL_REGISTRY, videoModels: VIDEO_MODEL_REGISTRY }))
 
+// Token balance endpoint — returns daily usage + purchased balance
+app.get('/api/billing/balance', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ dailyUsed: 0, dailyLimit: 5000, purchased: 0, tier: 'free' })
+
+  const email = session.email
+  const date  = new Date().toISOString().slice(0, 10)
+  const results = await redisPipeline(url, token, [
+    ['GET', `tier_email:${email}`],
+    ['GET', `tier:${email}`],
+    ['GET', `daily_tokens_used:${email}:${date}`],
+    ['GET', `token_balance:${encodeURIComponent(email)}`],
+  ])
+  const tier      = (results[0] || results[1] || 'free') as string
+  const isPaid    = tier === 'pro' || tier === 'team'
+  const dailyUsed = parseInt(results[2] as string || '0')
+  const purchased = parseInt(results[3] as string || '0')
+  const dailyLimit = isPaid ? 100_000 : 5_000
+  return c.json({ dailyUsed, dailyLimit, purchased, tier, remaining: Math.max(0, dailyLimit - dailyUsed) })
+})
+
 // ─── Auth pages ───────────────────────────────────────────────────────────────
+// Shared smart redirect script — handles popup AND same-tab OAuth flows
+const AUTH_REDIRECT_SCRIPT = `<script>
+(function(){
+  var isPopup = !!(window.opener && !window.opener.closed);
+  if (isPopup) {
+    // Signal parent app that auth succeeded
+    try { window.opener.postMessage({ type: 'FS_AUTH_SUCCESS' }, window.location.origin); } catch(e){}
+    // Auto-close after 2.5s (user can see success message; button also closes instantly)
+    setTimeout(function(){ window.close(); }, 2500);
+    // Update button to close popup
+    document.addEventListener('DOMContentLoaded', function(){
+      var btn = document.querySelector('.btn');
+      if (btn) { btn.textContent = 'Back to FlowState ✓'; btn.onclick = function(){ window.close(); }; }
+      var sub = document.querySelector('.sub');
+      if (sub) sub.textContent = 'This window will close automatically in a moment.';
+    });
+  } else {
+    // Same-tab flow — redirect to app root after short delay
+    document.addEventListener('DOMContentLoaded', function(){
+      var btn = document.querySelector('.btn');
+      if (btn) { btn.textContent = 'Open FlowState'; btn.onclick = function(){ window.location.href='/'; }; }
+    });
+    setTimeout(function(){ window.location.href = '/'; }, 2000);
+  }
+})();
+</script>`
+
+const AUTH_PAGE_STYLE = `<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#0f0f1a;color:#f0f0f0;display:flex;align-items:center;justify-content:center;min-height:100vh}.card{background:#1a1a2e;border:1px solid rgba(168,85,247,.3);border-radius:20px;padding:40px;text-align:center;max-width:380px;animation:fadeIn .4s ease}.av{width:72px;height:72px;border-radius:50%;border:3px solid #a855f7;margin-bottom:16px}h1{font-size:22px;font-weight:800;margin-bottom:8px}p{color:#888;font-size:14px;margin-bottom:20px}.btn{display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:12px;font-weight:700;font-size:14px;cursor:pointer;border:none}.sub{color:#555;font-size:12px;margin-top:14px}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}</style>`
+
 function authSuccessPage(name: string, picture: string): string {
-  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Connected</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#0f0f1a;color:#f0f0f0;display:flex;align-items:center;justify-content:center;min-height:100vh}.card{background:#1a1a2e;border:1px solid rgba(168,85,247,.3);border-radius:20px;padding:40px;text-align:center;max-width:380px}.av{width:72px;height:72px;border-radius:50%;border:3px solid #a855f7;margin-bottom:16px}h1{font-size:22px;font-weight:800;margin-bottom:8px}p{color:#888;font-size:14px;margin-bottom:24px}.btn{display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:12px;font-weight:700;font-size:14px}</style></head><body><div class="card">' + (picture ? '<img class="av" src="' + picture + '" alt="' + name + '">' : '<div style="font-size:48px;margin-bottom:16px">✅</div>') + '<h1>Connected, ' + name + '!</h1><p>Google Calendar and Drive are now synced with FlowState.</p><a class="btn" href="/" onclick="window.opener&&window.opener.location.reload();window.close()">Return to FlowState</a></div></body></html>'
+  const avatar = picture
+    ? `<img class="av" src="${picture}" alt="${name}" onerror="this.style.display='none'">`
+    : `<div style="font-size:56px;margin-bottom:16px">✅</div>`
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Signed in — FlowState</title>${AUTH_PAGE_STYLE}${AUTH_REDIRECT_SCRIPT}</head><body><div class="card">${avatar}<h1>Welcome back, ${name}!</h1><p style="color:#10b981;font-size:15px;font-weight:600">You're signed in to FlowState.</p><p>Google Calendar is synced.</p><button class="btn">Back to FlowState ✓</button><div class="sub">This window will close automatically.</div></div></body></html>`
 }
 function notionSuccessPage(workspace: string): string {
-  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Notion Connected</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#0f0f1a;color:#f0f0f0;display:flex;align-items:center;justify-content:center;min-height:100vh}.card{background:#1a1a2e;border:1px solid rgba(168,85,247,.3);border-radius:20px;padding:40px;text-align:center;max-width:380px}h1{font-size:22px;font-weight:800;margin-bottom:8px}p{color:#888;font-size:14px;margin-bottom:24px}.btn{display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:12px;font-weight:700;font-size:14px}</style></head><body><div class="card"><div style="font-size:48px;margin-bottom:16px">📝</div><h1>Notion Connected!</h1><p>Workspace <strong>' + (workspace || 'Your workspace') + '</strong> is synced. Choose a database in the Board tab.</p><a class="btn" href="/" onclick="window.opener&&window.opener.location.reload();window.close()">Open Board Tab</a></div></body></html>'
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Notion Connected — FlowState</title>${AUTH_PAGE_STYLE}${AUTH_REDIRECT_SCRIPT}</head><body><div class="card"><div style="font-size:56px;margin-bottom:16px">📝</div><h1>Notion Connected!</h1><p>Workspace <strong>${workspace || 'Your workspace'}</strong> is synced. Returning you to FlowState…</p><button class="btn" onclick="window.opener?window.close():window.location.href='/'">Open Board Tab</button><div class="sub">This window will close automatically.</div></div></body></html>`
 }
 function slackSuccessPage(team: string): string {
-  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Slack Connected</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#0f0f1a;color:#f0f0f0;display:flex;align-items:center;justify-content:center;min-height:100vh}.card{background:#1a1a2e;border:1px solid rgba(168,85,247,.3);border-radius:20px;padding:40px;text-align:center;max-width:380px}h1{font-size:22px;font-weight:800;margin-bottom:8px}p{color:#888;font-size:14px;margin-bottom:24px}.btn{display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:12px;font-weight:700;font-size:14px}</style></head><body><div class="card"><div style="font-size:48px;margin-bottom:16px">💬</div><h1>Slack Connected!</h1><p>Team <strong>' + (team || 'Your workspace') + '</strong> is now synced with FlowState.</p><a class="btn" href="/" onclick="window.opener&&window.opener.location.reload();window.close()">Return to FlowState</a></div></body></html>'
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Slack Connected — FlowState</title>${AUTH_PAGE_STYLE}${AUTH_REDIRECT_SCRIPT}</head><body><div class="card"><div style="font-size:56px;margin-bottom:16px">💬</div><h1>Slack Connected!</h1><p>Team <strong>${team || 'Your workspace'}</strong> is synced. Returning you to FlowState…</p><button class="btn" onclick="window.opener?window.close():window.location.href='/'">Return to FlowState</button><div class="sub">This window will close automatically.</div></div></body></html>`
 }
 function authErrorPage(message: string): string {
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Auth Error</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#0f0f1a;color:#f0f0f0;display:flex;align-items:center;justify-content:center;min-height:100vh}.card{background:#1a1a2e;border:1px solid rgba(239,68,68,.3);border-radius:20px;padding:40px;text-align:center;max-width:380px}h1{font-size:22px;font-weight:800;margin-bottom:8px;color:#ef4444}p{color:#888;font-size:14px;margin-bottom:24px}.btn{display:inline-block;background:#1a1a2e;border:1px solid #ef4444;color:#ef4444;text-decoration:none;padding:12px 28px;border-radius:12px;font-weight:700;font-size:14px}</style></head><body><div class="card"><div style="font-size:48px;margin-bottom:16px">⚠️</div><h1>Auth Error</h1><p>' + message + '</p><a class="btn" href="/">Back to FlowState</a></div></body></html>'
@@ -1672,6 +1929,9 @@ em{color:var(--accent);font-style:italic}
 .aud-feat-icon{font-size:24px;margin-bottom:8px}
 .aud-feat-title{font-size:13px;font-weight:800;margin-bottom:5px}
 .aud-feat-desc{font-size:12px;color:var(--text-m);line-height:1.6}
+.aud-tool-btn{padding:8px 16px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-s);font-size:12px;font-weight:600;cursor:pointer;transition:.2s}
+.aud-tool-btn:hover{border-color:var(--accent);color:var(--text)}
+.aud-tool-btn.active-tool{background:rgba(168,85,247,.2);border-color:var(--accent);color:var(--accent)}
 /* ── Clawbot ─────────────────────────────────────────────────── */
 .clawbot-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding:12px 16px;background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(6,182,212,.05));border:1px solid rgba(168,85,247,.2);border-radius:13px}
 .clawbot-title{display:flex;align-items:center;gap:11px}
@@ -1771,6 +2031,7 @@ em{color:var(--accent);font-style:italic}
   <button class="tab-btn demo-tab" id="tab-demo" style="display:none"><i class="fas fa-eye"></i>Demo</button>
   <div style="margin-left:auto;display:flex;gap:5px">
     <button class="btn-sm" id="btn-creds" title="API Credentials"><i class="fas fa-key"></i></button>
+    <button class="btn-sm" id="btn-topup" title="Buy More Tokens" style="background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.4);color:#10b981"><i class="fas fa-coins"></i></button>
     <button class="btn-sm" id="btn-pricing"><i class="fas fa-star"></i> Pro</button>
     <button class="btn-sm" id="btn-invite"><i class="fas fa-user-plus"></i></button>
     <button class="btn-sm" id="btn-settings"><i class="fas fa-gear"></i></button>
@@ -2107,6 +2368,75 @@ em{color:var(--accent);font-style:italic}
 <!-- FLOWSTATE AUDIO TAB — Download / Landing Page -->
 <div class="tab-pane" id="tab-pane-audio" style="display:none;padding:0;overflow-y:auto">
   <div style="min-height:100%;background:linear-gradient(160deg,#0f0f1a 0%,#0d1a1f 50%,#0f0f1a 100%);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:48px 24px">
+
+    <!-- ── AI Music Generator (Web) ── -->
+    <div style="max-width:720px;width:100%;margin-bottom:48px">
+      <div style="text-align:center;margin-bottom:24px">
+        <div style="font-size:32px;margin-bottom:8px">🎵</div>
+        <h2 style="font-size:20px;font-weight:900;margin:0 0 4px">AI Music Generator</h2>
+        <p style="font-size:13px;color:var(--text-s);margin:0">Generate music right in your browser via MusicGen (Replicate) or Suno AI</p>
+      </div>
+      <!-- Tool selector -->
+      <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;justify-content:center">
+        <button id="aud-tool-track"   onclick="setAudioTool('generate_track')"   class="aud-tool-btn active-tool">🎼 Full Track</button>
+        <button id="aud-tool-melody"  onclick="setAudioTool('generate_melody')"  class="aud-tool-btn">🎹 Melody</button>
+        <button id="aud-tool-beat"    onclick="setAudioTool('generate_beat')"    class="aud-tool-btn">🥁 Beat</button>
+      </div>
+      <!-- Prompt -->
+      <textarea id="aud-prompt" placeholder="Describe your music… e.g. 'upbeat lo-fi hip hop with jazz chords, mellow vibe, 90 BPM'" style="width:100%;min-height:80px;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:12px;color:var(--text);font-size:13px;resize:vertical;margin-bottom:12px;box-sizing:border-box"></textarea>
+      <!-- Options row -->
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+        <input id="aud-style"    placeholder="Style (e.g. lo-fi, trap, ambient)" style="flex:1;min-width:140px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
+        <select id="aud-duration" style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
+          <option value="15">15 sec</option>
+          <option value="30" selected>30 sec</option>
+        </select>
+        <select id="aud-bpm" style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
+          <option value="">BPM (auto)</option>
+          <option value="80">80 BPM</option>
+          <option value="90">90 BPM</option>
+          <option value="100">100 BPM</option>
+          <option value="120">120 BPM</option>
+          <option value="140">140 BPM</option>
+        </select>
+      </div>
+      <button id="aud-gen-btn" onclick="generateAudioTrack()" style="width:100%;padding:12px;background:linear-gradient(135deg,#a855f7,#06b6d4);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:16px">
+        <i class="fas fa-music"></i> Generate Music
+      </button>
+      <!-- Status / Player -->
+      <div id="aud-status" style="display:none;text-align:center;padding:16px;background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.2);border-radius:10px;margin-bottom:12px">
+        <div id="aud-status-text" style="font-size:13px;color:var(--text-s);margin-bottom:8px"></div>
+        <audio id="aud-player" controls style="width:100%;display:none"></audio>
+        <a id="aud-download-link" href="#" download style="display:none;font-size:12px;color:var(--accent);margin-top:8px;text-decoration:none"><i class="fas fa-download"></i> Download Track</a>
+      </div>
+
+      <!-- ── TTS Section ── -->
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:18px;margin-top:8px">
+        <div style="font-size:14px;font-weight:800;margin-bottom:12px">🎙️ Text-to-Speech (ElevenLabs)</div>
+        <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+          <select id="tts-voice" style="flex:1;min-width:140px;background:var(--bg-input,#1e1e30);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
+            <option value="pNInz6obpgDQGcFmaJgB">Adam</option>
+            <option value="EXAVITQu4vr4xnSDxMaL">Bella</option>
+            <option value="21m00Tcm4TlvDq8ikWAM">Rachel</option>
+            <option value="VR6AewLTigWG4xSOukaG">Arnold</option>
+            <option value="pMsXgVXv3BLzUgSXRplE">Serena</option>
+          </select>
+          <select id="tts-model" style="background:var(--bg-input,#1e1e30);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
+            <option value="eleven_turbo_v2">Turbo v2 (fast)</option>
+            <option value="eleven_multilingual_v2">Multilingual v2</option>
+            <option value="eleven_monolingual_v1">Monolingual v1</option>
+          </select>
+        </div>
+        <textarea id="tts-text" placeholder="Enter text to convert to speech…" style="width:100%;min-height:70px;background:var(--bg-input,#1e1e30);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-size:13px;resize:vertical;margin-bottom:10px;box-sizing:border-box"></textarea>
+        <button onclick="generateTTS()" style="width:100%;padding:10px;background:rgba(168,85,247,.2);border:1px solid rgba(168,85,247,.4);color:var(--accent);border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px">
+          <i class="fas fa-microphone"></i> Speak It
+        </button>
+        <div id="tts-status" style="display:none;text-align:center">
+          <div id="tts-status-text" style="font-size:12px;color:var(--text-s);margin-bottom:6px"></div>
+          <audio id="tts-player" controls style="width:100%"></audio>
+        </div>
+      </div>
+    </div>
 
     <!-- Hero -->
     <div style="text-align:center;max-width:700px;margin-bottom:52px">
