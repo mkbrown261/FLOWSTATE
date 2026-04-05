@@ -442,7 +442,6 @@ function switchTab(id) {
   if (id==='clawbot')  initClawbot();
   if (id==='audio')    { loadTTSVoices(); }
   if (id==='generate') { setTimeout(()=>{ buildGenPicker('img'); buildGenPicker('vid'); buildGenPicker('i2v'); }, 50); }
-  if (id==='264')      { loadPlatformStatus(); }
 }
 
 function startClock() {

@@ -2391,14 +2391,6 @@ em{color:var(--accent);font-style:italic}
       </div>
     </div>
 
-    <!-- Platform Status — live key check, no user-facing key management -->
-    <div style="max-width:680px;width:100%;margin-bottom:32px" id="platform-status-264">
-      <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:12px">Platform Status</div>
-      <div id="platform-status-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
-        <div style="color:var(--text-s);font-size:12px;grid-column:1/-1">Loading status…</div>
-      </div>
-    </div>
-
     <!-- System requirements -->
     <div style="max-width:680px;width:100%;margin-bottom:32px">
       <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:12px">System Requirements</div>
