@@ -122,7 +122,8 @@ app.post('/api/auth/logout', async (c) => {
   deleteCookie(c, 'fs_session', { path: '/' })
   deleteCookie(c, 'fs_notion', { path: '/' })
   deleteCookie(c, 'fs_slack', { path: '/' })
-  deleteCookie(c, 'fs_onboarded', { path: '/' })
+  // NOTE: fs_onboarded is intentionally NOT deleted on logout
+  // so returning users skip onboarding on next sign-in
   return c.json({ ok: true })
 })
 
@@ -197,7 +198,10 @@ app.get('/api/auth/slack-status', async (c) => {
 app.post('/api/onboarding/complete', async (c) => {
   const { goals, focusDuration, workHours, timezone } = await c.req.json()
   const intent = declareOnboardingIntent(goals, focusDuration, workHours, timezone)
-  setCookie(c, 'fs_onboarded', encodeSession({ completed: true, goals, focusDuration, workHoursStart: workHours.start, workHoursEnd: workHours.end, timezone, seedIntegrations: intent.seedIntegrations }), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 365*24*3600, path: '/' })
+  // Store the user's email so we can match it on next login
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  const email = session?.email || ''
+  setCookie(c, 'fs_onboarded', encodeSession({ completed: true, email, goals, focusDuration, workHoursStart: workHours.start, workHoursEnd: workHours.end, timezone, seedIntegrations: intent.seedIntegrations }), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 365*24*3600, path: '/' })
   return c.json({ ok: true, intent })
 })
 
@@ -1585,7 +1589,10 @@ app.get('/', (c) => {
   const userJson     = session     ? JSON.stringify({ name: session.name, email: session.email, picture: session.picture, role: session.role || 'member', provider: session.provider }) : 'null'
   const notionJson   = notionSes   ? JSON.stringify({ workspace: notionSes.workspace_name }) : 'null'
   const slackJson    = slackSes    ? JSON.stringify({ team: slackSes.team_name }) : 'null'
-  const onboardedJson = (onboarding?.completed) ? 'true' : 'false'
+  // Tie onboarding to the signed-in user's email so different users
+  // on the same browser each go through onboarding exactly once
+  const onboardedForUser = onboarding?.completed && onboarding?.email === session?.email
+  const onboardedJson = onboardedForUser ? 'true' : 'false'
 
   return c.html(`<!DOCTYPE html>
 <html lang="en">
