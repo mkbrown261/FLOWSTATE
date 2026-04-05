@@ -905,12 +905,33 @@ async function sendMessage() {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ message:msg, model:state.chat.model, history:state.chat.history.slice(-10) })
     });
+    // Handle rate-limit / abuse block (429)
+    if (res.status === 429) {
+      const err = await res.json().catch(() => ({}));
+      removeTyping(tid);
+      const code = err.code || '';
+      if (code === 'VELOCITY_EXCEEDED') {
+        appendMsg('ai','⏱️ **Slow down!** You\'re sending too many messages. Wait 60 seconds and try again.','Rate limit');
+      } else if (code === 'DAILY_LIMIT') {
+        const isPro = err.isPro;
+        appendMsg('ai', isPro
+          ? '📊 **Daily Pro limit reached** (100,000 tokens). Your quota resets at midnight UTC.'
+          : '📊 **Free daily limit reached** (5,000 tokens). [Upgrade to Pro](/upgrade) for 20× more tokens per day.', 'Usage limit');
+      } else {
+        appendMsg('ai','⚠️ Request blocked. ' + (err.error || 'Try again later.'),'Blocked');
+      }
+      return;
+    }
     if (!res.ok) { throw new Error('HTTP ' + res.status); }
     // Server returns plain text + X-Routed-Model header
     const reply = await res.text();
     const routedModel = res.headers.get('X-Routed-Model') || state.chat.model;
+    const liveSearch  = res.headers.get('X-Live-Search') === 'on';
+    // Budget warning
+    const budgetWarn = res.headers.get('X-Budget-Warning');
+    if (budgetWarn) notify('⚡ ' + budgetWarn, 'warning');
     removeTyping(tid);
-    appendMsg('ai', reply || 'No response.', MODEL_NAMES[routedModel] || routedModel);
+    appendMsg('ai', reply || 'No response.', (liveSearch ? '🌐 ' : '') + (MODEL_NAMES[routedModel] || routedModel));
     state.chat.history.push({role:'user',content:msg},{role:'assistant',content:reply||''});
   } catch(e) {
     removeTyping(tid);

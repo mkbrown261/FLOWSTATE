@@ -294,24 +294,148 @@ app.post('/api/slack/message', async (c) => {
   } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
+// ─── Upstash Redis anti-abuse helpers ────────────────────────────────────────
+// Uses Upstash REST pipeline: POST /pipeline with array of commands
+async function redisPipeline(url: string, token: string, commands: any[][]): Promise<any[]> {
+  try {
+    const res = await fetch(url + '/pipeline', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(commands),
+    })
+    const json: any = await res.json()
+    return Array.isArray(json) ? json.map((r: any) => r.result ?? null) : []
+  } catch { return [] }
+}
+
+async function checkAntiAbuse(c: any, userId: string): Promise<Response | null> {
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return null // Redis not configured — allow through
+
+  const date    = new Date().toISOString().slice(0, 10)
+  const minute  = Math.floor(Date.now() / 60000)
+  const tierKey = `tier:${userId}`
+  const dayKey  = `daily_tokens_used:${userId}:${date}`
+  const velKey  = `velocity:${userId}:${minute}`
+
+  // Read all 3 keys + write increments in one pipeline (atomic, one round-trip)
+  const results = await redisPipeline(url, token, [
+    ['GET', tierKey],
+    ['GET', dayKey],
+    ['GET', velKey],
+    ['INCR', velKey],
+    ['EXPIRE', velKey, 90],
+    ['INCRBY', dayKey, 500],
+    ['EXPIRE', dayKey, 86400],
+  ])
+
+  // results[0..2] = reads (before increment), results[3..6] = writes
+  const tier     = results[0] as string | null
+  const dayUsed  = results[1] as string | null
+  const velCount = results[2] as string | null
+
+  const isPro    = tier === 'pro'
+  const limit    = isPro ? 100_000 : 5_000
+  const used     = parseInt(dayUsed || '0')
+  const velocity = parseInt(velCount || '0')
+
+  // Velocity check: >10 requests in 60s
+  if (velocity >= 10) {
+    return c.json({ error: 'Too many requests — slow down for 60 seconds.', code: 'VELOCITY_EXCEEDED' }, 429)
+  }
+
+  // Daily token budget check (check pre-increment value)
+  if (used >= limit) {
+    const msg = isPro
+      ? 'Daily Pro limit reached (100k tokens). Resets at midnight UTC.'
+      : 'Free daily limit reached (5k tokens). Upgrade to Pro for 100k/day.'
+    return c.json({ error: msg, code: 'DAILY_LIMIT', used, limit, isPro }, 429)
+  }
+
+  // Soft warning at 80% budget
+  const newUsed = used + 500
+  if (!isPro && newUsed >= limit * 0.8) {
+    c.header('X-Budget-Warning', `${limit - newUsed} tokens left today`)
+  }
+
+  return null // allow through
+}
+
 // ─── AI Chat — multi-model streaming ─────────────────────────────────────────
 app.post('/api/chat/stream', async (c) => {
   const { message, model: preferredModel, messages: history = [], systemOverride } = await c.req.json()
+
+  // ── Anti-abuse: rate-limit by user session ──────────────────────────────────
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  const userId  = session?.email || session?.id || c.req.header('CF-Connecting-IP') || 'anon'
+  const abuseBlock = await checkAntiAbuse(c, userId)
+  if (abuseBlock) return abuseBlock
+
   const intent = declareModelRouting(message, preferredModel)
   const spec = MODEL_REGISTRY[intent.routedModel]
   if (!spec) return c.json({ error: 'Unknown model' }, 400)
 
-  // Resolve API key — OpenRouter covers everything except Google (which needs direct key for streaming)
-  const apiKey = spec.provider === 'google'
-    ? c.env?.GOOGLE_AI_KEY
-    : (c.env?.OPENROUTER_API_KEY || (c.env as any)?.[spec.envKey])
+  // Resolve API key
+  // xAI Grok: prefer native XAI_API_KEY for live web search; fall back to OpenRouter (no live search)
+  // Google: direct API only (streaming SSE format)
+  // All others: OpenRouter
+  const apiKey = spec.provider === 'xai'
+    ? (c.env?.XAI_API_KEY || c.env?.OPENROUTER_API_KEY)
+    : spec.provider === 'google'
+      ? c.env?.GOOGLE_AI_KEY
+      : (c.env?.OPENROUTER_API_KEY || (c.env as any)?.[spec.envKey])
 
   if (!apiKey) return c.text(getDemoResponse(message, spec.name), 200, { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel, 'X-Routing-Reason': intent.reasoning })
 
   const systemMsg = systemOverride || intent.systemPrompt
   const allMessages = [...history.slice(-10), { role: 'user', content: message }]
   try {
-    // Google Gemini — direct API (SSE streaming format differs from OpenAI)
+    // ── xAI Grok — live web search (native API or OpenRouter :online) ──────────
+    if (spec.provider === 'xai') {
+      const isLiveQuery = /\b(latest|news|today|current|recent|2025|2026|real.?time|trending|live|now|happening|this (week|month|year))\b/i.test(message)
+
+      // Path A: native xAI API with search_parameters
+      if (c.env?.XAI_API_KEY) {
+        const body: any = {
+          model: spec.apiModel === 'x-ai/grok-3' ? 'grok-3-latest' : 'grok-3-mini-latest',
+          messages: [{ role: 'system', content: systemMsg }, ...allMessages],
+          stream: false, max_tokens: 2048,
+        }
+        if (isLiveQuery) body.search_parameters = { mode: 'on', sources: [{ type: 'web' }, { type: 'x' }] }
+        const res = await fetch('https://api.x.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + c.env.XAI_API_KEY, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const data: any = await res.json()
+        const reply = data.choices?.[0]?.message?.content || 'No response.'
+        const citations = data.citations as string[] | undefined
+        const citationBlock = citations?.length
+          ? '\n\n---\n**Sources:** ' + citations.slice(0, 3).map((u: string) => { try { return `[${new URL(u).hostname}](${u})` } catch { return u } }).join(' · ')
+          : ''
+        return new Response(reply + citationBlock, { headers: { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel, 'X-Live-Search': isLiveQuery ? 'on' : 'off' } })
+      }
+
+      // Path B: OpenRouter with :online suffix for live search (no XAI_API_KEY)
+      if (c.env?.OPENROUTER_API_KEY) {
+        const orModel = isLiveQuery
+          ? (spec.apiModel === 'x-ai/grok-3' ? 'x-ai/grok-3:online' : 'x-ai/grok-3-mini:online')
+          : spec.apiModel
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + c.env.OPENROUTER_API_KEY, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://flowstate-67g.pages.dev', 'X-Title': 'FlowState Hub' },
+          body: JSON.stringify({ model: orModel, messages: [{ role: 'system', content: systemMsg }, ...allMessages], stream: true, max_tokens: 2048 }),
+        })
+        const reply = await extractOpenAIStream(res)
+        return new Response(reply, { headers: { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel, 'X-Live-Search': isLiveQuery ? 'on' : 'off' } })
+      }
+
+      // No key — demo
+      return c.text(getDemoResponse(message, spec.name), 200, { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel })
+    }
+
+    // ── Google Gemini — direct API (SSE streaming format differs from OpenAI) ──
     if (spec.provider === 'google') {
       const res = await fetch(spec.apiEndpoint + '?key=' + apiKey + '&alt=sse', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -319,8 +443,8 @@ app.post('/api/chat/stream', async (c) => {
       })
       return new Response(await extractGeminiStream(res), { headers: { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel } })
     }
-    // All other providers (OpenAI, Anthropic, xAI, Mistral, DeepSeek, Meta) — via OpenRouter
-    // OpenRouter uses OpenAI-compatible format for all models
+
+    // ── All others (OpenAI, Anthropic, Mistral, DeepSeek, Meta, xAI fallback) via OpenRouter ──
     const res = await fetch(spec.apiEndpoint, {
       method: 'POST',
       headers: {
