@@ -79,13 +79,13 @@ export const MODEL_REGISTRY: Record<string, ModelSpec> = {
   'gemini-2-flash': {
     id: 'gemini-2-flash', name: 'Gemini 2.5 Flash', provider: 'google', providerLabel: 'Google',
     description: 'Speed, multimodal, 1M context', capabilities: ['quick', 'realtime', 'vision', 'creative'],
-    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:streamGenerateContent',
+    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent',
     apiModel: 'gemini-2.5-flash', contextWindow: 1000000, streaming: true, envKey: 'GOOGLE_AI_KEY', color: '#3b82f6',
   },
   'gemini-2-pro': {
     id: 'gemini-2-pro', name: 'Gemini 2.5 Pro', provider: 'google', providerLabel: 'Google',
     description: 'Most capable Gemini — deep reasoning', capabilities: ['analysis', 'reasoning', 'long_form', 'vision'],
-    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-03-25:streamGenerateContent',
+    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent',
     apiModel: 'gemini-2.5-pro', contextWindow: 1000000, streaming: true, envKey: 'GOOGLE_AI_KEY', color: '#3b82f6',
   },
   // ── xAI Grok via OpenRouter ────────────────────────────────────────────────
