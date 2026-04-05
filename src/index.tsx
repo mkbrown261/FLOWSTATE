@@ -2400,20 +2400,36 @@ em{color:var(--accent);font-style:italic}
       <!-- Prompt -->
       <textarea id="aud-prompt" placeholder="Describe your music… e.g. 'upbeat lo-fi hip hop with jazz chords, mellow vibe, 90 BPM'" style="width:100%;min-height:80px;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:12px;color:var(--text);font-size:13px;resize:vertical;margin-bottom:12px;box-sizing:border-box"></textarea>
       <!-- Options row -->
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
-        <input id="aud-style"    placeholder="Style (e.g. lo-fi, trap, ambient)" style="flex:1;min-width:140px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
-        <select id="aud-duration" style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
-          <option value="15">15 sec</option>
-          <option value="30" selected>30 sec</option>
-        </select>
-        <select id="aud-bpm" style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
-          <option value="">BPM (auto)</option>
-          <option value="80">80 BPM</option>
-          <option value="90">90 BPM</option>
-          <option value="100">100 BPM</option>
-          <option value="120">120 BPM</option>
-          <option value="140">140 BPM</option>
-        </select>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
+        <input id="aud-style" placeholder="Style (e.g. lo-fi, trap, ambient)" style="flex:1;min-width:140px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
+        <!-- Duration pill picker -->
+        <div class="gs-gen-picker" style="position:relative" id="aud-dur-picker-wrap">
+          <button class="gs-model-pill" onclick="toggleAudPicker(event,'dur')" id="aud-dur-pill">
+            <i class="fas fa-clock" style="font-size:11px;opacity:.7"></i>
+            <span id="aud-dur-label">30 sec</span>
+            <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+          </button>
+          <div class="gs-model-dropdown" id="aud-dur-dropdown" style="display:none;min-width:130px">
+            <div class="gs-model-row" onclick="setAudDur(15,'15 sec')"><span style="font-size:13px;font-weight:600">15 sec</span><div class="gs-radio" id="aud-dur-r-15"></div></div>
+            <div class="gs-model-row" onclick="setAudDur(30,'30 sec')"><span style="font-size:13px;font-weight:600">30 sec</span><div class="gs-radio gs-radio-active" id="aud-dur-r-30"></div></div>
+          </div>
+        </div>
+        <!-- BPM pill picker -->
+        <div class="gs-gen-picker" style="position:relative" id="aud-bpm-picker-wrap">
+          <button class="gs-model-pill" onclick="toggleAudPicker(event,'bpm')" id="aud-bpm-pill">
+            <i class="fas fa-gauge-high" style="font-size:11px;opacity:.7"></i>
+            <span id="aud-bpm-label">BPM (auto)</span>
+            <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+          </button>
+          <div class="gs-model-dropdown" id="aud-bpm-dropdown" style="display:none;min-width:140px">
+            <div class="gs-model-row" onclick="setAudBpm('','BPM (auto)')"><span style="font-size:13px;font-weight:600">Auto</span><div class="gs-radio gs-radio-active" id="aud-bpm-r-auto"></div></div>
+            <div class="gs-model-row" onclick="setAudBpm('80','80 BPM')"><span style="font-size:13px;font-weight:600">80 BPM</span><div class="gs-radio" id="aud-bpm-r-80"></div></div>
+            <div class="gs-model-row" onclick="setAudBpm('90','90 BPM')"><span style="font-size:13px;font-weight:600">90 BPM</span><div class="gs-radio" id="aud-bpm-r-90"></div></div>
+            <div class="gs-model-row" onclick="setAudBpm('100','100 BPM')"><span style="font-size:13px;font-weight:600">100 BPM</span><div class="gs-radio" id="aud-bpm-r-100"></div></div>
+            <div class="gs-model-row" onclick="setAudBpm('120','120 BPM')"><span style="font-size:13px;font-weight:600">120 BPM</span><div class="gs-radio" id="aud-bpm-r-120"></div></div>
+            <div class="gs-model-row" onclick="setAudBpm('140','140 BPM')"><span style="font-size:13px;font-weight:600">140 BPM</span><div class="gs-radio" id="aud-bpm-r-140"></div></div>
+          </div>
+        </div>
       </div>
       <button id="aud-gen-btn" onclick="generateAudioTrack()" style="width:100%;padding:12px;background:linear-gradient(135deg,#a855f7,#06b6d4);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:16px">
         <i class="fas fa-music"></i> Generate Music
@@ -2431,41 +2447,52 @@ em{color:var(--accent);font-style:italic}
           <div style="font-size:14px;font-weight:800">🎙️ Text-to-Speech <span style="font-size:11px;font-weight:400;color:#10b981;margin-left:6px">● ElevenLabs Live</span></div>
           <span id="tts-voice-count" style="font-size:11px;color:var(--text-s)">Loading voices…</span>
         </div>
-        <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
-          <select id="tts-voice" style="flex:1;min-width:180px;background:var(--bg-input,#1e1e30);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
-            <option value="pNInz6obpgDQGcFmaJgB">Adam - Dominant, Firm</option>
-            <option value="EXAVITQu4vr4xnSDxMaL">Sarah - Mature, Confident</option>
-            <option value="FGY2WhTYpPnrIDTdsKH5">Laura - Enthusiast, Quirky</option>
-            <option value="IKne3meq5aSn9XLyUdCD">Charlie - Deep, Energetic</option>
-            <option value="JBFqnCBsd6RMkjVDRZzb">George - Warm Storyteller</option>
-            <option value="nPczCjzI2devNBz1zQrb">Brian - Deep, Resonant</option>
-            <option value="cgSgspJ2msm6clMCkdW9">Jessica - Playful, Bright</option>
-            <option value="onwK4e9ZLuTAKqWW03F9">Daniel - Steady Broadcaster</option>
-            <option value="CwhRBWXzGAHq8TQ4Fs17">Roger - Laid-Back, Casual</option>
-            <option value="SAz9YHcvj6GT2YYXdXww">River - Relaxed, Neutral</option>
-            <option value="TX3LPaxmHKxFdv7VOQHJ">Liam - Energetic Creator</option>
-            <option value="bIHbv24MWmeRgasZH58o">Will - Relaxed Optimist</option>
-            <option value="cjVigY5qzO86Huf0OWal">Eric - Smooth, Trustworthy</option>
-            <option value="iP95p4xoKVk53GoZ742B">Chris - Charming, Casual</option>
-            <option value="pqHfZKP75CvOlQylNhV4">Bill - Wise, Mature</option>
-            <option value="XrExE9yKIg1WjnnlVkGX">Matilda - Professional</option>
-            <option value="pFZP5JQG7iQjIQuC4Bku">Lily - Velvety Actress</option>
-            <option value="Xb7hH8MSUJpSbSDYk0k2">Alice - Clear Educator</option>
-            <option value="hpp4J3VqNfWAUOO0d1Us">Bella - Professional, Warm</option>
-            <option value="N2lVS1w4EtoT3dr4eOWO">Callum - Husky Trickster</option>
-            <option value="SOYHLrjzK2X1ezoPC6cr">Harry - Fierce Warrior</option>
-            <option value="vfaqCOvlrKi4Zp7C2IAm">Demon Monster - Character</option>
-            <option value="flHkNRp1BlvT73UL6gyz">Jessica Anne - Animation</option>
-            <option value="gDdSvLgNtVRvcpgtMF07">Leif - Husky Male</option>
-            <option value="94D02IUHyb3D4r3i3feh">Rashid - Deep Narrative</option>
-            <option value="UFO0Yv86wqRxAt1DmXUu">Mordred - Evil Villain</option>
-          </select>
-          <select id="tts-model" style="background:var(--bg-input,#1e1e30);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
-            <option value="eleven_turbo_v2_5">Turbo v2.5 (fastest)</option>
-            <option value="eleven_turbo_v2">Turbo v2</option>
-            <option value="eleven_multilingual_v2">Multilingual v2 (best quality)</option>
-            <option value="eleven_flash_v2_5">Flash v2.5 (ultra fast)</option>
-          </select>
+        <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+          <!-- Voice pill picker -->
+          <div class="gs-gen-picker" style="position:relative;flex:1" id="tts-voice-picker-wrap">
+            <button class="gs-model-pill" onclick="toggleAudPicker(event,'voice')" id="tts-voice-pill" style="width:100%;justify-content:space-between">
+              <span style="display:flex;align-items:center;gap:6px"><i class="fas fa-user-circle" style="font-size:13px;color:var(--accent)"></i><span id="tts-voice-label">Adam - Dominant, Firm</span></span>
+              <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+            </button>
+            <div class="gs-model-dropdown" id="tts-voice-dropdown" style="display:none;min-width:260px;max-height:320px;overflow-y:auto">
+              <div class="gs-model-row" onclick="setTTSVoice('pNInz6obpgDQGcFmaJgB','Adam - Dominant, Firm')"><div><div style="font-weight:600;font-size:13px">Adam</div><div style="font-size:11px;color:var(--text-s)">Dominant, Firm · Male · American</div></div><div class="gs-radio gs-radio-active" id="tvr-adam"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('EXAVITQu4vr4xnSDxMaL','Sarah - Mature, Confident')"><div><div style="font-weight:600;font-size:13px">Sarah</div><div style="font-size:11px;color:var(--text-s)">Mature, Confident · Female · American</div></div><div class="gs-radio" id="tvr-sarah"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('JBFqnCBsd6RMkjVDRZzb','George - Warm Storyteller')"><div><div style="font-weight:600;font-size:13px">George</div><div style="font-size:11px;color:var(--text-s)">Warm Storyteller · Male · British</div></div><div class="gs-radio" id="tvr-george"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('nPczCjzI2devNBz1zQrb','Brian - Deep, Resonant')"><div><div style="font-weight:600;font-size:13px">Brian</div><div style="font-size:11px;color:var(--text-s)">Deep, Resonant · Male · American</div></div><div class="gs-radio" id="tvr-brian"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('IKne3meq5aSn9XLyUdCD','Charlie - Deep, Energetic')"><div><div style="font-weight:600;font-size:13px">Charlie</div><div style="font-size:11px;color:var(--text-s)">Deep, Energetic · Male · Australian</div></div><div class="gs-radio" id="tvr-charlie"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('cgSgspJ2msm6clMCkdW9','Jessica - Playful, Bright')"><div><div style="font-weight:600;font-size:13px">Jessica</div><div style="font-size:11px;color:var(--text-s)">Playful, Bright · Female · American</div></div><div class="gs-radio" id="tvr-jessica"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('onwK4e9ZLuTAKqWW03F9','Daniel - Steady Broadcaster')"><div><div style="font-weight:600;font-size:13px">Daniel</div><div style="font-size:11px;color:var(--text-s)">Steady Broadcaster · Male · British</div></div><div class="gs-radio" id="tvr-daniel"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('CwhRBWXzGAHq8TQ4Fs17','Roger - Laid-Back, Casual')"><div><div style="font-weight:600;font-size:13px">Roger</div><div style="font-size:11px;color:var(--text-s)">Laid-Back, Casual · Male · American</div></div><div class="gs-radio" id="tvr-roger"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('SAz9YHcvj6GT2YYXdXww','River - Relaxed, Neutral')"><div><div style="font-weight:600;font-size:13px">River</div><div style="font-size:11px;color:var(--text-s)">Relaxed, Neutral · Non-binary · American</div></div><div class="gs-radio" id="tvr-river"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('TX3LPaxmHKxFdv7VOQHJ','Liam - Energetic Creator')"><div><div style="font-weight:600;font-size:13px">Liam</div><div style="font-size:11px;color:var(--text-s)">Energetic Creator · Male · American</div></div><div class="gs-radio" id="tvr-liam"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('bIHbv24MWmeRgasZH58o','Will - Relaxed Optimist')"><div><div style="font-weight:600;font-size:13px">Will</div><div style="font-size:11px;color:var(--text-s)">Relaxed Optimist · Male · American</div></div><div class="gs-radio" id="tvr-will"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('cjVigY5qzO86Huf0OWal','Eric - Smooth, Trustworthy')"><div><div style="font-weight:600;font-size:13px">Eric</div><div style="font-size:11px;color:var(--text-s)">Smooth, Trustworthy · Male · American</div></div><div class="gs-radio" id="tvr-eric"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('iP95p4xoKVk53GoZ742B','Chris - Charming, Casual')"><div><div style="font-weight:600;font-size:13px">Chris</div><div style="font-size:11px;color:var(--text-s)">Charming, Casual · Male · American</div></div><div class="gs-radio" id="tvr-chris"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('pqHfZKP75CvOlQylNhV4','Bill - Wise, Mature')"><div><div style="font-weight:600;font-size:13px">Bill</div><div style="font-size:11px;color:var(--text-s)">Wise, Mature · Male · American</div></div><div class="gs-radio" id="tvr-bill"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('XrExE9yKIg1WjnnlVkGX','Matilda - Professional')"><div><div style="font-weight:600;font-size:13px">Matilda</div><div style="font-size:11px;color:var(--text-s)">Professional · Female · American</div></div><div class="gs-radio" id="tvr-matilda"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('pFZP5JQG7iQjIQuC4Bku','Lily - Velvety Actress')"><div><div style="font-weight:600;font-size:13px">Lily</div><div style="font-size:11px;color:var(--text-s)">Velvety Actress · Female · British</div></div><div class="gs-radio" id="tvr-lily"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('FGY2WhTYpPnrIDTdsKH5','Laura - Enthusiast, Quirky')"><div><div style="font-weight:600;font-size:13px">Laura</div><div style="font-size:11px;color:var(--text-s)">Enthusiast, Quirky · Female · American</div></div><div class="gs-radio" id="tvr-laura"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('N2lVS1w4EtoT3dr4eOWO','Callum - Husky Trickster')"><div><div style="font-weight:600;font-size:13px">Callum</div><div style="font-size:11px;color:var(--text-s)">Husky Trickster · Male · American</div></div><div class="gs-radio" id="tvr-callum"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('SOYHLrjzK2X1ezoPC6cr','Harry - Fierce Warrior')"><div><div style="font-weight:600;font-size:13px">Harry</div><div style="font-size:11px;color:var(--text-s)">Fierce Warrior · Male · American</div></div><div class="gs-radio" id="tvr-harry"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('vfaqCOvlrKi4Zp7C2IAm','Demon Monster')"><div><div style="font-weight:600;font-size:13px">Demon Monster</div><div style="font-size:11px;color:var(--text-s)">Character Animation · Deep</div></div><div class="gs-radio" id="tvr-demon"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('94D02IUHyb3D4r3i3feh','Rashid - Deep Narrative')"><div><div style="font-weight:600;font-size:13px">Rashid</div><div style="font-size:11px;color:var(--text-s)">Deep Narrative · Male · African</div></div><div class="gs-radio" id="tvr-rashid"></div></div>
+              <div class="gs-model-row" onclick="setTTSVoice('UFO0Yv86wqRxAt1DmXUu','Mordred - Evil Villain')"><div><div style="font-weight:600;font-size:13px">Mordred</div><div style="font-size:11px;color:var(--text-s)">Evil Villain · Male · German accent</div></div><div class="gs-radio" id="tvr-mordred"></div></div>
+            </div>
+          </div>
+          <!-- Model pill picker -->
+          <div class="gs-gen-picker" style="position:relative" id="tts-model-picker-wrap">
+            <button class="gs-model-pill" onclick="toggleAudPicker(event,'ttsmodel')" id="tts-model-pill">
+              <i class="fas fa-bolt" style="font-size:11px;color:#f59e0b"></i>
+              <span id="tts-model-label">Turbo v2.5</span>
+              <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+            </button>
+            <div class="gs-model-dropdown" id="tts-model-dropdown" style="display:none;min-width:220px">
+              <div class="gs-model-row" onclick="setTTSModel('eleven_turbo_v2_5','Turbo v2.5')"><div><div style="font-weight:600;font-size:13px">Turbo v2.5</div><div style="font-size:11px;color:var(--text-s)">Fastest · Best for real-time</div></div><div class="gs-radio gs-radio-active" id="tmr-t25"></div></div>
+              <div class="gs-model-row" onclick="setTTSModel('eleven_flash_v2_5','Flash v2.5')"><div><div style="font-weight:600;font-size:13px">Flash v2.5</div><div style="font-size:11px;color:var(--text-s)">Ultra fast · Low latency</div></div><div class="gs-radio" id="tmr-f25"></div></div>
+              <div class="gs-model-row" onclick="setTTSModel('eleven_turbo_v2','Turbo v2')"><div><div style="font-weight:600;font-size:13px">Turbo v2</div><div style="font-size:11px;color:var(--text-s)">Fast · Balanced quality</div></div><div class="gs-radio" id="tmr-t2"></div></div>
+              <div class="gs-model-row" onclick="setTTSModel('eleven_multilingual_v2','Multilingual v2')"><div><div style="font-weight:600;font-size:13px">Multilingual v2</div><div style="font-size:11px;color:var(--text-s)">Best quality · 29 languages</div></div><div class="gs-radio" id="tmr-ml2"></div></div>
+            </div>
+          </div>
         </div>
         <!-- Voice stability / similarity sliders -->
         <div style="display:flex;gap:14px;margin-bottom:10px;flex-wrap:wrap">
