@@ -1016,12 +1016,18 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .tab-btn.demo-tab.active{color:var(--warn);background:rgba(245,158,11,.1);border-color:var(--warn)}
 .tab-pane{display:none;flex:1;overflow-y:auto;padding:18px}
 .tab-pane.active{display:flex;flex-direction:column}
-.model-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:10px 14px;background:var(--bg-panel);border-radius:12px;border:1px solid var(--border);margin-bottom:10px}
-.m-chip{display:flex;align-items:center;gap:4px;padding:5px 11px;border-radius:20px;font-size:11px;font-weight:700;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;transition:.2s;white-space:nowrap}
-.m-chip:hover{border-color:var(--border-h);color:var(--text-p)}
-.m-chip.active{background:var(--grad);border-color:transparent;color:#fff}
-.m-chip .badge{font-size:9px;padding:1px 4px;border-radius:5px;background:rgba(255,255,255,.15)}
-.route-badge{font-size:11px;color:var(--text-m);display:flex;align-items:center;gap:4px;margin-left:auto}
+/* ── Genspark-style model picker ── */
+.model-bar{display:flex;align-items:center;gap:6px;padding:8px 14px 8px;background:transparent;margin-bottom:6px;position:relative}
+.gs-model-pill{display:inline-flex;align-items:center;gap:4px;padding:6px 12px;border-radius:999px;background:var(--bg-card);border:1px solid var(--border-h);color:var(--text-p);cursor:pointer;font-size:13px;font-weight:500;transition:all .18s;white-space:nowrap}
+.gs-model-pill:hover{border-color:var(--accent);background:var(--bg-panel)}
+.gs-model-dropdown{position:absolute;bottom:calc(100% + 6px);left:0;min-width:320px;max-width:360px;background:#1c1c2e;border:1px solid var(--border-h);border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,.55);padding:8px;z-index:9999;max-height:480px;overflow-y:auto}
+.gs-model-row{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:10px;cursor:pointer;transition:background .15s;gap:8px}
+.gs-model-row:hover{background:rgba(168,85,247,.12)}
+.gs-model-selected{background:rgba(168,85,247,.08)}
+.gs-radio{width:18px;height:18px;border-radius:50%;border:2px solid var(--border-h);flex-shrink:0;transition:.15s}
+.gs-radio-active{border-color:#3b82f6;background:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.25)}
+/* gen-tab picker wrapper */
+.gs-gen-picker{position:relative;display:inline-block;margin-bottom:10px}
 .r-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
 .timer-wrap{display:flex;flex-direction:column;align-items:center;gap:18px;max-width:460px;margin:0 auto;width:100%}
 .ring-outer{position:relative;width:220px;height:220px}
@@ -1078,8 +1084,8 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .t-dot{width:7px;height:7px;border-radius:50%;background:var(--text-m);animation:bounce 1.2s infinite}
 .t-dot:nth-child(2){animation-delay:.2s}.t-dot:nth-child(3){animation-delay:.4s}
 @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}
-.chat-input-row{display:flex;gap:8px;padding:10px 0 0;border-top:1px solid var(--border);flex-shrink:0}
-.chat-in{flex:1;background:var(--bg-panel);border:1px solid var(--border);border-radius:12px;padding:10px 14px;color:var(--text-p);font-size:14px;font-family:inherit;resize:none;outline:none;min-height:42px;max-height:130px}
+.chat-input-row{display:flex;gap:8px;padding:10px 0 0;flex-shrink:0}
+.chat-in{flex:1;background:transparent;border:none;border-radius:0;padding:0;color:var(--text-p);font-size:14px;font-family:inherit;resize:none;outline:none;min-height:42px;max-height:130px;width:100%}
 .chat-in:focus{border-color:var(--accent)}
 .btn-send{width:42px;height:42px;border-radius:11px;background:var(--grad);border:none;color:#fff;font-size:15px;cursor:pointer;transition:.2s;flex-shrink:0;display:flex;align-items:center;justify-content:center}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:14px}
@@ -1487,19 +1493,21 @@ em{color:var(--accent);font-style:italic}
 <!-- CHAT TAB -->
 <div class="tab-pane" id="tab-pane-chat" style="display:none;padding:14px">
   <div class="chat-wrap">
-    <div class="model-bar" id="model-bar"></div>
     <div class="chat-msgs" id="chat-msgs">
       <div class="msg ai">
         <div class="msg-av" style="background:var(--grad)">&#9889;</div>
         <div>
           <div class="msg-meta"><span class="m-tag">FlowState AI</span><span>Smart routing active</span></div>
-          <div class="msg-bub">Hey! I auto-route to the best model for each task &mdash; Claude for code, Gemini for speed, Grok for live data. Pick a model above or just type naturally.</div>
+          <div class="msg-bub">Hey! I auto-route to the best model for each task &mdash; Claude for code, Gemini for speed, Grok for live data. Click the model pill below to switch models.</div>
         </div>
       </div>
     </div>
-    <div class="chat-input-row">
-      <textarea class="chat-in" id="chat-in" placeholder="Ask anything&#8230; Cmd+Enter to send" rows="1"></textarea>
-      <button class="btn-send" id="btn-send"><i class="fas fa-paper-plane"></i></button>
+    <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:16px;padding:10px 14px">
+      <textarea class="chat-in" id="chat-in" placeholder="Ask anything&#8230; Cmd+Enter to send" rows="1" style="border:none;background:transparent;border-radius:0;padding:0;margin-bottom:8px"></textarea>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div class="model-bar" id="model-bar" style="padding:0;margin:0"></div>
+        <button class="btn-send" id="btn-send" style="flex-shrink:0"><i class="fas fa-paper-plane"></i></button>
+      </div>
     </div>
   </div>
 </div>
@@ -1595,27 +1603,14 @@ em{color:var(--accent);font-style:italic}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
     <div class="gen-panel">
       <div class="gen-title"><i class="fas fa-image" style="color:var(--accent)"></i> Image Generation</div>
-      <select class="fs-sel" id="img-model-sel" style="width:100%;margin-bottom:10px">
-        <option value="dalle3">DALL-E 3 (OpenAI) — Best text rendering</option>
-        <option value="imagen3">Imagen 3 (Google) — Photorealistic</option>
-        <option value="sd3">Stable Diffusion 3 — Open source</option>
-        <option value="flux_pro">FLUX Pro (BFL) — Ultra-fast</option>
-        <option value="ideogram2">Ideogram 2 — Design-forward</option>
-      </select>
+      <div class="gs-gen-picker" id="gs-img-picker"></div>
       <textarea class="gen-pmt" id="img-prompt" placeholder="Describe the image you want to generate&#8230;"></textarea>
       <button class="btn-gen" id="btn-gen-img"><i class="fas fa-wand-magic-sparkles"></i>&nbsp; Generate Image</button>
       <div class="gen-results" id="img-results"></div>
     </div>
     <div class="gen-panel">
       <div class="gen-title"><i class="fas fa-video" style="color:var(--pink)"></i> Video Generation</div>
-      <select class="fs-sel" id="vid-model-sel" style="width:100%;margin-bottom:10px">
-        <option value="veo2">Veo 2 (Google) — Cinematic</option>
-        <option value="kling16">Kling 1.6 — Smooth motion</option>
-        <option value="runway_gen4">Runway Gen-4 — Film quality</option>
-        <option value="sora">Sora (OpenAI) — World models</option>
-        <option value="pika20">Pika 2.0 — Creative effects</option>
-        <option value="hailuo">Hailuo (MiniMax) — Fast faces</option>
-      </select>
+      <div class="gs-gen-picker" id="gs-vid-picker"></div>
       <textarea class="gen-pmt" id="vid-prompt" placeholder="Describe the video you want to generate&#8230;"></textarea>
       <select class="fs-sel" id="vid-dur" style="margin-bottom:10px">
         <option value="5">5 seconds</option>
@@ -1721,7 +1716,7 @@ em{color:var(--accent);font-style:italic}
     <div style="text-align:center;max-width:700px;margin-bottom:52px">
       <img src="/static/fs-audio-logo.png" alt="Flowstate Audio" style="max-width:480px;width:90%;margin:0 auto 24px;display:block;border-radius:16px">
       <p style="font-size:18px;color:var(--text-s);margin:0 0 8px;line-height:1.6">Professional DAW. AI-Powered. Yours.</p>
-      <p style="font-size:14px;color:var(--text-m);margin:0 0 32px">A standalone desktop application inspired by Logic Pro &mdash; multi-track recording, VST plugins, AI music generation, and Clawbot integration. Download and run it locally.</p>
+      <p style="font-size:14px;color:var(--text-m);margin:0 0 32px">A standalone desktop DAW with multi-track recording, VST/AU plugins, a full piano roll, mixer console, AI music generation, and deep Clawbot integration. Download and run it locally.</p>
       <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
         <a href="https://github.com/mkbrown261/FS-AUDIO/releases/latest/download/FlowstateAudio-mac.dmg" class="aud-dl-btn aud-mac"><i class="fab fa-apple"></i> Download for macOS</a>
         <a href="https://github.com/mkbrown261/FS-AUDIO/releases/latest/download/FlowstateAudio-win.exe" class="aud-dl-btn aud-win"><i class="fab fa-windows"></i> Download for Windows</a>
@@ -1732,7 +1727,7 @@ em{color:var(--accent);font-style:italic}
 
     <!-- Feature grid -->
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;max-width:860px;width:100%;margin-bottom:52px">
-      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#10b981"><i class="fas fa-layer-group"></i></div><div class="aud-feat-title">Multi-Track Recording</div><div class="aud-feat-desc">Unlimited audio &amp; MIDI tracks, punch recording, take folders, comping — just like Logic Pro.</div></div>
+      <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#10b981"><i class="fas fa-layer-group"></i></div><div class="aud-feat-title">Multi-Track Recording</div><div class="aud-feat-desc">Unlimited audio &amp; MIDI tracks, punch recording, take folders, and comping with a professional-grade timeline editor.</div></div>
       <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#a855f7"><i class="fas fa-plug"></i></div><div class="aud-feat-title">VST / AU Plugins</div><div class="aud-feat-desc">Load your own VST3 and AU plugins. Built-in EQ, Compressor, Reverb, Delay, Limiter, Chorus, Distortion.</div></div>
       <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#06b6d4"><i class="fas fa-piano-keyboard"></i></div><div class="aud-feat-title">Piano Roll</div><div class="aud-feat-desc">Full MIDI editor with velocity editing, quantize, chord detection, and Hyper Draw automation.</div></div>
       <div class="aud-feat-card"><div class="aud-feat-icon" style="color:#ec4899"><i class="fas fa-sliders"></i></div><div class="aud-feat-title">Mixer Console</div><div class="aud-feat-desc">Per-channel inserts, sends, pan, VU meters, grouping, automation — a full mixing console.</div></div>

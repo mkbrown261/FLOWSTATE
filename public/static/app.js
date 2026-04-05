@@ -9,7 +9,8 @@ let state = {
   learn:   { cards:[], idx:0 },
   restore: { scenes:[], idx:0, meditationTimer:null, meditationSeconds:0 },
   team:    { members:[], role:'member', activeTab:'sprint' },
-  settings:{ focusMin:25, sound:null, isDemo:false }
+  settings:{ focusMin:25, sound:null, isDemo:false },
+  gen:     { imgModel:'dalle3', vidModel:'veo2', imgPickerOpen:false, vidPickerOpen:false }
 };
 
 // ── Ambient Sound Engine ────────────────────────────────────────────────────
@@ -355,6 +356,7 @@ function switchTab(id) {
   if (id==='learn')    loadLearnCards();
   if (id==='restore')  loadRestore();
   if (id==='clawbot')  initClawbot();
+  if (id==='generate') { setTimeout(()=>{ buildGenPicker('img'); buildGenPicker('vid'); }, 50); }
 }
 
 function startClock() {
@@ -635,33 +637,195 @@ function clearMusicSettings() {
 }
 
 // ── Model Bar ──────────────────────────────────────────────────────────────
+// ── Model Registry (mirrors Genspark's current model list) ─────────────────
 const MODELS = [
-  {id:'auto',label:'Auto Route',badge:'smart',color:'var(--grad)'},
-  {id:'gpt-4o',label:'GPT-4o',badge:'OpenAI'},
-  {id:'claude-3-7-sonnet',label:'Claude',badge:'Anthropic'},
-  {id:'gemini-2-flash',label:'Gemini',badge:'Google'},
-  {id:'grok-3',label:'Grok',badge:'xAI'},
-  {id:'mistral-large',label:'Mistral',badge:'Mistral'},
-  {id:'deepseek-r1',label:'DeepSeek',badge:'DeepSeek'},
+  // ── Smart routing ─────────────────────────────────────────────────────────
+  { id:'auto',              label:'Mixture-of-Agents',  sub:'Auto-mixes best AI models for your task',  icon:'🔀', iconBg:'#1a1a2e', group:'smart' },
+  // ── OpenAI ────────────────────────────────────────────────────────────────
+  { id:'gpt-5-4',           label:'GPT-5.4',            sub:'OpenAI flagship',                          icon:'openai', group:'openai' },
+  { id:'gpt-5-4-mini',      label:'GPT-5.4 Mini',       sub:'Fast & efficient',                         icon:'openai', group:'openai' },
+  { id:'gpt-5-4-nano',      label:'GPT-5.4 Nano',       sub:'Ultra-fast & lightweight',                 icon:'openai', group:'openai' },
+  { id:'gpt-5-2-pro',       label:'GPT-5.2 Pro',        sub:'Advanced reasoning',                       icon:'openai', group:'openai' },
+  { id:'gpt-5-4-pro',       label:'GPT-5.4 Pro',        sub:'Most capable GPT',                         icon:'openai', group:'openai' },
+  { id:'o3-pro',            label:'o3-pro',             sub:'Deep reasoning chain',                     icon:'openai', group:'openai' },
+  // ── Anthropic ─────────────────────────────────────────────────────────────
+  { id:'claude-sonnet-4-6', label:'Claude Sonnet 4.6',  sub:'Balanced intelligence',                    icon:'claude', group:'anthropic' },
+  { id:'claude-opus-4-6',   label:'Claude Opus 4.6',    sub:'Most intelligent Claude',                  icon:'claude', group:'anthropic' },
+  { id:'claude-haiku-4-5',  label:'Claude Haiku 4.5',   sub:'Fastest Claude model',                     icon:'claude', group:'anthropic' },
+  // ── Google ────────────────────────────────────────────────────────────────
+  { id:'gemini-2-5-pro',    label:'Gemini 2.5 Pro',     sub:'Google\'s most capable',                   icon:'google', group:'google' },
+  { id:'gemini-2-5-flash',  label:'Gemini 2.5 Flash',   sub:'Speed + intelligence balance',             icon:'google', group:'google' },
+  { id:'gemini-2-0-flash',  label:'Gemini 2.0 Flash',   sub:'Multimodal efficiency',                    icon:'google', group:'google' },
+  // ── xAI ───────────────────────────────────────────────────────────────────
+  { id:'grok-3',            label:'Grok 3',             sub:'Real-time web access',                     icon:'xai', group:'xai' },
+  { id:'grok-3-mini',       label:'Grok 3 Mini',        sub:'Fast reasoning, live data',                icon:'xai', group:'xai' },
+  // ── Meta ──────────────────────────────────────────────────────────────────
+  { id:'llama-4-maverick',  label:'Llama 4 Maverick',   sub:'Meta open source flagship',                icon:'meta', group:'meta' },
+  { id:'llama-4-scout',     label:'Llama 4 Scout',      sub:'Efficient & fast',                         icon:'meta', group:'meta' },
+  // ── Mistral ───────────────────────────────────────────────────────────────
+  { id:'mistral-large',     label:'Mistral Large',      sub:'European frontier model',                  icon:'mistral', group:'mistral' },
+  { id:'codestral',         label:'Codestral',          sub:'Best-in-class for code',                   icon:'mistral', group:'mistral' },
+  // ── DeepSeek ──────────────────────────────────────────────────────────────
+  { id:'deepseek-r2',       label:'DeepSeek R2',        sub:'Advanced reasoning & math',                icon:'deepseek', group:'deepseek' },
+  { id:'deepseek-v3',       label:'DeepSeek V3',        sub:'Cost-efficient frontier',                  icon:'deepseek', group:'deepseek' },
 ];
+
+// Provider icon SVGs / emoji — rendered inline in the picker
+function modelIconHtml(icon, size=18) {
+  const s = `width:${size}px;height:${size}px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:${size-4}px;flex-shrink:0;`;
+  if (icon === 'openai')   return `<span style="${s}background:#000;color:#fff;font-weight:900;font-size:${size-6}px">⊕</span>`;
+  if (icon === 'claude')   return `<span style="${s}background:#c96442;color:#fff">✳</span>`;
+  if (icon === 'google')   return `<span style="${s}background:#fff;color:#4285F4;font-weight:900;font-size:${size-6}px">G</span>`;
+  if (icon === 'xai')      return `<span style="${s}background:#000;color:#fff;font-weight:900;font-size:${size-7}px">𝕏</span>`;
+  if (icon === 'meta')     return `<span style="${s}background:linear-gradient(135deg,#0082fb,#00c6ff);color:#fff;font-size:${size-7}px;font-weight:900">M</span>`;
+  if (icon === 'mistral')  return `<span style="${s}background:#f86f00;color:#fff;font-weight:900;font-size:${size-7}px">▲</span>`;
+  if (icon === 'deepseek') return `<span style="${s}background:linear-gradient(135deg,#4f8ef7,#0058f7);color:#fff;font-size:${size-6}px;font-weight:900">D</span>`;
+  // emoji / smart
+  return `<span style="${s}background:#1a1a2e;color:#fff">${icon}</span>`;
+}
+
+// ── Genspark-style model pill + floating dropdown ──────────────────────────
+let modelPickerOpen = false;
 
 function buildModelBar() {
   const bar = document.getElementById('model-bar');
   if (!bar) return;
-  bar.innerHTML = MODELS.map(m => `<button class="m-chip ${state.chat.model===m.id?'active':''}" onclick="selectModel('${m.id}')"><span>${m.label}</span><span class="badge">${m.badge}</span></button>`).join('') +
-    `<div class="route-badge"><div class="r-dot"></div> AI routing active</div>`;
+  const cur = MODELS.find(m => m.id === state.chat.model) || MODELS[0];
+  bar.innerHTML = `
+    <button class="gs-model-pill" id="gs-model-pill" onclick="toggleModelPicker(event)">
+      ${modelIconHtml(cur.icon, 16)}
+      <span style="margin:0 5px 0 6px;font-weight:600;font-size:13px">${cur.label}</span>
+      <i class="fas fa-chevron-${modelPickerOpen?'up':'down'}" style="font-size:9px;opacity:.7"></i>
+    </button>
+    <div id="gs-model-dropdown" class="gs-model-dropdown" style="display:${modelPickerOpen?'block':'none'}">
+      ${MODELS.map(m => `
+        <div class="gs-model-row ${m.id===state.chat.model?'gs-model-selected':''}" onclick="selectModel('${m.id}')">
+          <div style="display:flex;align-items:center;gap:10px;flex:1">
+            ${modelIconHtml(m.icon, 20)}
+            <div>
+              <div style="font-weight:600;font-size:13px;color:var(--text-p)">${m.label}</div>
+              ${m.sub?`<div style="font-size:11px;color:var(--text-s);margin-top:1px">${m.sub}</div>`:''}
+            </div>
+          </div>
+          <div class="gs-radio ${m.id===state.chat.model?'gs-radio-active':''}"></div>
+        </div>
+      `).join('')}
+    </div>`;
+}
+
+function toggleModelPicker(e) {
+  e.stopPropagation();
+  modelPickerOpen = !modelPickerOpen;
+  buildModelBar();
+  if (modelPickerOpen) {
+    // close on outside click
+    setTimeout(() => document.addEventListener('click', closeModelPicker, { once:true }), 10);
+  }
+}
+
+function closeModelPicker() {
+  modelPickerOpen = false;
+  buildModelBar();
 }
 
 function selectModel(id) {
   state.chat.model = id;
+  modelPickerOpen = false;
   buildModelBar();
+}
+
+// ── Generate-tab model pickers (Genspark-style) ────────────────────────────
+const IMG_MODELS = [
+  { id:'dalle3',    label:'DALL-E 3',         sub:'OpenAI — Best text rendering',      icon:'openai'  },
+  { id:'dalle4',    label:'DALL-E 4',         sub:'OpenAI — Latest generation',        icon:'openai'  },
+  { id:'gpt-image', label:'GPT-Image-1',      sub:'OpenAI — Native image editing',     icon:'openai'  },
+  { id:'imagen3',   label:'Imagen 3',         sub:'Google — Photorealistic quality',   icon:'google'  },
+  { id:'imagen4',   label:'Imagen 4',         sub:'Google — Latest model',             icon:'google'  },
+  { id:'flux_pro',  label:'FLUX Pro 1.1',     sub:'Black Forest Labs — Ultra-detail',  icon:'🖼️'      },
+  { id:'flux_dev',  label:'FLUX Dev',         sub:'Black Forest Labs — Fast & open',   icon:'🖼️'      },
+  { id:'ideogram2', label:'Ideogram 2.0',     sub:'Design-forward, great typography',  icon:'💡'      },
+  { id:'sd3',       label:'Stable Diffusion 3','sub':'Stability AI — Open source',     icon:'🎨'      },
+  { id:'recraft',   label:'Recraft V3',       sub:'Vector & brand design specialist',  icon:'✏️'      },
+];
+
+const VID_MODELS = [
+  { id:'veo2',         label:'Veo 2',          sub:'Google — Cinematic quality',        icon:'google'  },
+  { id:'veo3',         label:'Veo 3',          sub:'Google — Latest, audio-native',     icon:'google'  },
+  { id:'sora',         label:'Sora',           sub:'OpenAI — World models',             icon:'openai'  },
+  { id:'kling16',      label:'Kling 1.6',      sub:'Kuaishou — Smooth motion',          icon:'🎬'      },
+  { id:'kling21',      label:'Kling 2.1',      sub:'Kuaishou — Latest version',         icon:'🎬'      },
+  { id:'runway_gen4',  label:'Runway Gen-4',   sub:'Runway ML — Film quality',          icon:'🎞️'      },
+  { id:'runway_gen4t', label:'Runway Gen-4 Turbo','sub':'Runway ML — Fast generation', icon:'🎞️'      },
+  { id:'pika20',       label:'Pika 2.0',       sub:'Pika Labs — Creative effects',      icon:'⚡'      },
+  { id:'hailuo',       label:'Hailuo 2',       sub:'MiniMax — Fast face generation',    icon:'🌊'      },
+  { id:'luma',         label:'Luma Dream Machine','sub':'Luma AI — Photorealistic',     icon:'🌙'      },
+];
+
+function buildGenPicker(type) {
+  const isImg = type === 'img';
+  const models = isImg ? IMG_MODELS : VID_MODELS;
+  const curId  = isImg ? state.gen.imgModel : state.gen.vidModel;
+  const cur    = models.find(m => m.id === curId) || models[0];
+  const openKey = isImg ? 'imgPickerOpen' : 'vidPickerOpen';
+  const othKey  = isImg ? 'vidPickerOpen' : 'imgPickerOpen';
+  const elId   = `gs-${type}-picker`;
+  const el     = document.getElementById(elId);
+  if (!el) return;
+  el.innerHTML = `
+    <button class="gs-model-pill" onclick="toggleGenPicker(event,'${type}')">
+      ${modelIconHtml(cur.icon, 16)}
+      <span style="margin:0 5px 0 6px;font-weight:600;font-size:13px">${cur.label}</span>
+      <i class="fas fa-chevron-${state.gen[openKey]?'up':'down'}" style="font-size:9px;opacity:.7"></i>
+    </button>
+    <div class="gs-model-dropdown" style="display:${state.gen[openKey]?'block':'none'};position:absolute;top:36px;left:0;z-index:999">
+      ${models.map(m => `
+        <div class="gs-model-row ${m.id===curId?'gs-model-selected':''}" onclick="selectGenModel('${type}','${m.id}')">
+          <div style="display:flex;align-items:center;gap:10px;flex:1">
+            ${modelIconHtml(m.icon, 20)}
+            <div>
+              <div style="font-weight:600;font-size:13px;color:var(--text-p)">${m.label}</div>
+              ${m.sub?`<div style="font-size:11px;color:var(--text-s);margin-top:1px">${m.sub}</div>`:''}
+            </div>
+          </div>
+          <div class="gs-radio ${m.id===curId?'gs-radio-active':''}"></div>
+        </div>
+      `).join('')}
+    </div>`;
+}
+
+function toggleGenPicker(e, type) {
+  e.stopPropagation();
+  const openKey = type==='img' ? 'imgPickerOpen' : 'vidPickerOpen';
+  const othKey  = type==='img' ? 'vidPickerOpen' : 'imgPickerOpen';
+  state.gen[othKey] = false;
+  state.gen[openKey] = !state.gen[openKey];
+  buildGenPicker('img'); buildGenPicker('vid');
+  if (state.gen[openKey]) setTimeout(() => document.addEventListener('click', closeGenPickers, {once:true}), 10);
+}
+
+function closeGenPickers() {
+  state.gen.imgPickerOpen = false; state.gen.vidPickerOpen = false;
+  buildGenPicker('img'); buildGenPicker('vid');
+}
+
+function selectGenModel(type, id) {
+  if (type==='img') state.gen.imgModel = id;
+  else state.gen.vidModel = id;
+  state.gen.imgPickerOpen = false; state.gen.vidPickerOpen = false;
+  buildGenPicker('img'); buildGenPicker('vid');
 }
 
 // ── Chat ───────────────────────────────────────────────────────────────────
 const MODEL_NAMES = {
-  'auto':'FlowState AI','gpt-4o':'GPT-4o','claude-3-7-sonnet':'Claude 3.7',
-  'gemini-2-flash':'Gemini Flash','grok-3':'Grok 3','mistral-large':'Mistral Large',
-  'deepseek-r1':'DeepSeek R1','llama-3-3':'Llama 3.3'
+  'auto':'FlowState AI',
+  'gpt-5-4':'GPT-5.4','gpt-5-4-mini':'GPT-5.4 Mini','gpt-5-4-nano':'GPT-5.4 Nano',
+  'gpt-5-2-pro':'GPT-5.2 Pro','gpt-5-4-pro':'GPT-5.4 Pro','o3-pro':'o3-pro',
+  'claude-sonnet-4-6':'Claude Sonnet 4.6','claude-opus-4-6':'Claude Opus 4.6','claude-haiku-4-5':'Claude Haiku 4.5',
+  'gemini-2-5-pro':'Gemini 2.5 Pro','gemini-2-5-flash':'Gemini 2.5 Flash','gemini-2-0-flash':'Gemini 2.0 Flash',
+  'grok-3':'Grok 3','grok-3-mini':'Grok 3 Mini',
+  'llama-4-maverick':'Llama 4 Maverick','llama-4-scout':'Llama 4 Scout',
+  'mistral-large':'Mistral Large','codestral':'Codestral',
+  'deepseek-r2':'DeepSeek R2','deepseek-v3':'DeepSeek V3',
 };
 
 async function sendMessage() {
@@ -1631,7 +1795,7 @@ function restoreNav(dir) {
 // ── Generate ───────────────────────────────────────────────────────────────
 async function generateImage() {
   const prompt = document.getElementById('img-prompt').value.trim();
-  const model  = document.getElementById('img-model-sel').value;
+  const model  = state.gen?.imgModel || 'dalle3';
   if (!prompt) { notify('Enter a prompt','error'); return; }
   const btn = document.getElementById('btn-gen-img'); btn.disabled=true; btn.textContent='Generating...';
   try {
@@ -1647,7 +1811,7 @@ async function generateImage() {
 
 async function generateVideo() {
   const prompt = document.getElementById('vid-prompt').value.trim();
-  const model  = document.getElementById('vid-model-sel').value;
+  const model  = state.gen?.vidModel || 'veo2';
   const dur    = document.getElementById('vid-dur').value;
   if (!prompt) { notify('Enter a prompt','error'); return; }
   const btn = document.getElementById('btn-gen-vid'); btn.disabled=true; btn.textContent='Queuing...';
@@ -1662,7 +1826,7 @@ async function generateVideo() {
 async function generateImageToVideo() {
   const fileInput = document.getElementById('img2vid-upload');
   const prompt = document.getElementById('img2vid-prompt').value.trim();
-  const model  = document.getElementById('vid-model-sel').value;
+  const model  = state.gen?.vidModel || 'veo2';
   if (!fileInput?.files?.length && !prompt) { notify('Upload an image or enter a prompt','error'); return; }
   const btn = document.getElementById('btn-img2vid'); btn.disabled=true; btn.textContent='Processing...';
   const resultEl = document.getElementById('img2vid-result');
