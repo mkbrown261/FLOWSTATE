@@ -309,7 +309,26 @@ function showMainApp(isDemo=false) {
   setupTabListeners();
   setupAmbientChips();
   maybeShowTip();
+  checkBillingReturn();
   switchTab('focus');
+}
+
+function checkBillingReturn() {
+  const params = new URLSearchParams(window.location.search);
+  const billing = params.get('billing');
+  if (billing === 'success') {
+    const tier = params.get('tier') || 'pro';
+    const cycle = params.get('cycle') || 'monthly';
+    const label = tier === 'clawflow' ? 'ClawFlow' : tier.charAt(0).toUpperCase() + tier.slice(1);
+    setTimeout(() => {
+      notify(`🎉 Welcome to FlowState ${label}! Your subscription is active.`, 'success');
+    }, 800);
+    // Clean URL without reloading
+    window.history.replaceState({}, '', window.location.pathname);
+  } else if (billing === 'cancelled') {
+    setTimeout(() => notify('Checkout cancelled — you can upgrade anytime from the Pro button.', 'info'), 500);
+    window.history.replaceState({}, '', window.location.pathname);
+  }
 }
 
 function setupTabListeners() {
@@ -2006,22 +2025,155 @@ function openModal(html, wide=false) {
 
 function closeModal() { document.getElementById('modal-ov')?.remove(); }
 
+// ── Pricing modal state ───────────────────────────────────────
+let _pricingCycle = 'monthly'; // 'monthly' | 'annual'
+
 function openPricingModal() {
+  _pricingCycle = 'monthly';
+  _renderPricingModal();
+}
+
+function _renderPricingModal() {
+  const annual = _pricingCycle === 'annual';
   const tiers = [
-    { name:'Free', price:'$0', color:'var(--text-s)', feats:['7 AI models','25-min Pomodoro','Basic Kanban','3 team members'] },
-    { name:'Pro', price:'$12/mo', color:'var(--accent)', feats:['All models + DALL-E','Unlimited sessions','Calendar sync','Advanced metrics'], hi:true },
-    { name:'Team', price:'$49/mo', color:'var(--blue)', feats:['Unlimited members','Sprint intelligence','Slack/Notion sync','Role-gated controls'] },
-    { name:'Enterprise', price:'Custom', color:'var(--warn)', feats:['SSO/SAML','Audit logs','Custom models','SLA support'] },
+    {
+      key: 'free',
+      name: 'Free',
+      monthlyPrice: '$0',
+      annualPrice: '$0',
+      badge: '',
+      color: 'var(--text-s)',
+      feats: [
+        '7 AI models (5k tokens/day)',
+        '25-min Pomodoro timer',
+        'Basic Kanban board',
+        'Focus metrics',
+        '3 team members',
+      ],
+    },
+    {
+      key: 'pro',
+      name: 'Pro',
+      monthlyPrice: '$18<span style="font-size:12px;font-weight:400">/mo</span>',
+      annualPrice: '$14<span style="font-size:12px;font-weight:400">/mo</span>',
+      annualNote: 'billed $168/yr',
+      monthlyNote: 'billed monthly',
+      badge: 'MOST POPULAR',
+      color: 'var(--accent)',
+      hi: true,
+      feats: [
+        'All AI models (GPT-5, Claude, Gemini, Grok)',
+        '100k tokens/day',
+        'Google Calendar sync',
+        'Notion + Slack integration',
+        'Advanced metrics & insights',
+        'Image & video generation',
+      ],
+    },
+    {
+      key: 'team',
+      name: 'Team',
+      monthlyPrice: '$15<span style="font-size:12px;font-weight:400">/seat/mo</span>',
+      annualPrice: '$12<span style="font-size:12px;font-weight:400">/seat/mo</span>',
+      annualNote: 'billed $144/seat/yr',
+      monthlyNote: 'min 2 seats',
+      badge: '',
+      color: 'var(--blue)',
+      feats: [
+        'Everything in Pro',
+        'Sprint Health & velocity',
+        'Burnout Monitor',
+        'Team Pulse & standups',
+        'Deadline alerts',
+        'Role-gated controls',
+      ],
+    },
+    {
+      key: 'enterprise',
+      name: 'Enterprise',
+      monthlyPrice: 'Custom',
+      annualPrice: 'Custom',
+      badge: '',
+      color: 'var(--warn)',
+      feats: [
+        'SSO / SAML',
+        'Audit logs',
+        'Custom AI models',
+        'SLA + dedicated support',
+        'Volume seat pricing',
+      ],
+    },
   ];
-  openModal(`<h2>⚡ FlowState Pro</h2><p style="color:var(--text-s);font-size:13px;margin-top:4px">Upgrade to unlock the full workspace</p>
-    <div class="tier-cards">${tiers.map(t=>`<div class="t-card ${t.hi?'hi':''}" onclick="startCheckout('${t.name}')"><h3 style="color:${t.color}">${t.name}</h3><div class="price">${t.price}</div><ul class="t-feats">${t.feats.map(f=>`<li>${f}</li>`).join('')}</ul></div>`).join('')}</div>`);
+
+  const toggleHtml = `
+    <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin:14px 0 18px">
+      <span style="font-size:13px;color:${!annual?'var(--text)':'var(--text-s)'}">Monthly</span>
+      <div onclick="togglePricingCycle()" style="cursor:pointer;width:44px;height:24px;border-radius:12px;background:${annual?'var(--accent)':'rgba(255,255,255,.15)'};position:relative;transition:background .2s">
+        <div style="position:absolute;top:3px;left:${annual?'23px':'3px'};width:18px;height:18px;border-radius:50%;background:#fff;transition:left .2s"></div>
+      </div>
+      <span style="font-size:13px;color:${annual?'var(--text)':'var(--text-s)'}">Annual <span style="background:rgba(16,185,129,.2);color:#10b981;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;margin-left:4px">SAVE 22%</span></span>
+    </div>
+  `;
+
+  const cards = tiers.map(t => {
+    const price = annual ? t.annualPrice : t.monthlyPrice;
+    const note  = annual ? (t.annualNote||'') : (t.monthlyNote||'');
+    const badgeHtml = t.badge ? `<div style="background:var(--accent);color:#fff;font-size:9px;font-weight:800;letter-spacing:1px;border-radius:4px;padding:2px 7px;margin-bottom:6px;display:inline-block">${t.badge}</div>` : '<div style="height:20px"></div>';
+    const ctaLabel = t.key === 'free' ? 'Current Plan' : t.key === 'enterprise' ? 'Contact Sales' : `Get ${t.name}`;
+    const ctaStyle = t.hi
+      ? `background:var(--accent);color:#fff;border:none;`
+      : `background:rgba(255,255,255,.08);color:var(--text);border:1px solid var(--border);`;
+    return `
+      <div class="t-card ${t.hi?'hi':''}" style="display:flex;flex-direction:column;min-width:140px">
+        ${badgeHtml}
+        <h3 style="color:${t.color};margin:0 0 4px">${t.name}</h3>
+        <div class="price" style="font-size:22px;font-weight:800;margin-bottom:2px">${price}</div>
+        <div style="font-size:11px;color:var(--text-s);margin-bottom:10px;min-height:14px">${note}</div>
+        <ul class="t-feats" style="flex:1;margin-bottom:12px">${t.feats.map(f=>`<li>${f}</li>`).join('')}</ul>
+        <button onclick="startCheckout('${t.key}')" style="width:100%;padding:8px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;${ctaStyle}">${ctaLabel}</button>
+      </div>`;
+  }).join('');
+
+  openModal(`
+    <h2 style="text-align:center">⚡ FlowState Plans</h2>
+    <p style="color:var(--text-s);font-size:13px;margin-top:4px;text-align:center">Replace your entire productivity stack — one workspace.</p>
+    ${toggleHtml}
+    <div class="tier-cards" style="grid-template-columns:repeat(auto-fit,minmax(155px,1fr))">${cards}</div>
+    <p style="color:var(--text-s);font-size:11px;text-align:center;margin-top:12px">All plans include a 14-day money-back guarantee. Cancel anytime.</p>
+  `);
+}
+
+function togglePricingCycle() {
+  _pricingCycle = _pricingCycle === 'monthly' ? 'annual' : 'monthly';
+  _renderPricingModal();
 }
 
 function startCheckout(tier) {
+  if (tier === 'free') return;
+  if (tier === 'enterprise') {
+    openModal(`<div style="text-align:center;padding:20px 0">
+      <div style="font-size:40px;margin-bottom:12px">🏢</div>
+      <h2>Enterprise Plan</h2>
+      <p style="color:var(--text-s);font-size:14px;margin:10px 0 20px">Custom pricing for your team size, SSO, audit logs, and dedicated SLA support.</p>
+      <a href="mailto:hello@flowstate.app?subject=Enterprise%20Inquiry" style="display:inline-block;background:var(--accent);color:#fff;padding:10px 24px;border-radius:8px;font-weight:700;text-decoration:none">📧 Contact Sales</a>
+    </div>`);
+    return;
+  }
   if (!FS_USER && !state.settings.isDemo) { notify('Sign in to upgrade','info'); return; }
-  fetch('/api/billing/checkout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tier})}).then(r=>r.json()).then(d=>{
-    if(d.checkoutUrl) window.open(d.checkoutUrl,'_blank'); else notify(d.message||'Opening checkout...','info');
-  }).catch(()=>notify('Billing error','error'));
+  notify('Opening secure checkout…', 'info');
+  fetch('/api/billing/checkout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tier, billing_cycle: _pricingCycle }),
+  }).then(r => r.json()).then(d => {
+    if (d.checkoutUrl) {
+      window.open(d.checkoutUrl, '_blank');
+    } else if (d.enterpriseContact) {
+      notify(d.message, 'info');
+    } else {
+      notify(d.message || 'Opening checkout…', 'info');
+    }
+  }).catch(() => notify('Billing error — please try again', 'error'));
 }
 
 function openCredsModal() {
@@ -2246,7 +2398,8 @@ async function loadClawbotPromo() {
         <span class="clawbot-discount">${d.discount}</span>
       </div>
       <ul class="clawbot-features">${d.features.map(f => `<li>${escHtml(f)}</li>`).join('')}</ul>
-      <button class="clawbot-cta" onclick="startClawFlowCheckout()">${escHtml(d.cta)}</button>
+      <button class="clawbot-cta" onclick="startClawFlowCheckout('monthly')">${escHtml(d.cta)}</button>
+      <div style="margin-top:10px;font-size:12px;color:var(--text-s)">Or save 12% — <span onclick="startClawFlowCheckout('annual')" style="color:var(--accent);cursor:pointer;text-decoration:underline">$35/month billed annually →</span></div>
     `;
   } catch(e) {
     const el = document.getElementById('clawbot-promo');
@@ -2254,13 +2407,18 @@ async function loadClawbotPromo() {
   }
 }
 
-function startClawFlowCheckout() {
+function startClawFlowCheckout(cycle) {
   if (!FS_USER && !state.settings.isDemo) { notify('Sign in to subscribe to ClawFlow','info'); return; }
-  fetch('/api/billing/checkout', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tier:'clawflow' }) })
-    .then(r=>r.json()).then(d => {
-      if (d.checkoutUrl) window.open(d.checkoutUrl,'_blank');
-      else notify(d.message || 'Add CLAWBOT_API_KEY to Cloudflare secrets to activate','info');
-    }).catch(() => notify('Add CLAWBOT_API_KEY to Cloudflare secrets to activate ClawFlow','info'));
+  const billing_cycle = cycle || 'monthly'; // first month $20 coupon auto-applied for monthly
+  notify('Opening ClawFlow checkout…', 'info');
+  fetch('/api/billing/checkout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tier: 'clawflow', billing_cycle }),
+  }).then(r=>r.json()).then(d => {
+    if (d.checkoutUrl) window.open(d.checkoutUrl,'_blank');
+    else notify(d.message || 'Add CLAWBOT_API_KEY to Cloudflare secrets to activate','info');
+  }).catch(() => notify('Add CLAWBOT_API_KEY to Cloudflare secrets to activate ClawFlow','info'));
 }
 
 async function sendClawbotMessage() {

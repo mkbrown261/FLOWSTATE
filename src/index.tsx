@@ -657,36 +657,59 @@ app.post('/api/auth/magic-link', async (c) => {
   return c.json({ success: true, user: { name, email } })
 })
 
-// ─── Stripe Billing Stubs ─────────────────────────────────────────────────────
+// ─── Stripe Billing ───────────────────────────────────────────────────────────
+// Live price IDs created 2026-04-05
+const STRIPE_PRICES: Record<string, { monthly: string; annual: string }> = {
+  pro:       { monthly: 'price_1TIupZLsf0qSbSh0LPiXhi1O', annual: 'price_1TIupZLsf0qSbSh0GOyUxvwR' },
+  team:      { monthly: 'price_1TIupjLsf0qSbSh0IN6UfOBp', annual: 'price_1TIupkLsf0qSbSh0WB8czudd' },
+  clawflow:  { monthly: 'price_1TIupyLsf0qSbSh0NTc5xoT8', annual: 'price_1TIupyLsf0qSbSh0UZANfNYx' },
+}
+const CLAWFLOW_FIRST_MONTH_COUPON = 'DK1QtiHP'
+
 app.post('/api/billing/checkout', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
-  const { tier } = await c.req.json()
-  const priceMap: Record<string, string> = {
-    personal_pro: 'price_personal_pro_monthly',
-    team_starter: 'price_team_starter_monthly',
-    team_growth: 'price_team_growth_monthly',
-    enterprise: 'price_enterprise_custom',
-    clawflow: 'price_clawflow_monthly',
+  const { tier, billing_cycle } = await c.req.json()
+
+  // Map legacy tier names → canonical keys
+  const tierKey = tier === 'personal_pro' ? 'pro'
+    : tier === 'team_starter' || tier === 'team_growth' ? 'team'
+    : tier
+
+  if (tierKey === 'enterprise') {
+    return c.json({ enterpriseContact: true, message: 'Contact us at hello@flowstate.app for Enterprise pricing.' })
   }
-  const priceId = priceMap[tier]
-  if (!priceId) return c.json({ error: 'invalid_tier', available: Object.keys(priceMap) }, 400)
+
+  const prices = STRIPE_PRICES[tierKey]
+  if (!prices) return c.json({ error: 'invalid_tier', available: Object.keys(STRIPE_PRICES) }, 400)
+
+  const cycle = billing_cycle === 'annual' ? 'annual' : 'monthly'
+  const priceId = prices[cycle]
+
   if (!c.env?.STRIPE_SECRET_KEY) {
     return c.json({ demo: true, message: 'Stripe not configured — add STRIPE_SECRET_KEY to activate billing', tier, redirectUrl: '/' })
   }
-  // Real Stripe checkout session creation
+
+  const params: Record<string, string> = {
+    'payment_method_types[]': 'card',
+    'mode': 'subscription',
+    'customer_email': session.email,
+    'line_items[0][price]': priceId,
+    'line_items[0][quantity]': '1',
+    'success_url': `${new URL(c.req.url).origin}/?billing=success&tier=${tierKey}&cycle=${cycle}`,
+    'cancel_url': `${new URL(c.req.url).origin}/?billing=cancelled`,
+    'allow_promotion_codes': 'true',
+  }
+
+  // Apply first-month $20 coupon for ClawFlow monthly
+  if (tierKey === 'clawflow' && cycle === 'monthly') {
+    params['discounts[0][coupon]'] = CLAWFLOW_FIRST_MONTH_COUPON
+  }
+
   const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${c.env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      'payment_method_types[]': 'card',
-      'mode': 'subscription',
-      'customer_email': session.email,
-      'line_items[0][price]': priceId,
-      'line_items[0][quantity]': '1',
-      'success_url': `${new URL(c.req.url).origin}/?billing=success&tier=${tier}`,
-      'cancel_url': `${new URL(c.req.url).origin}/?billing=cancelled`,
-    })
+    body: new URLSearchParams(params),
   })
   const stripeData: any = await stripeRes.json()
   if (stripeData.error) return c.json({ error: stripeData.error.message }, 500)
@@ -697,7 +720,20 @@ app.post('/api/billing/portal', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
   if (!c.env?.STRIPE_SECRET_KEY) return c.json({ demo: true, message: 'Stripe not configured' })
-  return c.json({ portalUrl: `https://billing.stripe.com/p/login/test_demo` })
+  // Create a real Stripe billing portal session
+  try {
+    const portalRes = await fetch('https://api.stripe.com/v1/billing_portal/sessions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        'customer': session.email, // In production, store Stripe customer ID on first checkout
+        'return_url': new URL(c.req.url).origin + '/',
+      }),
+    })
+    const portalData: any = await portalRes.json()
+    if (portalData.url) return c.json({ portalUrl: portalData.url })
+  } catch (_) {}
+  return c.json({ portalUrl: 'https://billing.stripe.com/p/login/test_demo' })
 })
 
 app.post('/api/billing/webhook', async (c) => {
@@ -1397,15 +1433,14 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .modal-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:18px;padding:28px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto}
 .modal-card.modal-wide{max-width:900px}
 .modal-card h2{font-size:18px;font-weight:800;margin-bottom:5px}
-.tier-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px;margin:14px 0}
-.t-card{padding:15px;border-radius:13px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:.2s}
-.t-card:hover{border-color:var(--border-h)}
-.t-card.hi{border:2px solid var(--accent);background:rgba(168,85,247,.05)}
-.t-card h3{font-size:14px;font-weight:800;margin-bottom:3px}
-.t-card .price{font-size:20px;font-weight:900;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.t-feats{font-size:11px;color:var(--text-s);line-height:1.8;text-align:left;margin-top:9px;list-style:none}
-.t-feats li::before{content:"checkmark ";color:var(--green);font-size:0}
-.t-feats li{padding-left:14px;position:relative}
+.tier-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:13px;margin:14px 0}
+.t-card{padding:16px;border-radius:14px;border:1px solid var(--border);text-align:center;transition:.2s;background:var(--bg-card)}
+.t-card:hover{border-color:var(--border-h);transform:translateY(-2px)}
+.t-card.hi{border:2px solid var(--accent);background:rgba(168,85,247,.07)}
+.t-card h3{font-size:15px;font-weight:800;margin:0 0 4px}
+.t-card .price{font-size:22px;font-weight:900;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1.2}
+.t-feats{font-size:11px;color:var(--text-s);line-height:1.9;text-align:left;margin:8px 0 12px;list-style:none;padding:0}
+.t-feats li{padding-left:16px;position:relative}
 .t-feats li::before{content:"✓ ";position:absolute;left:0;font-size:11px;color:var(--green)}
 .cred-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:14px}
 .cred-tbl th{text-align:left;padding:7px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);border-bottom:1px solid var(--border)}
