@@ -2356,6 +2356,66 @@ em{color:var(--accent);font-style:italic}
   </div>
 
   <input type="hidden" id="vid-dur" value="4">
+
+  <!-- ── AI MUSIC GENERATION ─────────────────────────────── -->
+  <div class="gen-panel gen-i2v-panel" style="margin-top:16px">
+    <div class="gen-section-header">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="width:28px;height:28px;border-radius:8px;background:rgba(16,185,129,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-music" style="color:#10b981;font-size:13px"></i></span>
+        <span class="gen-title" style="margin:0">Music Generation</span>
+      </div>
+    </div>
+    <!-- Tool selector -->
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+      <button id="aud-tool-track"  onclick="setAudioTool('generate_track')"  class="aud-tool-btn active-tool">🎼 Full Track</button>
+      <button id="aud-tool-melody" onclick="setAudioTool('generate_melody')" class="aud-tool-btn">🎹 Melody</button>
+      <button id="aud-tool-beat"   onclick="setAudioTool('generate_beat')"   class="aud-tool-btn">🥁 Beat</button>
+    </div>
+    <!-- Prompt -->
+    <textarea id="aud-prompt" placeholder="Describe your music… e.g. 'upbeat lo-fi hip hop with jazz chords, mellow vibe, 90 BPM'" class="gen-pmt" rows="3"></textarea>
+    <!-- Options row -->
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
+      <input id="aud-style" placeholder="Style (e.g. lo-fi, trap, ambient)" style="flex:1;min-width:140px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text-p);font-size:12px">
+      <!-- Duration pill picker -->
+      <div class="gs-gen-picker" style="position:relative" id="aud-dur-picker-wrap">
+        <button class="gs-model-pill" onclick="toggleAudPicker(event,'dur')" id="aud-dur-pill">
+          <i class="fas fa-clock" style="font-size:11px;opacity:.7"></i>
+          <span id="aud-dur-label">30 sec</span>
+          <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+        </button>
+        <div class="gs-model-dropdown" id="aud-dur-dropdown" style="display:none;min-width:130px">
+          <div class="gs-model-row" onclick="setAudDur(15,'15 sec')"><span style="font-size:13px;font-weight:600">15 sec</span><div class="gs-radio" id="aud-dur-r-15"></div></div>
+          <div class="gs-model-row" onclick="setAudDur(30,'30 sec')"><span style="font-size:13px;font-weight:600">30 sec</span><div class="gs-radio gs-radio-active" id="aud-dur-r-30"></div></div>
+        </div>
+      </div>
+      <!-- BPM pill picker -->
+      <div class="gs-gen-picker" style="position:relative" id="aud-bpm-picker-wrap">
+        <button class="gs-model-pill" onclick="toggleAudPicker(event,'bpm')" id="aud-bpm-pill">
+          <i class="fas fa-gauge-high" style="font-size:11px;opacity:.7"></i>
+          <span id="aud-bpm-label">BPM (auto)</span>
+          <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+        </button>
+        <div class="gs-model-dropdown" id="aud-bpm-dropdown" style="display:none;min-width:140px">
+          <div class="gs-model-row" onclick="setAudBpm('','BPM (auto)')"><span style="font-size:13px;font-weight:600">Auto</span><div class="gs-radio gs-radio-active" id="aud-bpm-r-auto"></div></div>
+          <div class="gs-model-row" onclick="setAudBpm('80','80 BPM')"><span style="font-size:13px;font-weight:600">80 BPM</span><div class="gs-radio" id="aud-bpm-r-80"></div></div>
+          <div class="gs-model-row" onclick="setAudBpm('90','90 BPM')"><span style="font-size:13px;font-weight:600">90 BPM</span><div class="gs-radio" id="aud-bpm-r-90"></div></div>
+          <div class="gs-model-row" onclick="setAudBpm('100','100 BPM')"><span style="font-size:13px;font-weight:600">100 BPM</span><div class="gs-radio" id="aud-bpm-r-100"></div></div>
+          <div class="gs-model-row" onclick="setAudBpm('120','120 BPM')"><span style="font-size:13px;font-weight:600">120 BPM</span><div class="gs-radio" id="aud-bpm-r-120"></div></div>
+          <div class="gs-model-row" onclick="setAudBpm('140','140 BPM')"><span style="font-size:13px;font-weight:600">140 BPM</span><div class="gs-radio" id="aud-bpm-r-140"></div></div>
+        </div>
+      </div>
+    </div>
+    <button id="aud-gen-btn" onclick="generateAudioTrack()" class="btn-gen" style="background:linear-gradient(135deg,#10b981,#06b6d4)">
+      <i class="fas fa-music"></i>&nbsp; Generate Music
+    </button>
+    <!-- Status / Player -->
+    <div id="aud-status" style="display:none;margin-top:12px;text-align:center;padding:16px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);border-radius:10px">
+      <div id="aud-status-text" style="font-size:13px;color:var(--text-s);margin-bottom:8px"></div>
+      <audio id="aud-player" controls style="width:100%;display:none"></audio>
+      <a id="aud-download-link" href="#" download style="display:none;font-size:12px;color:#10b981;margin-top:8px;text-decoration:none"><i class="fas fa-download"></i> Download Track</a>
+    </div>
+  </div>
+
 </div>
 
 <!-- 264 PRO TAB — Download / Landing Page -->
@@ -2415,63 +2475,6 @@ em{color:var(--accent);font-style:italic}
 <!-- FLOWSTATE AUDIO TAB — Download / Landing Page -->
 <div class="tab-pane" id="tab-pane-audio" style="display:none;padding:0;overflow-y:auto">
   <div style="min-height:100%;background:linear-gradient(160deg,#0f0f1a 0%,#0d1a1f 50%,#0f0f1a 100%);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:48px 24px">
-
-    <!-- ── AI Music Generator (Web) ── -->
-    <div style="max-width:720px;width:100%;margin-bottom:48px">
-      <div style="text-align:center;margin-bottom:24px">
-        <div style="font-size:32px;margin-bottom:8px">🎵</div>
-        <h2 style="font-size:20px;font-weight:900;margin:0 0 4px">AI Music Generator</h2>
-        <p style="font-size:13px;color:var(--text-s);margin:0">Generate music right in your browser via MusicGen (Replicate) or Suno AI</p>
-      </div>
-      <!-- Tool selector -->
-      <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;justify-content:center">
-        <button id="aud-tool-track"   onclick="setAudioTool('generate_track')"   class="aud-tool-btn active-tool">🎼 Full Track</button>
-        <button id="aud-tool-melody"  onclick="setAudioTool('generate_melody')"  class="aud-tool-btn">🎹 Melody</button>
-        <button id="aud-tool-beat"    onclick="setAudioTool('generate_beat')"    class="aud-tool-btn">🥁 Beat</button>
-      </div>
-      <!-- Prompt -->
-      <textarea id="aud-prompt" placeholder="Describe your music… e.g. 'upbeat lo-fi hip hop with jazz chords, mellow vibe, 90 BPM'" style="width:100%;min-height:80px;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:12px;color:var(--text);font-size:13px;resize:vertical;margin-bottom:12px;box-sizing:border-box"></textarea>
-      <!-- Options row -->
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
-        <input id="aud-style" placeholder="Style (e.g. lo-fi, trap, ambient)" style="flex:1;min-width:140px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
-        <!-- Duration pill picker -->
-        <div class="gs-gen-picker" style="position:relative" id="aud-dur-picker-wrap">
-          <button class="gs-model-pill" onclick="toggleAudPicker(event,'dur')" id="aud-dur-pill">
-            <i class="fas fa-clock" style="font-size:11px;opacity:.7"></i>
-            <span id="aud-dur-label">30 sec</span>
-            <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
-          </button>
-          <div class="gs-model-dropdown" id="aud-dur-dropdown" style="display:none;min-width:130px">
-            <div class="gs-model-row" onclick="setAudDur(15,'15 sec')"><span style="font-size:13px;font-weight:600">15 sec</span><div class="gs-radio" id="aud-dur-r-15"></div></div>
-            <div class="gs-model-row" onclick="setAudDur(30,'30 sec')"><span style="font-size:13px;font-weight:600">30 sec</span><div class="gs-radio gs-radio-active" id="aud-dur-r-30"></div></div>
-          </div>
-        </div>
-        <!-- BPM pill picker -->
-        <div class="gs-gen-picker" style="position:relative" id="aud-bpm-picker-wrap">
-          <button class="gs-model-pill" onclick="toggleAudPicker(event,'bpm')" id="aud-bpm-pill">
-            <i class="fas fa-gauge-high" style="font-size:11px;opacity:.7"></i>
-            <span id="aud-bpm-label">BPM (auto)</span>
-            <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
-          </button>
-          <div class="gs-model-dropdown" id="aud-bpm-dropdown" style="display:none;min-width:140px">
-            <div class="gs-model-row" onclick="setAudBpm('','BPM (auto)')"><span style="font-size:13px;font-weight:600">Auto</span><div class="gs-radio gs-radio-active" id="aud-bpm-r-auto"></div></div>
-            <div class="gs-model-row" onclick="setAudBpm('80','80 BPM')"><span style="font-size:13px;font-weight:600">80 BPM</span><div class="gs-radio" id="aud-bpm-r-80"></div></div>
-            <div class="gs-model-row" onclick="setAudBpm('90','90 BPM')"><span style="font-size:13px;font-weight:600">90 BPM</span><div class="gs-radio" id="aud-bpm-r-90"></div></div>
-            <div class="gs-model-row" onclick="setAudBpm('100','100 BPM')"><span style="font-size:13px;font-weight:600">100 BPM</span><div class="gs-radio" id="aud-bpm-r-100"></div></div>
-            <div class="gs-model-row" onclick="setAudBpm('120','120 BPM')"><span style="font-size:13px;font-weight:600">120 BPM</span><div class="gs-radio" id="aud-bpm-r-120"></div></div>
-            <div class="gs-model-row" onclick="setAudBpm('140','140 BPM')"><span style="font-size:13px;font-weight:600">140 BPM</span><div class="gs-radio" id="aud-bpm-r-140"></div></div>
-          </div>
-        </div>
-      </div>
-      <button id="aud-gen-btn" onclick="generateAudioTrack()" style="width:100%;padding:12px;background:linear-gradient(135deg,#a855f7,#06b6d4);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:16px">
-        <i class="fas fa-music"></i> Generate Music
-      </button>
-      <!-- Status / Player -->
-      <div id="aud-status" style="display:none;text-align:center;padding:16px;background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.2);border-radius:10px;margin-bottom:12px">
-        <div id="aud-status-text" style="font-size:13px;color:var(--text-s);margin-bottom:8px"></div>
-        <audio id="aud-player" controls style="width:100%;display:none"></audio>
-        <a id="aud-download-link" href="#" download style="display:none;font-size:12px;color:var(--accent);margin-top:8px;text-decoration:none"><i class="fas fa-download"></i> Download Track</a>
-      </div>
 
       <!-- ── TTS Section ── -->
       <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:18px;margin-top:8px">
