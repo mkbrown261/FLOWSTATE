@@ -241,7 +241,7 @@ function renderObStep() {
       <div class="ob-title">Connect your workspace</div>
       <div class="ob-sub">These integrations unlock the full FlowState experience. Connect now or later.</div>
       <div class="integ-list">
-        <div class="integ-row"><div class="integ-left"><span class="integ-icon">📅</span><div><div class="integ-name">Google Calendar</div><div class="integ-desc">Sync events, block focus time</div></div></div><button class="btn-connect ${FS_USER?'connected':''}" onclick="FS_USER?notify('Already connected!','success'):window.location.href='/api/auth/google'">${FS_USER?'✓ Connected':'Connect'}</button></div>
+        <div class="integ-row"><div class="integ-left"><span class="integ-icon">📅</span><div><div class="integ-name">Google Calendar</div><div class="integ-desc">${FS_USER ? 'Signed in as ' + escHtml(FS_USER.email||FS_USER.name||'') : 'Sync events, block focus time'}</div></div></div><button class="btn-connect ${FS_USER?'connected':''}" onclick="${FS_USER ? 'notify(\'Calendar synced via Google login\',\'success\')' : 'window.location.href=\'/api/auth/google\''}">${FS_USER?'✓ Synced':'Connect Google'}</button></div>
         <div class="integ-row"><div class="integ-left"><span class="integ-icon">📝</span><div><div class="integ-name">Notion</div><div class="integ-desc">Sync Kanban boards & tasks</div></div></div><button class="btn-connect ${FS_NOTION?'connected':''}" onclick="connectNotion()">${FS_NOTION?'✓ Connected':'Connect'}</button></div>
         <div class="integ-row"><div class="integ-left"><span class="integ-icon">💬</span><div><div class="integ-name">Slack</div><div class="integ-desc">Team notifications & standups</div></div></div><button class="btn-connect ${FS_SLACK?'connected':''}" onclick="connectSlack()">${FS_SLACK?'✓ Connected':'Connect'}</button></div>
       </div>
@@ -2025,7 +2025,7 @@ function openSettingsModal() {
     <div style="margin:14px 0">
       <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">INTEGRATIONS</div>
       <div style="display:flex;flex-direction:column;gap:7px">
-        <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><span>📅 Google Calendar</span><span style="color:${FS_USER?'var(--green)':'var(--text-m)'}">${FS_USER?'Connected ✓':'Connect via Login'}</span></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><span>📅 Google Calendar</span>${FS_USER ? '<span style="color:var(--green)">✓ Synced · '+escHtml(FS_USER.email||FS_USER.name||'')+'</span>' : '<button class="btn-sm" onclick="window.location.href=\'/api/auth/google\'" style="font-size:11px">Connect Google</button>'}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><span>📝 Notion</span><button class="btn-sm" onclick="connectNotion()">${FS_NOTION?'Reconnect':'Connect'}</button></div>
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><span>💬 Slack</span><button class="btn-sm" onclick="connectSlack()">${FS_SLACK?'Reconnect':'Connect'}</button></div>
       </div>
