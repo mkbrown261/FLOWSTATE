@@ -1661,7 +1661,7 @@ function sendTestSlack() {
   if (!msg?.trim()) { notify('Enter a message','error'); return; }
   fetch('/api/slack/message', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ channel:chan, message:msg })
+    body: JSON.stringify({ channel:chan, text:msg })
   }).then(r=>r.json()).then(d=>{ if(d.ok) { closeModal(); notify('Message sent!','success'); } else notify(d.error||'Send failed','error'); }).catch(()=>notify('Error sending','error'));
 }
 
@@ -1696,18 +1696,19 @@ function renderLearn() {
   const learnContainer = document.getElementById('tab-pane-learn');
   if (!cards.length || !car) return;
   const c = cards[state.learn.idx];
-  car.innerHTML = `<div class="l-card" style="background:${c.color||'var(--bg-panel)'};color:${c.textColor||'var(--text-p)'}">
+  const cardTextColor = c.textColor || (c.color && c.color !== 'var(--bg-panel)' ? '#fff' : 'var(--text-p)');
+  car.innerHTML = `<div class="l-card" style="background:${c.color||'var(--bg-panel)'};color:${cardTextColor}">
     <div class="l-type">${c.type||'Tip'}</div>
     <div class="l-title">${c.title||''}</div>
     <div class="l-content">${c.content||''}</div>
-    <div class="l-meta">${c.source||''}</div>
+    <div class="l-meta">${c.meta||c.source||''}</div>
     <div style="margin-top:14px;display:flex;gap:8px;justify-content:center">
       <button class="r-btn" onclick="markCardLearned()" style="font-size:11px;padding:5px 14px">✓ Got it</button>
       <button class="r-btn" onclick="askAIAboutCard()" style="font-size:11px;padding:5px 14px">💬 Ask AI</button>
     </div>
   </div>`;
   if (nav) nav.innerHTML = `<button class="l-nav-btn" onclick="learnNav(-1)"><i class="fas fa-chevron-left"></i></button>${cards.map((_,i)=>`<div class="l-dot ${i===state.learn.idx?'active':''}" onclick="learnGo(${i})"></div>`).join('')}<button class="l-nav-btn" onclick="learnNav(1)"><i class="fas fa-chevron-right"></i></button>`;
-  if (all) all.innerHTML = cards.map((card,i)=>`<div style="background:${card.color||'var(--bg-panel)'};border-radius:9px;padding:11px;cursor:pointer;color:${card.textColor||'var(--text-p)'};transition:.2s" onclick="learnGo(${i})" onmouseover="this.style.transform='scale(1.02)'" onmouseout="this.style.transform='scale(1)'"><div style="font-size:10px;font-weight:700;opacity:.7;margin-bottom:3px">${card.type||''}</div><div style="font-size:12px;font-weight:700">${card.title||''}</div></div>`).join('');
+  if (all) all.innerHTML = cards.map((card,i)=>`<div style="background:${card.color||'var(--bg-panel)'};border-radius:9px;padding:11px;cursor:pointer;color:${card.textColor||(card.color&&card.color!=='var(--bg-panel)'?'#fff':'var(--text-p)')};transition:.2s" onclick="learnGo(${i})" onmouseover="this.style.transform='scale(1.02)'" onmouseout="this.style.transform='scale(1)'"><div style="font-size:10px;font-weight:700;opacity:.7;margin-bottom:3px">${card.type||''}</div><div style="font-size:12px;font-weight:700">${card.title||''}</div></div>`).join('');
   // Render spaced repetition queue
   renderSpacedRep();
 }

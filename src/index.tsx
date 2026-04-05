@@ -667,9 +667,10 @@ app.post('/api/billing/checkout', async (c) => {
     team_starter: 'price_team_starter_monthly',
     team_growth: 'price_team_growth_monthly',
     enterprise: 'price_enterprise_custom',
+    clawflow: 'price_clawflow_monthly',
   }
   const priceId = priceMap[tier]
-  if (!priceId) return c.json({ error: 'invalid_tier' }, 400)
+  if (!priceId) return c.json({ error: 'invalid_tier', available: Object.keys(priceMap) }, 400)
   if (!c.env?.STRIPE_SECRET_KEY) {
     return c.json({ demo: true, message: 'Stripe not configured — add STRIPE_SECRET_KEY to activate billing', tier, redirectUrl: '/' })
   }
