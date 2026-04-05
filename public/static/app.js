@@ -881,10 +881,22 @@ const MODEL_NAMES = {
   'deepseek-r2':'DeepSeek R2','deepseek-v3':'DeepSeek V3',
 };
 
+function sendSuggestion(text) {
+  const inp = document.getElementById('chat-in');
+  if (inp) { inp.value = text; }
+  // Hide suggestion chips once user picks one
+  const chips = document.getElementById('chat-suggestions');
+  if (chips) chips.style.display = 'none';
+  sendMessage();
+}
+
 async function sendMessage() {
   const inp = document.getElementById('chat-in');
   const msg = inp.value.trim();
   if (!msg) return;
+  // Hide suggestions once first message sent
+  const chips = document.getElementById('chat-suggestions');
+  if (chips) chips.style.display = 'none';
   inp.value = ''; inp.style.height = '42px';
   appendMsg('user', msg, '');
   const tid = appendTyping();
@@ -1129,7 +1141,7 @@ function buildMetrics() {
       labels: Array.from({length:7},(_, i)=>{ const d=new Date(today); d.setDate(d.getDate()-(6-i)); return d.toLocaleDateString('en-US',{weekday:'short'}); }),
       datasets:[{ data:weekData, backgroundColor:'rgba(168,85,247,.6)', borderColor:'#a855f7', borderWidth:2, borderRadius:8 }]
     },
-    options:{ plugins:{legend:{display:false}}, scales:{ y:{beginAtZero:true,ticks:{color:'#555'},grid:{color:'rgba(168,85,247,.07)'}}, x:{ticks:{color:'#555'},grid:{display:false}} }, animation:{duration:600} }
+    options:{ plugins:{legend:{display:false}}, scales:{ y:{beginAtZero:true,ticks:{color:'#555',stepSize:1,precision:0},grid:{color:'rgba(168,85,247,.07)'}}, x:{ticks:{color:'#555'},grid:{display:false}} }, animation:{duration:600} }
   });
   loadBehaviorInsight();
 }
@@ -1332,7 +1344,21 @@ function switchTeamTab(tabId) {
 }
 
 function renderSprintHealth(el) {
-  const payload = { totalTasks:12, completedTasks:7, inProgressTasks:3, sprintDaysTotal:14, sprintDaysRemaining:4, velocity:2.1, blockers:1 };
+  // Build a realistic demo sprint payload using the correct API format
+  const now = new Date();
+  const sprintStart = new Date(now); sprintStart.setDate(sprintStart.getDate() - 10);
+  const sprintEnd = new Date(now); sprintEnd.setDate(sprintEnd.getDate() + 4);
+  const demoCards = [
+    {id:'1',title:'Auth flow',status:'done',lastMovedAt:new Date(now.getTime()-86400000).toISOString()},
+    {id:'2',title:'API routes',status:'done',lastMovedAt:new Date(now.getTime()-172800000).toISOString()},
+    {id:'3',title:'Dashboard UI',status:'inprogress',lastMovedAt:new Date(now.getTime()-3600000).toISOString()},
+    {id:'4',title:'Billing',status:'inprogress',lastMovedAt:new Date(now.getTime()-7200000).toISOString()},
+    {id:'5',title:'Notifications',status:'todo',lastMovedAt:null},
+    {id:'6',title:'Analytics',status:'todo',lastMovedAt:null},
+    {id:'7',title:'Mobile layout',status:'done',lastMovedAt:new Date(now.getTime()-259200000).toISOString()},
+    {id:'8',title:'Testing',status:'todo',lastMovedAt:null},
+  ];
+  const apiPayload = { cards: demoCards, sprintStart: sprintStart.toISOString(), sprintEnd: sprintEnd.toISOString(), teamFocusHours: 18 };
   el.innerHTML = `<div class="sprint-health" id="sprint-health-panel">
     <div class="sh-title"><i class="fas fa-heart-pulse" style="color:var(--danger)"></i> Sprint Health</div>
     <div class="sh-stats" id="sh-stats"></div>
@@ -1343,32 +1369,50 @@ function renderSprintHealth(el) {
       <span id="sh-days"></span>
     </div>
     <div class="sh-pace" id="sh-pace"></div>
-    <div id="sh-assessment" style="font-size:13px;color:var(--text-s);margin-bottom:12px;padding:10px;background:var(--bg-card);border-radius:9px;line-height:1.5">Loading…</div>
+    <div id="sh-assessment" style="font-size:13px;color:var(--text-s);margin-bottom:12px;padding:10px;background:var(--bg-card);border-radius:9px;line-height:1.5">Analysing sprint…</div>
     <div id="sh-actions"></div>
     <div style="margin-top:12px;display:flex;gap:8px">
       <button class="btn-sm" onclick="openSprintConfigModal()"><i class="fas fa-cog"></i> Configure Sprint</button>
       <button class="btn-sm" onclick="exportSprintReport()"><i class="fas fa-download"></i> Export Report</button>
     </div>
   </div>`;
-  fetch('/api/team/sprint-health', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
+  fetch('/api/team/sprint-health', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(apiPayload) })
     .then(r=>r.json()).then(d=>{
-      const sh = d.sprintHealth||{};
-      const pct = sh.completionPct||Math.round(payload.completedTasks/payload.totalTasks*100);
-      const exp = sh.expectedPct||Math.round((1-payload.sprintDaysRemaining/payload.sprintDaysTotal)*100);
+      // API returns: completionPercent, expectedPercent, pace, deadlineAssessment, suggestedActions, daysRemaining, totalCards, completedCards, inProgressCards
+      const sh = d;
+      const pct = sh.completionPercent ?? Math.round(demoCards.filter(c=>c.status==='done').length/demoCards.length*100);
+      const exp = sh.expectedPercent ?? 70;
+      const days = sh.daysRemaining ?? 4;
       document.getElementById('sh-fill').style.width=pct+'%';
       document.getElementById('sh-pct').textContent=pct+'%';
       document.getElementById('sh-exp').textContent=exp+'%';
-      document.getElementById('sh-days').textContent=payload.sprintDaysRemaining+' days left';
+      document.getElementById('sh-days').textContent=days+' days left';
       document.getElementById('sh-stats').innerHTML=[
-        {v:payload.totalTasks,l:'Total'},{v:payload.completedTasks,l:'Done'},
-        {v:payload.inProgressTasks,l:'In Progress'},{v:payload.blockers,l:'Blockers'}
+        {v:sh.totalCards??demoCards.length,l:'Total'},
+        {v:sh.completedCards??demoCards.filter(c=>c.status==='done').length,l:'Done'},
+        {v:sh.inProgressCards??demoCards.filter(c=>c.status==='inprogress').length,l:'In Progress'},
+        {v:sh.atRiskCards?.length??0,l:'At Risk'}
       ].map(s=>`<div class="sh-stat"><div class="sh-stat-v">${s.v}</div><div class="sh-stat-l">${s.l}</div></div>`).join('');
-      const pace=sh.pace||'on-track';
-      document.getElementById('sh-pace').innerHTML=`<span class="pace-badge" style="background:${pace==='on-track'?'rgba(16,185,129,.15)':pace==='ahead'?'rgba(59,130,246,.15)':'rgba(239,68,68,.15)'};color:${pace==='on-track'?'var(--green)':pace==='ahead'?'var(--blue)':'var(--danger)'}">${pace.toUpperCase()}</span>`;
-      document.getElementById('sh-assessment').textContent=sh.assessment||'Sprint progressing well.';
-      const actions=sh.actions||['Review blockers','Update statuses'];
+      const pace=sh.pace||'on_track';
+      const paceColor=pace==='on_track'?'var(--green)':pace==='ahead'?'var(--blue)':'var(--danger)';
+      const paceBg=pace==='on_track'?'rgba(16,185,129,.15)':pace==='ahead'?'rgba(59,130,246,.15)':'rgba(239,68,68,.15)';
+      document.getElementById('sh-pace').innerHTML=`<span class="pace-badge" style="background:${paceBg};color:${paceColor}">${pace.replace('_',' ').toUpperCase()}</span>`;
+      document.getElementById('sh-assessment').textContent=sh.deadlineAssessment||sh.assessment||'Sprint progressing well.';
+      const actions=sh.suggestedActions||sh.actions||['Review blockers','Update statuses'];
       document.getElementById('sh-actions').innerHTML=actions.map(a=>`<div class="action-item"><i class="fas fa-circle-arrow-right"></i>${a}</div>`).join('');
-    }).catch(()=>{ if(document.getElementById('sh-assessment')) document.getElementById('sh-assessment').textContent='Sprint data loading...'; });
+    }).catch(()=>{
+      // Fallback: render with hardcoded demo data if API fails
+      const pct=38, exp=71, days=4;
+      if(!document.getElementById('sh-fill')) return;
+      document.getElementById('sh-fill').style.width=pct+'%';
+      document.getElementById('sh-pct').textContent=pct+'%';
+      document.getElementById('sh-exp').textContent=exp+'%';
+      document.getElementById('sh-days').textContent=days+' days left';
+      document.getElementById('sh-stats').innerHTML=[{v:8,l:'Total'},{v:3,l:'Done'},{v:2,l:'In Progress'},{v:1,l:'At Risk'}].map(s=>`<div class="sh-stat"><div class="sh-stat-v">${s.v}</div><div class="sh-stat-l">${s.l}</div></div>`).join('');
+      document.getElementById('sh-pace').innerHTML=`<span class="pace-badge" style="background:rgba(239,68,68,.15);color:var(--danger)">AT RISK</span>`;
+      document.getElementById('sh-assessment').textContent='At current velocity, 2 cards may slip past sprint end. Consider re-scoping or reassigning.';
+      document.getElementById('sh-actions').innerHTML=['Hold a quick sync to re-scope','Unblock Dashboard UI — stalled 2 days'].map(a=>`<div class="action-item"><i class="fas fa-circle-arrow-right"></i>${a}</div>`).join('');
+    });
 }
 
 const DEMO_TEAM = [

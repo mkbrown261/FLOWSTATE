@@ -19,9 +19,9 @@ import {
 
 type Bindings = {
   // ── AI Chat (single OpenRouter key covers ALL chat models) ──────────────────
-  OPENROUTER_API_KEY: string  // replaces OPENAI_API_KEY — covers GPT, Claude, Gemini, Grok, Llama, Mistral, DeepSeek etc.
-  ANTHROPIC_API_KEY: string   // optional: direct Anthropic (fallback if OpenRouter down)
-  GOOGLE_AI_KEY: string       // required: Gemini stream + Imagen + Veo
+  OPENROUTER_API_KEY: string
+  ANTHROPIC_API_KEY: string
+  GOOGLE_AI_KEY: string
   GOOGLE_CLIENT_ID: string; GOOGLE_CLIENT_SECRET: string
   NOTION_CLIENT_ID: string; NOTION_CLIENT_SECRET: string
   SLACK_CLIENT_ID: string; SLACK_CLIENT_SECRET: string; SLACK_BOT_TOKEN: string
@@ -29,17 +29,19 @@ type Bindings = {
   TOGETHER_API_KEY: string; ELEVENLABS_API_KEY: string
   STRIPE_SECRET_KEY: string; STRIPE_PUBLISHABLE_KEY: string; STRIPE_WEBHOOK_SECRET: string
   RESEND_API_KEY: string; SESSION_SECRET: string
-  CLAWBOT_API_KEY: string;
+  CLAWBOT_API_KEY: string
+  // Upstash Redis — rate limiting, token tracking, abuse prevention
+  UPSTASH_REDIS_URL: string; UPSTASH_REDIS_TOKEN: string
   // Image generation models
-  IDEOGRAM_API_KEY: string; STABILITY_API_KEY: string; BFL_API_KEY: string; RECRAFT_API_KEY: string;
+  IDEOGRAM_API_KEY: string; STABILITY_API_KEY: string; BFL_API_KEY: string; RECRAFT_API_KEY: string
   // Video generation models
-  RUNWAY_API_KEY: string; KLING_API_KEY: string; PIKA_API_KEY: string; MINIMAX_API_KEY: string; LUMA_API_KEY: string;
+  RUNWAY_API_KEY: string; KLING_API_KEY: string; PIKA_API_KEY: string; MINIMAX_API_KEY: string; LUMA_API_KEY: string
   // AI inference
-  REPLICATE_API_KEY: string; HUGGINGFACE_API_KEY: string;
+  REPLICATE_API_KEY: string; HUGGINGFACE_API_KEY: string
   // FlowState Audio — Music AI
-  SUNO_API_KEY: string; MUSICGEN_API_KEY: string; UDIO_API_KEY: string;
-  LOUDME_API_KEY: string; MOISES_API_KEY: string; DOLBY_API_KEY: string;
-  ACRCLOUD_ACCESS_KEY: string; ACRCLOUD_ACCESS_SECRET: string; AUDIOSHAKE_API_KEY: string;
+  SUNO_API_KEY: string; MUSICGEN_API_KEY: string; UDIO_API_KEY: string
+  LOUDME_API_KEY: string; MOISES_API_KEY: string; DOLBY_API_KEY: string
+  ACRCLOUD_ACCESS_KEY: string; ACRCLOUD_ACCESS_SECRET: string; AUDIOSHAKE_API_KEY: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -1122,6 +1124,8 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .chat-in{flex:1;background:transparent;border:none;border-radius:0;padding:0;color:var(--text-p);font-size:14px;font-family:inherit;resize:none;outline:none;min-height:42px;max-height:130px;width:100%}
 .chat-in:focus{border-color:var(--accent)}
 .btn-send{width:42px;height:42px;border-radius:11px;background:var(--grad);border:none;color:#fff;font-size:15px;cursor:pointer;transition:.2s;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+.chat-suggest-chip{background:var(--bg-panel);border:1px solid var(--border);color:var(--text-m);padding:7px 13px;border-radius:20px;font-size:12.5px;cursor:pointer;transition:.2s;white-space:nowrap}
+.chat-suggest-chip:hover{border-color:var(--accent);color:var(--accent);background:rgba(168,85,247,.07)}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:14px}
 .cal-hd{text-align:center;font-size:10px;font-weight:700;color:var(--text-m);padding:5px;text-transform:uppercase;letter-spacing:1px}
 .cal-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:.2s;position:relative;border:1px solid transparent}
@@ -1551,6 +1555,14 @@ em{color:var(--accent);font-style:italic}
           <div class="msg-meta"><span class="m-tag">FlowState AI</span><span>Smart routing active</span></div>
           <div class="msg-bub">Hey! I auto-route to the best model for each task &mdash; Claude for code, Gemini for speed, Grok for live data. Click the model pill below to switch models.</div>
         </div>
+      </div>
+      <div id="chat-suggestions" style="display:flex;flex-wrap:wrap;gap:8px;padding:12px 0 4px">
+        <button class="chat-suggest-chip" onclick="sendSuggestion('Help me plan my sprint goals for this week')">&#128203; Plan my sprint</button>
+        <button class="chat-suggest-chip" onclick="sendSuggestion('Write a Python script to automate my daily standup report')">&#128187; Write code</button>
+        <button class="chat-suggest-chip" onclick="sendSuggestion('Summarize the key principles from Deep Work by Cal Newport')">&#128218; Book summary</button>
+        <button class="chat-suggest-chip" onclick="sendSuggestion('Give me 3 focus techniques to beat afternoon energy slumps')">&#9889; Focus tips</button>
+        <button class="chat-suggest-chip" onclick="sendSuggestion('Draft a professional update email to my team about project status')">&#9993; Draft email</button>
+        <button class="chat-suggest-chip" onclick="sendSuggestion('What are the latest AI developments today?')">&#127757; Live news (Grok)</button>
       </div>
     </div>
     <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:16px;padding:10px 14px">
