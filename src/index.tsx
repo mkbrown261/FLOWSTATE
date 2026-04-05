@@ -1470,6 +1470,39 @@ app.get('/api/tier/capabilities', (c) => c.json(declareTierCapabilities((c.req.q
 app.get('/api/credentials', (c) => c.json({ credentials: CREDENTIAL_TABLE }))
 app.get('/api/models', (c) => c.json({ models: MODEL_REGISTRY, imageModels: IMAGE_MODEL_REGISTRY, videoModels: VIDEO_MODEL_REGISTRY }))
 
+// ── Key Status endpoint — returns which env vars are set (boolean only, no values) ──
+app.get('/api/key-status', (c) => {
+  const e = c.env as any
+  const check = (...keys: string[]) => keys.every(k => !!e?.[k])
+  return c.json({
+    // Core
+    google_oauth:    check('GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET'),
+    openrouter:      check('OPENROUTER_API_KEY'),
+    redis:           check('UPSTASH_REDIS_URL','UPSTASH_REDIS_TOKEN'),
+    stripe:          check('STRIPE_SECRET_KEY','STRIPE_PUBLISHABLE_KEY','STRIPE_WEBHOOK_SECRET'),
+    resend:          check('RESEND_API_KEY'),
+    notion:          check('NOTION_CLIENT_ID','NOTION_CLIENT_SECRET'),
+    slack:           check('SLACK_CLIENT_ID','SLACK_CLIENT_SECRET','SLACK_BOT_TOKEN'),
+    // AI
+    google_ai:       check('GOOGLE_AI_KEY'),
+    elevenlabs:      check('ELEVENLABS_API_KEY'),
+    replicate:       check('REPLICATE_API_KEY'),
+    openai:          check('OPENAI_API_KEY'),
+    xai:             check('XAI_API_KEY'),
+    stability:       check('STABILITY_API_KEY'),
+    bfl:             check('BFL_API_KEY'),
+    ideogram:        check('IDEOGRAM_API_KEY'),
+    recraft:         check('RECRAFT_API_KEY'),
+    // Video
+    runway:          check('RUNWAY_API_KEY'),
+    kling:           check('KLING_API_KEY'),
+    pika:            check('PIKA_API_KEY'),
+    minimax:         check('MINIMAX_API_KEY'),
+    luma:            check('LUMA_API_KEY'),
+    suno:            check('SUNO_API_KEY'),
+  })
+})
+
 // Token balance endpoint — returns daily usage + purchased balance
 app.get('/api/billing/balance', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
@@ -2358,15 +2391,12 @@ em{color:var(--accent);font-style:italic}
       </div>
     </div>
 
-    <!-- Required API Keys -->
-    <div style="max-width:680px;width:100%;margin-bottom:32px">
-      <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:12px">AI Tools &mdash; Required API Keys</div>
-      <div style="display:flex;flex-direction:column;gap:8px;font-size:12px">
-        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px;display:flex;justify-content:space-between;align-items:center"><div><span style="font-weight:700">Replicate</span><span style="color:var(--text-m);margin-left:8px">AI Upscale, Denoise, Slow-Mo, Face Enhance</span></div><span style="color:var(--warn);font-size:10px;font-weight:700">REPLICATE_API_KEY</span></div>
-        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px;display:flex;justify-content:space-between;align-items:center"><div><span style="font-weight:700">Hugging Face</span><span style="color:var(--text-m);margin-left:8px">Rotoscoping, AI Colorize, Depth Map</span></div><span style="color:var(--warn);font-size:10px;font-weight:700">HUGGINGFACE_API_KEY</span></div>
-        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:9px;padding:12px;display:flex;justify-content:space-between;align-items:center"><div><span style="font-weight:700">Cloudflare R2</span><span style="color:var(--text-m);margin-left:8px">AI output storage, export queue, project backups</span></div><span style="color:var(--warn);font-size:10px;font-weight:700">R2_*</span></div>
+    <!-- Platform Status — live key check, no user-facing key management -->
+    <div style="max-width:680px;width:100%;margin-bottom:32px" id="platform-status-264">
+      <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:12px">Platform Status</div>
+      <div id="platform-status-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
+        <div style="color:var(--text-s);font-size:12px;grid-column:1/-1">Loading status…</div>
       </div>
-      <button class="btn-sm" style="margin-top:12px" onclick="openCredsModal()"><i class="fas fa-key"></i> View All API Credentials</button>
     </div>
 
     <!-- System requirements -->

@@ -442,6 +442,7 @@ function switchTab(id) {
   if (id==='clawbot')  initClawbot();
   if (id==='audio')    { loadTTSVoices(); }
   if (id==='generate') { setTimeout(()=>{ buildGenPicker('img'); buildGenPicker('vid'); buildGenPicker('i2v'); }, 50); }
+  if (id==='264')      { loadPlatformStatus(); }
 }
 
 function startClock() {
@@ -2229,11 +2230,120 @@ function startCheckout(tier) {
   }).catch(() => notify('Billing error — please try again', 'error'));
 }
 
+// ── Platform Status — checks which API keys are live ─────────────────────────
+let _keyStatus = null;
+
+async function loadPlatformStatus() {
+  const grid = document.getElementById('platform-status-grid');
+  if (!grid) return;
+
+  // Use cached if recent
+  if (!_keyStatus) {
+    try {
+      const r = await fetch('/api/key-status');
+      _keyStatus = await r.json();
+    } catch(e) {
+      grid.innerHTML = '<div style="color:var(--text-s);font-size:12px;grid-column:1/-1">Could not load platform status.</div>';
+      return;
+    }
+  }
+
+  const s = _keyStatus;
+  const row = (label, icon, live, desc) => `
+    <div style="background:var(--bg-card);border:1px solid ${live ? 'rgba(16,185,129,.3)' : 'rgba(245,158,11,.3)'};border-radius:9px;padding:11px 13px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:16px">${icon}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:12px;display:flex;align-items:center;gap:6px">
+          ${label}
+          <span style="font-size:10px;font-weight:800;padding:1px 6px;border-radius:4px;background:${live ? 'rgba(16,185,129,.15)' : 'rgba(245,158,11,.15)'};color:${live ? '#10b981' : '#f59e0b'}">${live ? '● LIVE' : '⚠ MISSING'}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-s);margin-top:2px">${desc}</div>
+      </div>
+    </div>`;
+
+  // Core services
+  const coreOk = s.google_oauth && s.openrouter && s.redis && s.stripe;
+  const aiOk   = s.google_ai && s.elevenlabs && s.replicate;
+
+  grid.innerHTML = `
+    <div style="grid-column:1/-1;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text-m);margin-bottom:2px">Core Services</div>
+    ${row('Google OAuth', '🔐', s.google_oauth, 'Sign-in, Calendar, Drive sync')}
+    ${row('OpenRouter', '🤖', s.openrouter, 'All AI chat — GPT, Claude, Grok, Gemini')}
+    ${row('Upstash Redis', '⚡', s.redis, 'Billing tiers, token limits, sessions')}
+    ${row('Stripe', '💳', s.stripe, 'Subscriptions & token top-ups')}
+    ${row('Resend Email', '✉️', s.resend, 'Magic links & notifications')}
+
+    <div style="grid-column:1/-1;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text-m);margin:10px 0 2px">AI Services</div>
+    ${row('Google AI (Gemini + Imagen + Veo)', '🧠', s.google_ai, 'Chat, image gen, video gen')}
+    ${row('ElevenLabs', '🎙️', s.elevenlabs, 'Text-to-speech, voice cloning')}
+    ${row('Replicate', '🎞️', s.replicate, 'AI upscale, slow-mo, face restore')}
+    ${row('OpenAI (DALL-E / Sora)', '✨', s.openai, 'Image gen + Sora video')}
+
+    <div style="grid-column:1/-1;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text-m);margin:10px 0 2px">Optional Image Models</div>
+    ${row('Stability AI (SD3)', '🎨', s.stability, 'Stable Diffusion 3')}
+    ${row('Black Forest Labs (FLUX)', '🌊', s.bfl, 'FLUX Pro 1.1 & Dev')}
+    ${row('Ideogram', '🔤', s.ideogram, 'Text-in-image, logos, typography')}
+    ${row('Recraft V3', '🖌️', s.recraft, 'Vector art, brand assets, icons')}
+
+    <div style="grid-column:1/-1;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text-m);margin:10px 0 2px">Optional Video Models</div>
+    ${row('Runway ML (Gen-4)', '🎬', s.runway, 'Film-quality video generation')}
+    ${row('Kling 1.6 / 2.1', '🚀', s.kling, 'Smooth motion, text-to-video')}
+    ${row('Pika 2.0', '⚡', s.pika, 'Creative effects, fast gen')}
+    ${row('MiniMax / Hailuo', '🌀', s.minimax, 'Fast gen, face consistency')}
+    ${row('Luma Dream Machine', '🌙', s.luma, 'Photorealistic, product shots')}
+    ${row('Suno (AI Music)', '🎵', s.suno, 'Full-track AI music generation')}
+
+    <div style="grid-column:1/-1;margin-top:12px;padding:10px 12px;background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:9px;font-size:11px;color:var(--text-s)">
+      Keys are stored as <strong style="color:var(--text)">Cloudflare Secrets</strong> — never visible to users. Contact the platform admin to activate missing services.
+    </div>
+  `;
+}
+
 function openCredsModal() {
-  fetch('/api/credentials').then(r=>r.json()).then(d=>{
-    // Group by required level AND by category
+  Promise.all([
+    fetch('/api/credentials').then(r=>r.json()),
+    fetch('/api/key-status').then(r=>r.json()).catch(()=>({}))
+  ]).then(([d, ks]) => {
+    _keyStatus = ks; // cache for platform status panel
+
+    // Build a lookup: envKey → live boolean
+    // Map each CREDENTIAL_TABLE envKey string to the matching key-status field
+    const KEY_MAP = {
+      'GOOGLE_CLIENT_ID': ks.google_oauth, 'GOOGLE_CLIENT_SECRET': ks.google_oauth,
+      'OPENROUTER_API_KEY': ks.openrouter,
+      'UPSTASH_REDIS_URL': ks.redis, 'UPSTASH_REDIS_TOKEN': ks.redis,
+      'STRIPE_SECRET_KEY': ks.stripe, 'STRIPE_PUBLISHABLE_KEY': ks.stripe, 'STRIPE_WEBHOOK_SECRET': ks.stripe,
+      'RESEND_API_KEY': ks.resend,
+      'NOTION_CLIENT_ID': ks.notion, 'NOTION_CLIENT_SECRET': ks.notion,
+      'SLACK_CLIENT_ID': ks.slack, 'SLACK_CLIENT_SECRET': ks.slack, 'SLACK_BOT_TOKEN': ks.slack,
+      'GOOGLE_AI_KEY': ks.google_ai,
+      'ELEVENLABS_API_KEY': ks.elevenlabs,
+      'REPLICATE_API_KEY': ks.replicate,
+      'OPENAI_API_KEY': ks.openai,
+      'XAI_API_KEY': ks.xai,
+      'STABILITY_API_KEY': ks.stability,
+      'BFL_API_KEY': ks.bfl,
+      'IDEOGRAM_API_KEY': ks.ideogram,
+      'RECRAFT_API_KEY': ks.recraft,
+      'RUNWAY_API_KEY': ks.runway,
+      'KLING_API_KEY': ks.kling,
+      'PIKA_API_KEY': ks.pika,
+      'MINIMAX_API_KEY': ks.minimax,
+      'LUMA_API_KEY': ks.luma,
+      'SUNO_API_KEY': ks.suno,
+    };
+
+    const isLive = (envKey) => {
+      const keys = envKey.split(',').map(k=>k.trim());
+      return keys.some(k => KEY_MAP[k] === true);
+    };
+    const isAllMissing = (envKey) => {
+      const keys = envKey.split(',').map(k=>k.trim());
+      return keys.every(k => KEY_MAP[k] === false);
+    };
+
     const coreItems=[], recItems=[], imgItems=[], vidItems=[], integItems=[], audioItems=[], pro264Items=[], otherItems=[];
-    const imgKeywords = ['Stability AI','Black Forest Labs','Ideogram','Recraft','Imagen','DALL-E','GPT-Image'];
+    const imgKeywords = ['Stability AI','Black Forest Labs','Ideogram','Recraft','Imagen','DALL-E','GPT-Image','OpenAI'];
     const vidKeywords = ['Runway ML','Kling','Pika Labs','MiniMax','Luma AI','Veo','Sora'];
     const audioKeywords = ['Suno','Udio','MusicGen','Moises','Loudme','ACRCloud','Dolby','AudioShake','ElevenLabs'];
     const pro264Keywords = ['Replicate','Hugging Face','Cloudflare R2','Clawbot'];
@@ -2250,38 +2360,48 @@ function openCredsModal() {
       otherItems.push(c);
     });
 
-    const pill = (r) => r==='core'
-      ? `<span style="background:rgba(16,185,129,.15);color:#10b981;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700">CORE</span>`
+    const statusBadge = (envKey) => {
+      const live = isLive(envKey);
+      const missing = isAllMissing(envKey);
+      const unknown = !live && !missing;
+      if (live)    return `<span style="background:rgba(16,185,129,.15);color:#10b981;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700">● LIVE</span>`;
+      if (unknown) return `<span style="background:rgba(139,92,246,.12);color:#a78bfa;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700">— —</span>`;
+      return `<span style="background:rgba(245,158,11,.15);color:#f59e0b;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700">⚠ MISSING</span>`;
+    };
+
+    const levelPill = (r) => r==='core'
+      ? `<span style="background:rgba(16,185,129,.12);color:#10b981;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700">CORE</span>`
       : r==='recommended'
-      ? `<span style="background:rgba(245,158,11,.15);color:#f59e0b;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700">REC</span>`
-      : `<span style="background:rgba(139,92,246,.12);color:#a78bfa;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700">OPT</span>`;
+      ? `<span style="background:rgba(245,158,11,.12);color:#f59e0b;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700">REC</span>`
+      : `<span style="background:rgba(139,92,246,.1);color:#a78bfa;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700">OPT</span>`;
 
     const renderSection = (label, items, accent) => !items.length ? '' : `
       <tr><td colspan="5" style="padding:12px 8px 5px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:${accent};border-bottom:1px solid var(--border)">${label}&nbsp;&nbsp;<span style="opacity:.5;font-size:9px">${items.length} service${items.length>1?'s':''}</span></td></tr>
-      ${items.map(c=>`<tr>
+      ${items.map(c=>`<tr style="${isAllMissing(c.envKey) && c.required==='core' ? 'background:rgba(245,158,11,.04)' : ''}">
         <td style="font-weight:600;white-space:nowrap">${c.service}</td>
-        <td style="color:var(--text-m);font-size:11px;max-width:220px">${c.purpose}</td>
+        <td style="color:var(--text-m);font-size:11px;max-width:200px">${c.purpose}</td>
         <td style="font-family:monospace;font-size:10px;color:var(--accent);white-space:nowrap">${c.envKey.split(',').map(k=>`<div>${k.trim()}</div>`).join('')}</td>
-        <td>${pill(c.required)}</td>
-        <td><a href="${c.url||'#'}" target="_blank" style="white-space:nowrap">Get Key ↗</a></td>
+        <td>${statusBadge(c.envKey)}&nbsp;${levelPill(c.required)}</td>
+        <td><a href="${c.url||'#'}" target="_blank" style="white-space:nowrap;color:var(--accent)">Get Key ↗</a></td>
       </tr>`).join('')}
     `;
 
     openModal(`
-      <h2 style="margin-bottom:6px">🔑 API Credentials &amp; Keys</h2>
-      <p style="color:var(--text-s);font-size:12px;margin-bottom:10px">Keys are stored as Cloudflare Secrets — never exposed in client code.<br>Add via: <code style="background:rgba(168,85,247,.15);padding:2px 6px;border-radius:4px">wrangler secret put KEY_NAME</code> or the Cloudflare dashboard.</p>
+      <h2 style="margin-bottom:6px">🔑 API Integration Status</h2>
+      <p style="color:var(--text-s);font-size:12px;margin-bottom:10px">Keys stored as Cloudflare Secrets — never exposed to users.<br>
+      <strong style="color:#10b981">● LIVE</strong> = configured &amp; active &nbsp;·&nbsp; <strong style="color:#f59e0b">⚠ MISSING</strong> = needs to be added &nbsp;·&nbsp; <strong style="color:#a78bfa">— —</strong> = not yet mapped</p>
       <div style="overflow-x:auto">
       <table class="cred-tbl">
-        <thead><tr><th>Service</th><th>What It Powers</th><th>Env Variable(s)</th><th>Level</th><th>Get Key</th></tr></thead>
+        <thead><tr><th>Service</th><th>What It Powers</th><th>Env Variable(s)</th><th>Status</th><th>Get Key</th></tr></thead>
         <tbody>
-          ${renderSection('🟢 Core — Required', coreItems, 'var(--green)')}
-          ${renderSection('🟡 Recommended — Unlocks AI Chat', recItems, 'var(--warn)')}
+          ${renderSection('🟢 Core — Required', coreItems, '#10b981')}
+          ${renderSection('🟡 Recommended — AI Chat Models', recItems, '#f59e0b')}
           ${renderSection('🖼️ Image Generation Models', imgItems, '#a78bfa')}
           ${renderSection('🎬 Video Generation Models', vidItems, '#60a5fa')}
-          ${renderSection('🔗 Integrations — Productivity & Team', integItems, 'var(--text-m)')}
-          ${renderSection('🎵 FlowState Audio — Music AI', audioItems, '#f472b6')}
+          ${renderSection('🎵 FlowState Audio — Music &amp; Voice', audioItems, '#f472b6')}
           ${renderSection('⚡ 264 Pro Video Editor', pro264Items, '#fb923c')}
-          ${otherItems.length ? renderSection('Other', otherItems, 'var(--text-m)') : ''}
+          ${renderSection('🔗 Integrations — Productivity &amp; Team', integItems, '#6b7280')}
+          ${otherItems.length ? renderSection('Other', otherItems, '#6b7280') : ''}
         </tbody>
       </table>
       </div>
