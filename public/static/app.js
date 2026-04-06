@@ -2561,7 +2561,7 @@ async function loadClawbotPromo() {
     const el = document.getElementById('clawbot-promo');
     if (!el) return;
     el.innerHTML = `
-      <div class="clawbot-promo-logo">🦾</div>
+      <div class="clawbot-promo-logo"><img src="/static/clawbot-mascot.png" style="width:80px;height:80px;object-fit:contain"></div>
       <div class="clawbot-promo-title">${d.headline}</div>
       <div class="clawbot-promo-sub">Your AI brain for 264 Pro, Flowstate Audio &amp; Hub. Agentic workflows, walkthrough generation, and smart automation — all in one.</div>
       <div class="clawbot-price-row">
@@ -2575,7 +2575,7 @@ async function loadClawbotPromo() {
     `;
   } catch(e) {
     const el = document.getElementById('clawbot-promo');
-    if (el) el.innerHTML = `<div class="clawbot-promo-logo">🦾</div><div class="clawbot-promo-title">Unlock Clawbot</div><div class="clawbot-promo-sub">Add CLAWBOT_API_KEY to your Cloudflare secrets to activate ClawFlow.</div>`;
+    if (el) el.innerHTML = `<div class="clawbot-promo-logo"><img src="/static/clawbot-mascot.png" style="width:80px;height:80px;object-fit:contain"></div><div class="clawbot-promo-title">Unlock Clawbot</div><div class="clawbot-promo-sub">Add CLAWBOT_API_KEY to your Cloudflare secrets to activate ClawFlow.</div>`;
   }
 }
 
@@ -2940,7 +2940,7 @@ async function sendClawbotMessage() {
     const data = await res.json();
     removeTyping(tid);
     if (data.error === 'clawflow_required') {
-      appendClawbotMsg('ai', '🦾 ClawFlow subscription required to continue. Upgrade below ↓', 'Clawbot');
+      appendClawbotMsg('ai', '⚡ ClawFlow subscription required to continue. Upgrade below ↓', 'Clawbot');
       document.getElementById('clawbot-active').style.display = 'none';
       document.getElementById('clawbot-gate').style.display = 'block';
       loadClawbotPromo(); return;
@@ -2968,7 +2968,7 @@ function appendClawbotMsg(role, text, label) {
   const div = document.createElement('div');
   div.className = `msg ${role}`;
   const av = role==='ai'
-    ? `<div class="msg-av" style="background:linear-gradient(135deg,#a855f7,#06b6d4)">🦾</div>`
+    ? `<div class="msg-av" style="background:linear-gradient(135deg,#a855f7,#06b6d4);overflow:hidden;padding:0"><img src="/static/clawbot-mascot.png" style="width:100%;height:100%;object-fit:cover"></div>`
     : `<div class="msg-av" style="background:var(--bg-card)">👤</div>`;
   const meta = role==='ai'
     ? `<div class="msg-meta"><span class="m-tag" style="background:rgba(6,182,212,.15);color:#06b6d4">Clawbot</span><span style="font-size:11px;color:var(--text-m)">${label}</span></div>`
@@ -2984,7 +2984,7 @@ function appendClawbotTyping() {
   const div = document.createElement('div');
   const id = 'clawbot-typing-' + Date.now();
   div.id = id; div.className = 'msg ai';
-  div.innerHTML = `<div class="msg-av" style="background:linear-gradient(135deg,#a855f7,#06b6d4)">🦾</div><div><div class="msg-bub"><div class="typing"><div class="t-dot"></div><div class="t-dot"></div><div class="t-dot"></div></div></div></div>`;
+  div.innerHTML = `<div class="msg-av" style="background:linear-gradient(135deg,#a855f7,#06b6d4);overflow:hidden;padding:0"><img src="/static/clawbot-mascot.png" style="width:100%;height:100%;object-fit:cover"></div><div><div class="msg-bub"><div class="typing"><div class="t-dot"></div><div class="t-dot"></div><div class="t-dot"></div></div></div></div>`;
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
   return id;
@@ -2995,7 +2995,7 @@ function offerWalkthrough(context, appCtx) {
   const content = document.getElementById('clawbot-wt-content');
   if (!bar || !content) return;
   const safeCtx = context.slice(0,60).replace(/'/g,'').replace(/"/g,'');
-  content.innerHTML = `<strong>🦾 Need a walkthrough?</strong> Want me to generate a step-by-step guide? <button class="clawbot-quick-btn" style="margin-left:8px" onclick="generateWalkthrough('${safeCtx}','${appCtx}')">Yes, create it</button>`;
+  content.innerHTML = `<strong><img src="/static/clawbot-mascot.png" style="width:20px;height:20px;object-fit:contain;vertical-align:middle;margin-right:4px"> Need a walkthrough?</strong> Want me to generate a step-by-step guide? <button class="clawbot-quick-btn" style="margin-left:8px" onclick="generateWalkthrough('${safeCtx}','${appCtx}')">Yes, create it</button>`;
   bar.style.display = 'flex';
 }
 
