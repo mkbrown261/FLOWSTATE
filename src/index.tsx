@@ -1923,129 +1923,179 @@ app.post('/api/264pro/ai-tool', async (c) => {
     return c.json({ error: 'Replicate error', detail: pred }, 500)
   }
 
-  // ── Slow Motion / Frame Interpolation (RIFE via Replicate) ───────────────
+  // ── Slow Motion / Frame Interpolation (FILM via Replicate versioned) ───────
   if (tool === 'slow_mo') {
-    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'AI Slow-Mo uses RIFE frame interpolation for 2x–8x slow motion.' })
+    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'AI Slow-Mo uses FILM frame interpolation for buttery 2x–8x slow motion.' })
     if (!videoUrl) return c.json({ error: 'videoUrl required' }, 400)
     const multiplier = params.multiplier || 2
-    const pred = await callReplicate(replicateKey, 'nateraw/video-retalking', {
-      video: videoUrl,
-      face: imageUrl, // optional face reference
-      ...params,
-    })
-    // Fallback: use DAIN for frame interpolation
-    const pred2 = await callReplicate(replicateKey, 'arielreplicate/dain-app', {
-      video: videoUrl,
-      interpolation_factor: multiplier,
-    })
-    if (pred2.error) return c.json({ error: pred2.error }, 500)
-    if (pred2.status === 'succeeded') return c.json({ status: 'complete', outputUrl: (pred2 as any).output, tool })
-    if (pred2.id) return c.json({ status: 'queued', predictionId: pred2.id, tool, message: `${multiplier}x slow-mo queued via DAIN.` })
-    return c.json({ error: 'Replicate error', detail: pred2 }, 500)
-  }
-
-  // ── Rotoscoping / Background Remove (SAM via HuggingFace) ────────────────
-  if (tool === 'rotoscope' || tool === 'bg_remove') {
-    if (!hfKey && !replicateKey) return c.json({ error: 'HUGGINGFACE_API_KEY or REPLICATE_API_KEY required', demo: true, message: 'AI Rotoscoping uses SAM (Segment Anything) to remove backgrounds.' })
-    if (!imageUrl) return c.json({ error: 'imageUrl required' }, 400)
-    // Use Replicate with REMBG (most reliable)
-    if (replicateKey) {
-      const pred = await callReplicate(replicateKey, 'cjwbw/rembg', {
-        image: imageUrl,
+    try {
+      const res = await fetch('https://api.replicate.com/v1/predictions', {
+        method: 'POST',
+        headers: { Authorization: `Token ${replicateKey}`, 'Content-Type': 'application/json', Prefer: 'wait=60' },
+        body: JSON.stringify({
+          version: '57096e2d47a2b72c44e32ae2da0ba74fbc208a3e3de9e7a70a1cba7cd0399f4e', // google-research/frame-interpolation (FILM)
+          input: { frame1: videoUrl, times_to_interpolate: multiplier },
+        }),
       })
-      if (pred.error) return c.json({ error: pred.error }, 500)
-      if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: (pred as any).output, tool })
-      if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Background removal queued via rembg.' })
-    }
-    // Fallback: HuggingFace RMBG
-    if (hfKey) {
-      // Fetch image and send as binary
-      const imgRes = await fetch(imageUrl)
-      const imgBuf = await imgRes.arrayBuffer()
-      const result = await callHuggingFace(hfKey, 'briaai/RMBG-1.4', imgBuf)
-      if (result.error) return c.json({ error: result.error }, 500)
-      if (result.type === 'image') return c.json({ status: 'complete', outputBase64: result.data, contentType: result.contentType, tool })
-    }
-    return c.json({ error: 'No suitable API key configured' }, 500)
-  }
-
-  // ── AI Colorize (Deoldify via Replicate) ─────────────────────────────────
-  if (tool === 'colorize') {
-    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'AI Colorize uses DeOldify to add color to black & white footage.' })
-    if (!imageUrl && !videoUrl) return c.json({ error: 'imageUrl or videoUrl required' }, 400)
-    const pred = await callReplicate(replicateKey, 'arielreplicate/deoldify_image', {
-      input_image: imageUrl,
-      render_factor: params.renderFactor || 35,
-    })
-    if (pred.error) return c.json({ error: pred.error }, 500)
-    if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: (pred as any).output, tool })
-    if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Colorization queued via DeOldify.' })
-    return c.json({ error: 'Replicate error', detail: pred }, 500)
-  }
-
-  // ── Depth Map (MiDaS via HuggingFace) ───────────────────────────────────
-  if (tool === 'depth_map') {
-    if (!hfKey && !replicateKey) return c.json({ error: 'HUGGINGFACE_API_KEY required', demo: true, message: 'Depth Map uses MiDaS to generate depth information for parallax effects.' })
-    if (!imageUrl) return c.json({ error: 'imageUrl required' }, 400)
-    if (hfKey) {
-      const imgRes = await fetch(imageUrl)
-      const imgBuf = await imgRes.arrayBuffer()
-      const result = await callHuggingFace(hfKey, 'Intel/dpt-hybrid-midas', imgBuf)
-      if (result.error) return c.json({ error: result.error }, 500)
-      if (result.type === 'image') return c.json({ status: 'complete', outputBase64: result.data, contentType: result.contentType, tool })
-    }
-    // Fallback: Replicate MiDaS
-    if (replicateKey) {
-      const pred = await callReplicate(replicateKey, 'cjwbw/midas', {
-        image: imageUrl,
-        model_type: params.modelType || 'DPT_Large',
-      })
-      if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Depth map queued via MiDaS.' })
-    }
-    return c.json({ error: 'No suitable key configured' }, 500)
-  }
-
-  // ── Video Denoise (FastDVDnet via Replicate) ──────────────────────────────
-  if (tool === 'video_denoise') {
-    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'Video Denoise uses FastDVDnet for temporal noise suppression.' })
-    if (!videoUrl) return c.json({ error: 'videoUrl required' }, 400)
-    // Use Real-ESRGAN with denoise on video
-    const pred = await callReplicate(replicateKey, 'daanelson/real-esrgan', {
-      video: videoUrl,
-      scale: 1, // denoise only, no upscale
-    })
-    if (pred.error) return c.json({ error: pred.error }, 500)
-    if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Video denoise queued.' })
+      const pred: any = await res.json()
+      if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: Array.isArray(pred.output) ? pred.output[0] : pred.output, tool })
+      if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: `${multiplier}x slow-mo queued via FILM.` })
+      if (pred.detail) return c.json({ error: pred.detail }, 429)
+    } catch (e: any) { return c.json({ error: e.message }, 500) }
     return c.json({ error: 'Replicate error' }, 500)
   }
 
-  // ── Object Remove (LaMa via HuggingFace / Replicate) ─────────────────────
-  if (tool === 'object_remove' || tool === 'inpaint') {
-    if (!replicateKey && !hfKey) return c.json({ error: 'REPLICATE_API_KEY or HUGGINGFACE_API_KEY required', demo: true, message: 'Object Remove uses LaMa inpainting to seamlessly remove objects.' })
+  // ── Rotoscoping / Background Remove (rembg via Replicate versioned) ─────────
+  if (tool === 'rotoscope' || tool === 'bg_remove') {
+    if (!hfKey && !replicateKey) return c.json({ error: 'HUGGINGFACE_API_KEY or REPLICATE_API_KEY required', demo: true, message: 'AI Rotoscoping uses rembg to remove backgrounds with clean alpha.' })
     if (!imageUrl) return c.json({ error: 'imageUrl required' }, 400)
+    // Use versioned Replicate prediction (more stable than /models/owner/name)
     if (replicateKey) {
-      const pred = await callReplicate(replicateKey, 'andreasjansson/stable-diffusion-inpainting', {
-        image: imageUrl,
-        mask: params.maskUrl || imageUrl,
-        prompt: params.prompt || 'clean background, empty',
-        num_inference_steps: params.steps || 30,
-      })
-      if (pred.error) return c.json({ error: pred.error }, 500)
-      if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Inpainting queued.' })
+      try {
+        const res = await fetch('https://api.replicate.com/v1/predictions', {
+          method: 'POST',
+          headers: { Authorization: `Token ${replicateKey}`, 'Content-Type': 'application/json', Prefer: 'wait=30' },
+          body: JSON.stringify({
+            version: 'fb8af171cfa1616ddcf1242c851214442d763e9f3bd7d8b1b7f35bede7f5d4a5', // lucataco/remove-bg
+            input: { image: imageUrl },
+          }),
+        })
+        const pred: any = await res.json()
+        if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: Array.isArray(pred.output) ? pred.output[0] : pred.output, tool })
+        if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Background removal queued.' })
+        if (pred.detail) return c.json({ error: pred.detail }, 429)
+      } catch {}
     }
-    return c.json({ error: 'No suitable key configured' }, 500)
+    // Fallback: HuggingFace RMBG
+    if (hfKey) {
+      const imgRes = await fetch(imageUrl)
+      const imgBuf = await imgRes.arrayBuffer()
+      const result = await callHuggingFace(hfKey, 'briaai/RMBG-1.4', imgBuf)
+      if (!result.error && result.type === 'image') return c.json({ status: 'complete', outputBase64: result.data, contentType: result.contentType, tool })
+    }
+    return c.json({ error: 'Background removal failed — check API key credits or try again.' }, 500)
   }
 
-  // ── Video Upscale (TopazLabs-style via Replicate) ─────────────────────────
+  // ── AI Colorize (Deoldify via Replicate versioned) ───────────────────────
+  if (tool === 'colorize') {
+    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'AI Colorize uses DeOldify to add color to black & white footage.' })
+    if (!imageUrl && !videoUrl) return c.json({ error: 'imageUrl or videoUrl required' }, 400)
+    try {
+      const res = await fetch('https://api.replicate.com/v1/predictions', {
+        method: 'POST',
+        headers: { Authorization: `Token ${replicateKey}`, 'Content-Type': 'application/json', Prefer: 'wait=30' },
+        body: JSON.stringify({
+          version: '9c7a4a63c93285c5680068e019d07c36db7fe5b5fcff5ac2ae61d8f9bbfdc1c5', // arielreplicate/deoldify_image
+          input: {
+            input_image: imageUrl || videoUrl,
+            render_factor: params.renderFactor || 35,
+          },
+        }),
+      })
+      const pred: any = await res.json()
+      if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: Array.isArray(pred.output) ? pred.output[0] : pred.output, tool })
+      if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Colorization queued via DeOldify.' })
+      if (pred.detail) return c.json({ error: pred.detail }, 429)
+    } catch (e: any) { return c.json({ error: e.message }, 500) }
+    return c.json({ error: 'Replicate error' }, 500)
+  }
+
+  // ── Depth Map (MiDaS via HuggingFace or Replicate) ──────────────────────
+  if (tool === 'depth_map') {
+    if (!hfKey && !replicateKey) return c.json({ error: 'HUGGINGFACE_API_KEY required', demo: true, message: 'Depth Map uses MiDaS to generate depth info for parallax effects.' })
+    if (!imageUrl) return c.json({ error: 'imageUrl required' }, 400)
+    // Try HuggingFace first (faster, free)
+    if (hfKey) {
+      const imgRes = await fetch(imageUrl)
+      const imgBuf = await imgRes.arrayBuffer()
+      const result = await callHuggingFace(hfKey, 'Intel/dpt-large', imgBuf)
+      if (!result.error && result.type === 'image') return c.json({ status: 'complete', outputBase64: result.data, contentType: result.contentType, tool })
+    }
+    // Fallback: Replicate versioned MiDaS
+    if (replicateKey) {
+      try {
+        const res = await fetch('https://api.replicate.com/v1/predictions', {
+          method: 'POST',
+          headers: { Authorization: `Token ${replicateKey}`, 'Content-Type': 'application/json', Prefer: 'wait=30' },
+          body: JSON.stringify({
+            version: 'a59e1f2c89843d30bcce7f57e8e2b4ce7d7b1e6f12484d574d5c2dc9ca4c3ca3', // hf-inference/dpt-large
+            input: { image: imageUrl },
+          }),
+        })
+        const pred: any = await res.json()
+        if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Depth map queued.' })
+      } catch {}
+    }
+    return c.json({ error: 'Depth map failed — check API key credits or try again.' }, 500)
+  }
+
+  // ── Video Denoise (Real-ESRGAN on video via Replicate) ────────────────────
+  if (tool === 'video_denoise') {
+    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'Video Denoise uses Real-ESRGAN for temporal noise suppression on video.' })
+    if (!videoUrl) return c.json({ error: 'videoUrl required' }, 400)
+    try {
+      const res = await fetch('https://api.replicate.com/v1/predictions', {
+        method: 'POST',
+        headers: { Authorization: `Token ${replicateKey}`, 'Content-Type': 'application/json', Prefer: 'wait=30' },
+        body: JSON.stringify({
+          version: 'f121d640bd286e1fdc67f9799164c1d5be36ff74576ee2d5d2c3e5d2e8fc5b14', // nightmareai/real-esrgan video
+          input: { video: videoUrl, scale: 1, denoise: true },
+        }),
+      })
+      const pred: any = await res.json()
+      if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: Array.isArray(pred.output) ? pred.output[0] : pred.output, tool })
+      if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Video denoise queued.' })
+      if (pred.detail) return c.json({ error: pred.detail }, 429)
+    } catch (e: any) { return c.json({ error: e.message }, 500) }
+    return c.json({ error: 'Replicate error' }, 500)
+  }
+
+  // ── Object Remove / Inpainting (Stable Diffusion Inpainting via Replicate) ─
+  if (tool === 'object_remove' || tool === 'inpaint') {
+    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'Object Remove uses SD Inpainting to seamlessly fill in removed objects.' })
+    if (!imageUrl) return c.json({ error: 'imageUrl required. Also provide maskUrl in params.' }, 400)
+    if (!params.maskUrl) return c.json({ error: 'params.maskUrl required — provide a black/white mask image URL (white = area to fill).' }, 400)
+    try {
+      const res = await fetch('https://api.replicate.com/v1/predictions', {
+        method: 'POST',
+        headers: { Authorization: `Token ${replicateKey}`, 'Content-Type': 'application/json', Prefer: 'wait=60' },
+        body: JSON.stringify({
+          version: 'c11bac58203367db93a3c552bd49a25a5418458ddfffdd6324e4e6c77bb54d97', // stability-ai/stable-diffusion-inpainting
+          input: {
+            image: imageUrl,
+            mask: params.maskUrl,
+            prompt: params.prompt || 'seamless background, clean fill, realistic texture',
+            num_inference_steps: params.steps || 30,
+            guidance_scale: params.guidanceScale || 7.5,
+          },
+        }),
+      })
+      const pred: any = await res.json()
+      if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: Array.isArray(pred.output) ? pred.output[0] : pred.output, tool })
+      if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Inpainting queued.' })
+      if (pred.detail) return c.json({ error: pred.detail }, 429)
+    } catch (e: any) { return c.json({ error: e.message }, 500) }
+    return c.json({ error: 'Replicate error' }, 500)
+  }
+
+  // ── Video Upscale (Real-ESRGAN video via Replicate) ──────────────────────
   if (tool === 'video_upscale') {
     if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'Video Upscale uses Real-ESRGAN to upscale video to 4K.' })
     if (!videoUrl) return c.json({ error: 'videoUrl required' }, 400)
-    const pred = await callReplicate(replicateKey, 'nightmareai/real-esrgan', {
-      image: videoUrl,
-      scale: params.scale || 2,
-    })
-    if (pred.error) return c.json({ error: pred.error }, 500)
-    if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: `Video upscale ${params.scale || 2}x queued.` })
+    try {
+      const res = await fetch('https://api.replicate.com/v1/predictions', {
+        method: 'POST',
+        headers: { Authorization: `Token ${replicateKey}`, 'Content-Type': 'application/json', Prefer: 'wait=30' },
+        body: JSON.stringify({
+          version: 'f121d640bd286e1fdc67f9799164c1d5be36ff74576ee2d5d2c3e5d2e8fc5b14', // nightmareai/real-esrgan
+          input: { video: videoUrl, scale: params.scale || 2 },
+        }),
+      })
+      const pred: any = await res.json()
+      if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: Array.isArray(pred.output) ? pred.output[0] : pred.output, tool })
+      if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: `Video upscale ${params.scale || 2}x queued.` })
+      if (pred.detail) return c.json({ error: pred.detail }, 429)
+    } catch (e: any) { return c.json({ error: e.message }, 500) }
     return c.json({ error: 'Replicate error' }, 500)
   }
 
