@@ -127,6 +127,12 @@ app.post('/api/auth/logout', async (c) => {
   return c.json({ ok: true })
 })
 
+// ─── Session check ────────────────────────────────────────────────────────────
+app.get('/api/auth/session', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  return c.json({ user: session || null })
+})
+
 // ─── Notion OAuth ─────────────────────────────────────────────────────────────
 app.get('/api/auth/notion', async (c) => {
   const clientId = c.env?.NOTION_CLIENT_ID || ''

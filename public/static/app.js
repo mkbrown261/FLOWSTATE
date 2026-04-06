@@ -194,18 +194,31 @@ function openAuthPopup(url, onSuccess) {
   function onAuthMessage(e) {
     if (e.origin !== window.location.origin) return;
     if (e.data?.type === 'FS_AUTH_SUCCESS') {
+      authSucceeded = true;
       window.removeEventListener('message', onAuthMessage);
       if (!popup.closed) { try { popup.close(); } catch(_){} }
       if (onSuccess) { onSuccess(); } else { window.location.reload(); }
     }
   }
+  let authSucceeded = false;
   window.addEventListener('message', onAuthMessage);
-  // Fallback: if popup closes without sending message, reload anyway
+  // Fallback: if popup closes without sending message, only reload if not already logged in
   const poll = setInterval(() => {
     if (popup.closed) {
       clearInterval(poll);
       window.removeEventListener('message', onAuthMessage);
-      if (onSuccess) { onSuccess(); } else { window.location.reload(); }
+      if (authSucceeded) return; // already handled by onAuthMessage
+      // Check if we're already logged in before reloading
+      fetch('/api/auth/session')
+        .then(r => r.json())
+        .then(d => {
+          if (d.user) {
+            // Already logged in — just reload to show the app
+            window.location.reload();
+          }
+          // If not logged in and popup closed, user dismissed it — do nothing
+        })
+        .catch(() => {});
     }
   }, 800);
 }
