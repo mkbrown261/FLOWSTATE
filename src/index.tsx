@@ -1269,10 +1269,21 @@ app.post('/api/team/update-role', async (c) => {
 app.get('/api/clawbot/status', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ subscriptionActive: false, tier: 'none', coinsRemaining: 0 })
-  // Production: verify Stripe subscription + KV coin balance.
-  // Dev: CLAWBOT_API_KEY presence signals active subscription.
-  const hasKey = !!c.env?.CLAWBOT_API_KEY
-  return c.json(declareClawbotSession(session.email, { active: hasKey, coinsRemaining: hasKey ? 500 : 0 }))
+
+  // Check Redis for paid ClawFlow tier (set by Stripe webhook on payment, cleared on cancel)
+  let isClawflowActive = false
+  if (c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+    try {
+      const r = await fetch(`${c.env.UPSTASH_REDIS_URL}/get/tier_email:${encodeURIComponent(session.email)}`, {
+        headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
+      })
+      const data: any = await r.json()
+      const storedTier = data?.result || ''
+      isClawflowActive = storedTier === 'clawflow'
+    } catch (_) {}
+  }
+
+  return c.json(declareClawbotSession(session.email, { active: isClawflowActive, coinsRemaining: isClawflowActive ? 500 : 0 }))
 })
 
 /** Clawbot chat — gated behind ClawFlow subscription. */
@@ -1283,8 +1294,18 @@ app.post('/api/clawbot/chat', async (c) => {
   const { message, app: appCtx = 'flowstate_hub', history = [] } = await c.req.json()
   if (!message?.trim()) return c.json({ error: 'message_required' }, 400)
 
-  // ── Paywall check ──────────────────────────────────────────────────────────
-  if (!c.env?.CLAWBOT_API_KEY) {
+  // ── Paywall check — must have active ClawFlow subscription in Redis ────────
+  let clawflowPaid = false
+  if (c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+    try {
+      const r = await fetch(`${c.env.UPSTASH_REDIS_URL}/get/tier_email:${encodeURIComponent(session.email)}`, {
+        headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
+      })
+      const data: any = await r.json()
+      clawflowPaid = (data?.result || '') === 'clawflow'
+    } catch (_) {}
+  }
+  if (!clawflowPaid) {
     return c.json({ error: 'clawflow_required', promo: declareClawFlowPromo(), reply: null }, 402)
   }
 
@@ -1480,16 +1501,28 @@ app.post('/api/audio/generate', async (c) => {
     }
 
     if (tool === 'separate_stems') {
-      const moisesKey = c.env?.MOISES_API_KEY
-      if (!moisesKey) return c.json({ ...result, status: 'complete', message: 'Demo: Stem separation requires MOISES_API_KEY in Cloudflare secrets.' })
-      // Moises API v2
-      const res = await fetch('https://developer-api.moises.ai/api/job', {
+      const ashKey = c.env?.AUDIOSHAKE_API_KEY
+      if (!ashKey) return c.json({ ...result, status: 'complete', message: 'Demo: Stem separation requires AUDIOSHAKE_API_KEY in Cloudflare secrets.' })
+      // AudioShake API — upload URL and request 4-stem separation
+      const audioUrl = result.audioUrl || ''
+      if (!audioUrl) return c.json({ ...result, status: 'error', message: 'No audio URL provided for stem separation.' })
+      const res = await fetch('https://groovy.audioshake.ai/upload/link', {
         method: 'POST',
-        headers: { Authorization: moisesKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'separate-' + Date.now(), workflow: 'moises/separation-4stems', params: { inputUrl: result.audioUrl || '' } }),
+        headers: { Authorization: `Bearer ${ashKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ link: audioUrl }),
       })
-      const data: any = await res.json()
-      return c.json({ ...result, status: 'queued', jobId: data?.id, message: 'Stem separation queued via Moises AI.' })
+      const uploadData: any = await res.json()
+      const assetId = uploadData?.data?.id || uploadData?.id
+      if (!assetId) return c.json({ ...result, status: 'error', message: 'AudioShake upload failed: ' + JSON.stringify(uploadData) })
+      // Create separation job
+      const jobRes = await fetch('https://groovy.audioshake.ai/job', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${ashKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetId, callbackUrl: null, stems: ['vocals', 'drums', 'bass', 'other'] }),
+      })
+      const jobData: any = await jobRes.json()
+      const jobId = jobData?.data?.id || jobData?.id
+      return c.json({ ...result, status: 'queued', jobId, assetId, message: `Stem separation queued via AudioShake. Job ID: ${jobId}` })
     }
 
     if (tool === 'master_track') {
@@ -1906,6 +1939,42 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .gen-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
 .gen-panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:12px}
 .gen-i2v-panel{margin-bottom:0}
+/* ── Generate sub-tab bar ── */
+.gen-subtab-bar{display:flex;align-items:center;gap:4px;padding:8px 16px;background:rgba(15,15,26,.7);border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto;scrollbar-width:none}
+.gen-subtab-bar::-webkit-scrollbar{display:none}
+.gen-subtab-btn{display:flex;align-items:center;gap:6px;padding:7px 16px;border-radius:10px;font-size:12px;font-weight:700;color:var(--text-s);border:1px solid transparent;background:transparent;cursor:pointer;transition:.18s;white-space:nowrap}
+.gen-subtab-btn:hover{color:var(--text-p);background:rgba(168,85,247,.08)}
+.gen-subtab-btn.active{color:var(--accent);background:rgba(168,85,247,.14);border-color:rgba(168,85,247,.3)}
+.gen-subtab-btn i{font-size:12px}
+/* ── Generate body wrap (sub-panes + sidebar row) ── */
+.gen-body-wrap{display:flex;flex:1;overflow:hidden;position:relative}
+.gen-sub-pane{display:none;flex:1;overflow:hidden;flex-direction:row;height:100%}
+.gen-sub-pane.active{display:flex}
+.gen-main-area{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:0}
+/* ── Generate sidebar ── */
+.gen-sidebar{width:240px;flex-shrink:0;background:rgba(10,10,20,.6);border-left:1px solid var(--border);display:flex;flex-direction:column;padding:14px;gap:8px;overflow-y:auto}
+.gen-sidebar-hd{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent);margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.gen-sidebar-empty{text-align:center;font-size:12px;color:var(--text-m);padding:20px 8px;line-height:1.6;flex:1}
+.gen-sidebar-log{display:flex;flex-direction:column;gap:6px;font-size:11px}
+.gen-sidebar-entry{padding:7px 10px;background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.15);border-radius:8px;line-height:1.5;color:var(--text-s);animation:fadeUp .25s ease}
+.gen-sidebar-entry.success{background:rgba(16,185,129,.08);border-color:rgba(16,185,129,.2);color:#10b981}
+.gen-sidebar-entry.error{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.2);color:#ef4444}
+.gen-sidebar-section{padding-top:10px;border-top:1px solid var(--border)}
+.gen-sidebar-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:6px}
+.gen-sidebar-row{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--text-s);padding:3px 0}
+/* ── File tool grid ── */
+.file-tool-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;margin-top:4px}
+.file-tool-card{background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:8px;transition:.2s}
+.file-tool-card:hover{border-color:var(--border-h)}
+.file-tool-icon{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0}
+.file-tool-name{font-size:13px;font-weight:800;color:var(--text-p)}
+.file-tool-desc{font-size:11px;color:var(--text-m);line-height:1.55}
+.file-tool-drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:16px;border:2px dashed var(--border);border-radius:10px;cursor:pointer;transition:.2s;font-size:12px;color:var(--text-m);text-align:center;min-height:72px}
+.file-tool-drop:hover{border-color:var(--accent);color:var(--text-p)}
+.file-tool-status{font-size:11px;color:var(--text-m);min-height:14px}
+.file-tool-results{display:flex;flex-direction:column;gap:6px;font-size:11px}
+.file-tool-dl{display:flex;align-items:center;gap:6px;padding:5px 10px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.25);border-radius:7px;color:#10b981;text-decoration:none;font-weight:600;transition:.2s}
+.file-tool-dl:hover{background:rgba(16,185,129,.18)}
 .gen-section-header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .gen-title{font-size:14px;font-weight:700;margin:0}
 .gen-picker-wrap{position:relative;display:flex;flex-direction:column;gap:6px}
@@ -2346,230 +2415,437 @@ em{color:var(--accent);font-style:italic}
 </div>
 
 <!-- GENERATE TAB -->
-<div class="tab-pane" id="tab-pane-generate" style="display:none;padding:16px;overflow-y:auto">
-  <div class="gen-grid">
+<!-- ══════════════════════════════════════════════════════════
+     GENERATE TAB  —  sub-tab layout with live sidebar
+     ══════════════════════════════════════════════════════════ -->
+<div class="tab-pane" id="tab-pane-generate" style="display:none;padding:0;overflow:hidden;flex-direction:column">
 
-    <!-- ── IMAGE GENERATION ─────────────────────────────── -->
-    <div class="gen-panel">
-      <div class="gen-section-header">
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="width:28px;height:28px;border-radius:8px;background:rgba(168,85,247,.2);display:flex;align-items:center;justify-content:center"><i class="fas fa-image" style="color:var(--accent);font-size:13px"></i></span>
-          <span class="gen-title" style="margin:0">Image Generation</span>
-        </div>
-      </div>
-      <!-- Model picker -->
-      <div class="gen-picker-wrap" id="gs-img-picker-wrap">
-        <div class="gs-gen-picker" id="gs-img-picker"></div>
-        <div class="gen-model-desc" id="img-model-desc">OpenAI DALL-E 3 — Best-in-class text rendering, photorealistic scenes, and creative illustrations.</div>
-      </div>
-      <!-- Prompt -->
-      <textarea class="gen-pmt" id="img-prompt" placeholder="Describe the image you want to generate&#8230; e.g. 'A futuristic city at sunset, neon reflections on rain-slicked streets'" rows="4"></textarea>
-      <!-- Action -->
-      <button class="btn-gen" id="btn-gen-img"><i class="fas fa-wand-magic-sparkles"></i>&nbsp; Generate Image</button>
-      <div class="gen-results" id="img-results"></div>
-    </div>
-
-    <!-- ── VIDEO GENERATION ─────────────────────────────── -->
-    <div class="gen-panel">
-      <div class="gen-section-header">
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="width:28px;height:28px;border-radius:8px;background:rgba(236,72,153,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-video" style="color:var(--pink);font-size:13px"></i></span>
-          <span class="gen-title" style="margin:0">Video Generation</span>
-        </div>
-      </div>
-      <!-- Model picker -->
-      <div class="gen-picker-wrap" id="gs-vid-picker-wrap">
-        <div class="gs-gen-picker" id="gs-vid-picker"></div>
-        <div class="gen-model-desc" id="vid-model-desc">Google Veo 2 — Cinematic quality video with realistic motion, lighting, and depth of field.</div>
-      </div>
-      <!-- Prompt -->
-      <textarea class="gen-pmt" id="vid-prompt" placeholder="Describe the video you want to generate&#8230; e.g. 'Drone shot over misty mountain peaks at golden hour'" rows="4"></textarea>
-      <!-- Duration row -->
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-        <label style="font-size:12px;color:var(--text-s);white-space:nowrap">Duration</label>
-        <div class="gen-dur-row">
-          <button class="gen-dur-btn active" data-dur="4" onclick="setVidDur(this,4)">4s</button>
-          <button class="gen-dur-btn" data-dur="5" onclick="setVidDur(this,5)">5s</button>
-          <button class="gen-dur-btn" data-dur="8" onclick="setVidDur(this,8)">8s</button>
-          <button class="gen-dur-btn" data-dur="10" onclick="setVidDur(this,10)">10s</button>
-          <button class="gen-dur-btn" data-dur="15" onclick="setVidDur(this,15)">15s</button>
-        </div>
-      </div>
-      <!-- Action -->
-      <button class="btn-gen" id="btn-gen-vid"><i class="fas fa-film"></i>&nbsp; Generate Video</button>
-      <div id="vid-result" style="margin-top:12px;font-size:13px;color:var(--text-s)"></div>
-    </div>
-
+  <!-- ── Sub-tab bar ──────────────────────────────────────── -->
+  <div class="gen-subtab-bar" id="gen-subtab-bar">
+    <button class="gen-subtab-btn active" id="gsub-imggen"    onclick="switchGenSub('imggen')"><i class="fas fa-image"></i> Image Gen</button>
+    <button class="gen-subtab-btn"        id="gsub-vidgen"    onclick="switchGenSub('vidgen')"><i class="fas fa-video"></i> Video Gen</button>
+    <button class="gen-subtab-btn"        id="gsub-i2v"       onclick="switchGenSub('i2v')"><i class="fas fa-photo-film"></i> Image&rarr;Video</button>
+    <button class="gen-subtab-btn"        id="gsub-music"     onclick="switchGenSub('music')"><i class="fas fa-music"></i> AI Music</button>
+    <button class="gen-subtab-btn"        id="gsub-tts"       onclick="switchGenSub('tts')"><i class="fas fa-microphone"></i> Text to Speech</button>
+    <button class="gen-subtab-btn"        id="gsub-filetools" onclick="switchGenSub('filetools')"><i class="fas fa-folder-open"></i> File Tools</button>
   </div>
 
-  <!-- ── IMAGE → VIDEO ──────────────────────────────────── -->
-  <div class="gen-panel gen-i2v-panel">
-    <div class="gen-section-header">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="width:28px;height:28px;border-radius:8px;background:rgba(6,182,212,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-photo-film" style="color:var(--cyan);font-size:13px"></i></span>
-        <span class="gen-title" style="margin:0">Image &#8594; Video</span>
-        <span class="gen-new-badge">NEW</span>
-      </div>
-      <div class="gen-picker-wrap" id="gs-i2v-picker-wrap" style="flex:1;max-width:280px">
-        <div class="gs-gen-picker" id="gs-i2v-picker"></div>
-      </div>
-    </div>
-    <div class="gen-model-desc" id="i2v-model-desc" style="margin-bottom:14px">Select a video model above, then upload an image and describe the motion.</div>
-    <div class="gen-i2v-body">
-      <!-- Upload zone -->
-      <div class="gen-i2v-upload">
-        <label class="file-drop" for="img2vid-upload" id="i2v-drop-label">
-          <input type="file" id="img2vid-upload" accept="image/*" style="display:none">
-          <i class="fas fa-cloud-upload-alt" style="font-size:32px;color:var(--accent);margin-bottom:10px"></i>
-          <div style="font-size:14px;font-weight:700;color:var(--text-p)">Drop image here or click to upload</div>
-          <div style="font-size:12px;color:var(--text-m);margin-top:4px">JPG, PNG, WebP &#8226; Max 10MB</div>
-        </label>
-        <img id="img2vid-preview" class="img2vid-preview" alt="Preview" style="display:none">
-      </div>
-      <!-- Right side -->
-      <div class="gen-i2v-right">
-        <textarea class="gen-pmt" id="img2vid-prompt" placeholder="Describe the motion&#8230; e.g. 'Camera slowly zooms out, leaves gently swaying in the breeze'" rows="4" style="flex:1;min-height:100px"></textarea>
-        <button class="btn-gen btn-gen-i2v" id="btn-img2vid"><i class="fas fa-video"></i>&nbsp; Generate Video from Image</button>
-        <div id="img2vid-result" style="margin-top:10px;font-size:13px;color:var(--text-s)"></div>
-      </div>
-    </div>
-  </div>
+  <!-- ── Body: generator area + sidebar ──────────────────── -->
+  <div class="gen-body-wrap">
 
-  <input type="hidden" id="vid-dur" value="4">
-
-  <!-- ── AI MUSIC GENERATION ─────────────────────────────── -->
-  <div class="gen-panel gen-i2v-panel" style="margin-top:16px">
-    <div class="gen-section-header">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="width:28px;height:28px;border-radius:8px;background:rgba(16,185,129,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-music" style="color:#10b981;font-size:13px"></i></span>
-        <span class="gen-title" style="margin:0">Music Generation</span>
-      </div>
-    </div>
-    <!-- Tool selector -->
-    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-      <button id="aud-tool-track"  onclick="setAudioTool('generate_track')"  class="aud-tool-btn active-tool">🎼 Full Track</button>
-      <button id="aud-tool-melody" onclick="setAudioTool('generate_melody')" class="aud-tool-btn">🎹 Melody</button>
-      <button id="aud-tool-beat"   onclick="setAudioTool('generate_beat')"   class="aud-tool-btn">🥁 Beat</button>
-    </div>
-    <!-- Prompt -->
-    <textarea id="aud-prompt" placeholder="Describe your music… e.g. 'upbeat lo-fi hip hop with jazz chords, mellow vibe, 90 BPM'" class="gen-pmt" rows="3"></textarea>
-    <!-- Options row -->
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
-      <input id="aud-style" placeholder="Style (e.g. lo-fi, trap, ambient)" style="flex:1;min-width:140px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text-p);font-size:12px">
-      <!-- Duration pill picker -->
-      <div class="gs-gen-picker" style="position:relative" id="aud-dur-picker-wrap">
-        <button class="gs-model-pill" onclick="toggleAudPicker(event,'dur')" id="aud-dur-pill">
-          <i class="fas fa-clock" style="font-size:11px;opacity:.7"></i>
-          <span id="aud-dur-label">30 sec</span>
-          <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
-        </button>
-        <div class="gs-model-dropdown" id="aud-dur-dropdown" style="display:none;min-width:130px">
-          <div class="gs-model-row" onclick="setAudDur(15,'15 sec')"><span style="font-size:13px;font-weight:600">15 sec</span><div class="gs-radio" id="aud-dur-r-15"></div></div>
-          <div class="gs-model-row" onclick="setAudDur(30,'30 sec')"><span style="font-size:13px;font-weight:600">30 sec</span><div class="gs-radio gs-radio-active" id="aud-dur-r-30"></div></div>
+    <!-- ═══════════════════════ IMAGE GENERATION ═══════════════════════ -->
+    <div class="gen-sub-pane active" id="gen-pane-imggen">
+      <div class="gen-main-area">
+        <div class="gen-panel" style="flex:1">
+          <div class="gen-section-header">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="width:28px;height:28px;border-radius:8px;background:rgba(168,85,247,.2);display:flex;align-items:center;justify-content:center"><i class="fas fa-image" style="color:var(--accent);font-size:13px"></i></span>
+              <span class="gen-title" style="margin:0">Image Generation</span>
+            </div>
+          </div>
+          <div class="gen-picker-wrap" id="gs-img-picker-wrap">
+            <div class="gs-gen-picker" id="gs-img-picker"></div>
+            <div class="gen-model-desc" id="img-model-desc">Select a model above to get started.</div>
+          </div>
+          <textarea class="gen-pmt" id="img-prompt" placeholder="Describe the image you want to generate&#8230; e.g. 'A futuristic city at sunset, neon reflections on rain-slicked streets'" rows="5"></textarea>
+          <button class="btn-gen" id="btn-gen-img"><i class="fas fa-wand-magic-sparkles"></i>&nbsp; Generate Image</button>
+          <div class="gen-results" id="img-results"></div>
         </div>
       </div>
-      <!-- BPM pill picker -->
-      <div class="gs-gen-picker" style="position:relative" id="aud-bpm-picker-wrap">
-        <button class="gs-model-pill" onclick="toggleAudPicker(event,'bpm')" id="aud-bpm-pill">
-          <i class="fas fa-gauge-high" style="font-size:11px;opacity:.7"></i>
-          <span id="aud-bpm-label">BPM (auto)</span>
-          <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
-        </button>
-        <div class="gs-model-dropdown" id="aud-bpm-dropdown" style="display:none;min-width:140px">
-          <div class="gs-model-row" onclick="setAudBpm('','BPM (auto)')"><span style="font-size:13px;font-weight:600">Auto</span><div class="gs-radio gs-radio-active" id="aud-bpm-r-auto"></div></div>
-          <div class="gs-model-row" onclick="setAudBpm('80','80 BPM')"><span style="font-size:13px;font-weight:600">80 BPM</span><div class="gs-radio" id="aud-bpm-r-80"></div></div>
-          <div class="gs-model-row" onclick="setAudBpm('90','90 BPM')"><span style="font-size:13px;font-weight:600">90 BPM</span><div class="gs-radio" id="aud-bpm-r-90"></div></div>
-          <div class="gs-model-row" onclick="setAudBpm('100','100 BPM')"><span style="font-size:13px;font-weight:600">100 BPM</span><div class="gs-radio" id="aud-bpm-r-100"></div></div>
-          <div class="gs-model-row" onclick="setAudBpm('120','120 BPM')"><span style="font-size:13px;font-weight:600">120 BPM</span><div class="gs-radio" id="aud-bpm-r-120"></div></div>
-          <div class="gs-model-row" onclick="setAudBpm('140','140 BPM')"><span style="font-size:13px;font-weight:600">140 BPM</span><div class="gs-radio" id="aud-bpm-r-140"></div></div>
-        </div>
+      <div class="gen-sidebar">
+        <div class="gen-sidebar-hd"><i class="fas fa-bolt"></i> Live Status</div>
+        <div class="gen-sidebar-empty" id="gsb-imggen-empty"><i class="fas fa-image" style="font-size:22px;opacity:.25;margin-bottom:8px;display:block"></i>Generate an image to see live progress here</div>
+        <div id="gsb-imggen-log" class="gen-sidebar-log"></div>
       </div>
     </div>
-    <button id="aud-gen-btn" onclick="generateAudioTrack()" class="btn-gen" style="background:linear-gradient(135deg,#10b981,#06b6d4)">
-      <i class="fas fa-music"></i>&nbsp; Generate Music
-    </button>
-    <!-- Status / Player -->
-    <div id="aud-status" style="display:none;margin-top:12px;text-align:center;padding:16px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);border-radius:10px">
-      <div id="aud-status-text" style="font-size:13px;color:var(--text-s);margin-bottom:8px"></div>
-      <audio id="aud-player" controls style="width:100%;display:none"></audio>
-      <a id="aud-download-link" href="#" download style="display:none;font-size:12px;color:#10b981;margin-top:8px;text-decoration:none"><i class="fas fa-download"></i> Download Track</a>
-    </div>
-  </div>
 
-  <!-- ── TEXT TO SPEECH ─────────────────────────────── -->
-  <div class="gen-panel gen-i2v-panel" style="margin-top:16px">
-    <div class="gen-section-header">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="width:28px;height:28px;border-radius:8px;background:rgba(168,85,247,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-microphone" style="color:var(--accent);font-size:13px"></i></span>
-        <span class="gen-title" style="margin:0">Text to Speech</span>
-        <span style="font-size:11px;font-weight:600;color:#10b981;margin-left:4px">● ElevenLabs Live</span>
-      </div>
-      <span id="tts-voice-count" style="font-size:11px;color:var(--text-s)">Loading voices…</span>
-    </div>
-    <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
-      <!-- Voice pill picker -->
-      <div class="gs-gen-picker" style="position:relative;flex:1" id="tts-voice-picker-wrap">
-        <button class="gs-model-pill" onclick="toggleAudPicker(event,'voice')" id="tts-voice-pill" style="width:100%;justify-content:space-between">
-          <span style="display:flex;align-items:center;gap:6px"><i class="fas fa-user-circle" style="font-size:13px;color:var(--accent)"></i><span id="tts-voice-label">Adam - Dominant, Firm</span></span>
-          <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
-        </button>
-        <div class="gs-model-dropdown" id="tts-voice-dropdown" style="display:none;min-width:260px;max-height:320px;overflow-y:auto">
-          <div class="gs-model-row" onclick="setTTSVoice('pNInz6obpgDQGcFmaJgB','Adam - Dominant, Firm')"><div><div style="font-weight:600;font-size:13px">Adam</div><div style="font-size:11px;color:var(--text-s)">Dominant, Firm · Male · American</div></div><div class="gs-radio gs-radio-active" id="tvr-adam"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('EXAVITQu4vr4xnSDxMaL','Sarah - Mature, Confident')"><div><div style="font-weight:600;font-size:13px">Sarah</div><div style="font-size:11px;color:var(--text-s)">Mature, Confident · Female · American</div></div><div class="gs-radio" id="tvr-sarah"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('JBFqnCBsd6RMkjVDRZzb','George - Warm Storyteller')"><div><div style="font-weight:600;font-size:13px">George</div><div style="font-size:11px;color:var(--text-s)">Warm Storyteller · Male · British</div></div><div class="gs-radio" id="tvr-george"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('nPczCjzI2devNBz1zQrb','Brian - Deep, Resonant')"><div><div style="font-weight:600;font-size:13px">Brian</div><div style="font-size:11px;color:var(--text-s)">Deep, Resonant · Male · American</div></div><div class="gs-radio" id="tvr-brian"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('IKne3meq5aSn9XLyUdCD','Charlie - Deep, Energetic')"><div><div style="font-weight:600;font-size:13px">Charlie</div><div style="font-size:11px;color:var(--text-s)">Deep, Energetic · Male · Australian</div></div><div class="gs-radio" id="tvr-charlie"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('cgSgspJ2msm6clMCkdW9','Jessica - Playful, Bright')"><div><div style="font-weight:600;font-size:13px">Jessica</div><div style="font-size:11px;color:var(--text-s)">Playful, Bright · Female · American</div></div><div class="gs-radio" id="tvr-jessica"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('onwK4e9ZLuTAKqWW03F9','Daniel - Steady Broadcaster')"><div><div style="font-weight:600;font-size:13px">Daniel</div><div style="font-size:11px;color:var(--text-s)">Steady Broadcaster · Male · British</div></div><div class="gs-radio" id="tvr-daniel"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('CwhRBWXzGAHq8TQ4Fs17','Roger - Laid-Back, Casual')"><div><div style="font-weight:600;font-size:13px">Roger</div><div style="font-size:11px;color:var(--text-s)">Laid-Back, Casual · Male · American</div></div><div class="gs-radio" id="tvr-roger"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('SAz9YHcvj6GT2YYXdXww','River - Relaxed, Neutral')"><div><div style="font-weight:600;font-size:13px">River</div><div style="font-size:11px;color:var(--text-s)">Relaxed, Neutral · Non-binary · American</div></div><div class="gs-radio" id="tvr-river"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('TX3LPaxmHKxFdv7VOQHJ','Liam - Energetic Creator')"><div><div style="font-weight:600;font-size:13px">Liam</div><div style="font-size:11px;color:var(--text-s)">Energetic Creator · Male · American</div></div><div class="gs-radio" id="tvr-liam"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('bIHbv24MWmeRgasZH58o','Will - Relaxed Optimist')"><div><div style="font-weight:600;font-size:13px">Will</div><div style="font-size:11px;color:var(--text-s)">Relaxed Optimist · Male · American</div></div><div class="gs-radio" id="tvr-will"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('cjVigY5qzO86Huf0OWal','Eric - Smooth, Trustworthy')"><div><div style="font-weight:600;font-size:13px">Eric</div><div style="font-size:11px;color:var(--text-s)">Smooth, Trustworthy · Male · American</div></div><div class="gs-radio" id="tvr-eric"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('iP95p4xoKVk53GoZ742B','Chris - Charming, Casual')"><div><div style="font-weight:600;font-size:13px">Chris</div><div style="font-size:11px;color:var(--text-s)">Charming, Casual · Male · American</div></div><div class="gs-radio" id="tvr-chris"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('pqHfZKP75CvOlQylNhV4','Bill - Wise, Mature')"><div><div style="font-weight:600;font-size:13px">Bill</div><div style="font-size:11px;color:var(--text-s)">Wise, Mature · Male · American</div></div><div class="gs-radio" id="tvr-bill"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('XrExE9yKIg1WjnnlVkGX','Matilda - Professional')"><div><div style="font-weight:600;font-size:13px">Matilda</div><div style="font-size:11px;color:var(--text-s)">Professional · Female · American</div></div><div class="gs-radio" id="tvr-matilda"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('pFZP5JQG7iQjIQuC4Bku','Lily - Velvety Actress')"><div><div style="font-weight:600;font-size:13px">Lily</div><div style="font-size:11px;color:var(--text-s)">Velvety Actress · Female · British</div></div><div class="gs-radio" id="tvr-lily"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('FGY2WhTYpPnrIDTdsKH5','Laura - Enthusiast, Quirky')"><div><div style="font-weight:600;font-size:13px">Laura</div><div style="font-size:11px;color:var(--text-s)">Enthusiast, Quirky · Female · American</div></div><div class="gs-radio" id="tvr-laura"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('N2lVS1w4EtoT3dr4eOWO','Callum - Husky Trickster')"><div><div style="font-weight:600;font-size:13px">Callum</div><div style="font-size:11px;color:var(--text-s)">Husky Trickster · Male · American</div></div><div class="gs-radio" id="tvr-callum"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('SOYHLrjzK2X1ezoPC6cr','Harry - Fierce Warrior')"><div><div style="font-weight:600;font-size:13px">Harry</div><div style="font-size:11px;color:var(--text-s)">Fierce Warrior · Male · American</div></div><div class="gs-radio" id="tvr-harry"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('vfaqCOvlrKi4Zp7C2IAm','Demon Monster')"><div><div style="font-weight:600;font-size:13px">Demon Monster</div><div style="font-size:11px;color:var(--text-s)">Character Animation · Deep</div></div><div class="gs-radio" id="tvr-demon"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('94D02IUHyb3D4r3i3feh','Rashid - Deep Narrative')"><div><div style="font-weight:600;font-size:13px">Rashid</div><div style="font-size:11px;color:var(--text-s)">Deep Narrative · Male · African</div></div><div class="gs-radio" id="tvr-rashid"></div></div>
-          <div class="gs-model-row" onclick="setTTSVoice('UFO0Yv86wqRxAt1DmXUu','Mordred - Evil Villain')"><div><div style="font-weight:600;font-size:13px">Mordred</div><div style="font-size:11px;color:var(--text-s)">Evil Villain · Male · German accent</div></div><div class="gs-radio" id="tvr-mordred"></div></div>
+    <!-- ═══════════════════════ VIDEO GENERATION ═══════════════════════ -->
+    <div class="gen-sub-pane" id="gen-pane-vidgen">
+      <div class="gen-main-area">
+        <div class="gen-panel" style="flex:1">
+          <div class="gen-section-header">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="width:28px;height:28px;border-radius:8px;background:rgba(236,72,153,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-video" style="color:var(--pink);font-size:13px"></i></span>
+              <span class="gen-title" style="margin:0">Video Generation</span>
+            </div>
+          </div>
+          <div class="gen-picker-wrap" id="gs-vid-picker-wrap">
+            <div class="gs-gen-picker" id="gs-vid-picker"></div>
+            <div class="gen-model-desc" id="vid-model-desc">Select a model above to get started.</div>
+          </div>
+          <textarea class="gen-pmt" id="vid-prompt" placeholder="Describe the video you want to generate&#8230; e.g. 'Drone shot over misty mountain peaks at golden hour'" rows="5"></textarea>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+            <label style="font-size:12px;color:var(--text-s);white-space:nowrap">Duration</label>
+            <div class="gen-dur-row">
+              <button class="gen-dur-btn active" data-dur="4" onclick="setVidDur(this,4)">4s</button>
+              <button class="gen-dur-btn" data-dur="5" onclick="setVidDur(this,5)">5s</button>
+              <button class="gen-dur-btn" data-dur="8" onclick="setVidDur(this,8)">8s</button>
+              <button class="gen-dur-btn" data-dur="10" onclick="setVidDur(this,10)">10s</button>
+              <button class="gen-dur-btn" data-dur="15" onclick="setVidDur(this,15)">15s</button>
+            </div>
+          </div>
+          <input type="hidden" id="vid-dur" value="4">
+          <button class="btn-gen" id="btn-gen-vid"><i class="fas fa-film"></i>&nbsp; Generate Video</button>
+          <div id="vid-result" style="margin-top:12px;font-size:13px;color:var(--text-s)"></div>
         </div>
       </div>
-      <!-- Model pill picker -->
-      <div class="gs-gen-picker" style="position:relative" id="tts-model-picker-wrap">
-        <button class="gs-model-pill" onclick="toggleAudPicker(event,'ttsmodel')" id="tts-model-pill">
-          <i class="fas fa-bolt" style="font-size:11px;color:#f59e0b"></i>
-          <span id="tts-model-label">Turbo v2.5</span>
-          <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
-        </button>
-        <div class="gs-model-dropdown" id="tts-model-dropdown" style="display:none;min-width:220px">
-          <div class="gs-model-row" onclick="setTTSModel('eleven_turbo_v2_5','Turbo v2.5')"><div><div style="font-weight:600;font-size:13px">Turbo v2.5</div><div style="font-size:11px;color:var(--text-s)">Fastest · Best for real-time</div></div><div class="gs-radio gs-radio-active" id="tmr-t25"></div></div>
-          <div class="gs-model-row" onclick="setTTSModel('eleven_flash_v2_5','Flash v2.5')"><div><div style="font-weight:600;font-size:13px">Flash v2.5</div><div style="font-size:11px;color:var(--text-s)">Ultra fast · Low latency</div></div><div class="gs-radio" id="tmr-f25"></div></div>
-          <div class="gs-model-row" onclick="setTTSModel('eleven_turbo_v2','Turbo v2')"><div><div style="font-weight:600;font-size:13px">Turbo v2</div><div style="font-size:11px;color:var(--text-s)">Fast · Balanced quality</div></div><div class="gs-radio" id="tmr-t2"></div></div>
-          <div class="gs-model-row" onclick="setTTSModel('eleven_multilingual_v2','Multilingual v2')"><div><div style="font-weight:600;font-size:13px">Multilingual v2</div><div style="font-size:11px;color:var(--text-s)">Best quality · 29 languages</div></div><div class="gs-radio" id="tmr-ml2"></div></div>
-        </div>
+      <div class="gen-sidebar">
+        <div class="gen-sidebar-hd"><i class="fas fa-bolt"></i> Live Status</div>
+        <div class="gen-sidebar-empty"><i class="fas fa-film" style="font-size:22px;opacity:.25;margin-bottom:8px;display:block"></i>Generate a video to see live progress here</div>
+        <div id="gsb-vidgen-log" class="gen-sidebar-log"></div>
       </div>
     </div>
-    <!-- Sliders -->
-    <div style="display:flex;gap:14px;margin-bottom:12px;flex-wrap:wrap">
-      <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Stability <span id="tts-stab-val">0.5</span><input id="tts-stability" type="range" min="0" max="1" step="0.05" value="0.5" oninput="document.getElementById('tts-stab-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
-      <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Similarity <span id="tts-sim-val">0.75</span><input id="tts-similarity" type="range" min="0" max="1" step="0.05" value="0.75" oninput="document.getElementById('tts-sim-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
-      <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Style <span id="tts-style-val">0</span><input id="tts-style-ex" type="range" min="0" max="1" step="0.05" value="0" oninput="document.getElementById('tts-style-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
-    </div>
-    <textarea id="tts-text" placeholder="Enter text to convert to speech… try 'Welcome to FlowState — your AI-powered workspace.'" class="gen-pmt" rows="3"></textarea>
-    <button onclick="generateTTS()" id="tts-btn" class="btn-gen" style="background:linear-gradient(135deg,#a855f7,#06b6d4)">
-      <i class="fas fa-microphone"></i>&nbsp; Generate Voice
-    </button>
-    <div id="tts-status" style="display:none;margin-top:12px;text-align:center">
-      <div id="tts-status-text" style="font-size:12px;color:var(--text-s);margin-bottom:8px"></div>
-      <audio id="tts-player" controls style="width:100%;margin-bottom:6px"></audio>
-      <a id="tts-download" href="#" download="flowstate-tts.mp3" style="display:none;font-size:11px;color:var(--accent);text-decoration:none"><i class="fas fa-download"></i> Download MP3</a>
-    </div>
-  </div>
 
+    <!-- ═══════════════════════ IMAGE → VIDEO ═══════════════════════ -->
+    <div class="gen-sub-pane" id="gen-pane-i2v">
+      <div class="gen-main-area">
+        <div class="gen-panel" style="flex:1">
+          <div class="gen-section-header">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="width:28px;height:28px;border-radius:8px;background:rgba(6,182,212,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-photo-film" style="color:var(--cyan);font-size:13px"></i></span>
+              <span class="gen-title" style="margin:0">Image &rarr; Video</span>
+              <span class="gen-new-badge">NEW</span>
+            </div>
+            <div class="gen-picker-wrap" id="gs-i2v-picker-wrap" style="flex:1;max-width:280px">
+              <div class="gs-gen-picker" id="gs-i2v-picker"></div>
+            </div>
+          </div>
+          <div class="gen-model-desc" id="i2v-model-desc" style="margin-bottom:14px">Select a video model above, then upload an image and describe the motion.</div>
+          <div class="gen-i2v-body">
+            <div class="gen-i2v-upload">
+              <label class="file-drop" for="img2vid-upload" id="i2v-drop-label">
+                <input type="file" id="img2vid-upload" accept="image/*" style="display:none">
+                <i class="fas fa-cloud-upload-alt" style="font-size:32px;color:var(--accent);margin-bottom:10px"></i>
+                <div style="font-size:14px;font-weight:700;color:var(--text-p)">Drop image here or click to upload</div>
+                <div style="font-size:12px;color:var(--text-m);margin-top:4px">JPG, PNG, WebP &bull; Max 10MB</div>
+              </label>
+              <img id="img2vid-preview" class="img2vid-preview" alt="Preview" style="display:none">
+            </div>
+            <div class="gen-i2v-right">
+              <textarea class="gen-pmt" id="img2vid-prompt" placeholder="Describe the motion&#8230; e.g. 'Camera slowly zooms out, leaves gently swaying in the breeze'" rows="4" style="flex:1;min-height:100px"></textarea>
+              <button class="btn-gen btn-gen-i2v" id="btn-img2vid"><i class="fas fa-video"></i>&nbsp; Generate Video from Image</button>
+              <div id="img2vid-result" style="margin-top:10px;font-size:13px;color:var(--text-s)"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="gen-sidebar">
+        <div class="gen-sidebar-hd"><i class="fas fa-bolt"></i> Live Status</div>
+        <div class="gen-sidebar-empty"><i class="fas fa-photo-film" style="font-size:22px;opacity:.25;margin-bottom:8px;display:block"></i>Upload an image and generate to see progress</div>
+        <div id="gsb-i2v-log" class="gen-sidebar-log"></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════ AI MUSIC ═══════════════════════ -->
+    <div class="gen-sub-pane" id="gen-pane-music">
+      <div class="gen-main-area">
+        <div class="gen-panel" style="flex:1">
+          <div class="gen-section-header">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="width:28px;height:28px;border-radius:8px;background:rgba(16,185,129,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-music" style="color:#10b981;font-size:13px"></i></span>
+              <span class="gen-title" style="margin:0">AI Music Generation</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+            <button id="aud-tool-track"  onclick="setAudioTool('generate_track')"  class="aud-tool-btn active-tool">&#127900; Full Track</button>
+            <button id="aud-tool-melody" onclick="setAudioTool('generate_melody')" class="aud-tool-btn">&#127929; Melody</button>
+            <button id="aud-tool-beat"   onclick="setAudioTool('generate_beat')"   class="aud-tool-btn">&#129345; Beat</button>
+          </div>
+          <textarea id="aud-prompt" placeholder="Describe your music&#8230; e.g. 'upbeat lo-fi hip hop with jazz chords, mellow vibe, 90 BPM'" class="gen-pmt" rows="4"></textarea>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
+            <input id="aud-style" placeholder="Style (e.g. lo-fi, trap, ambient)" style="flex:1;min-width:140px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text-p);font-size:12px">
+            <div class="gs-gen-picker" style="position:relative" id="aud-dur-picker-wrap">
+              <button class="gs-model-pill" onclick="toggleAudPicker(event,'dur')" id="aud-dur-pill">
+                <i class="fas fa-clock" style="font-size:11px;opacity:.7"></i>
+                <span id="aud-dur-label">30 sec</span>
+                <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+              </button>
+              <div class="gs-model-dropdown" id="aud-dur-dropdown" style="display:none;min-width:130px">
+                <div class="gs-model-row" onclick="setAudDur(15,'15 sec')"><span style="font-size:13px;font-weight:600">15 sec</span><div class="gs-radio" id="aud-dur-r-15"></div></div>
+                <div class="gs-model-row" onclick="setAudDur(30,'30 sec')"><span style="font-size:13px;font-weight:600">30 sec</span><div class="gs-radio gs-radio-active" id="aud-dur-r-30"></div></div>
+              </div>
+            </div>
+            <div class="gs-gen-picker" style="position:relative" id="aud-bpm-picker-wrap">
+              <button class="gs-model-pill" onclick="toggleAudPicker(event,'bpm')" id="aud-bpm-pill">
+                <i class="fas fa-gauge-high" style="font-size:11px;opacity:.7"></i>
+                <span id="aud-bpm-label">BPM (auto)</span>
+                <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+              </button>
+              <div class="gs-model-dropdown" id="aud-bpm-dropdown" style="display:none;min-width:140px">
+                <div class="gs-model-row" onclick="setAudBpm('','BPM (auto)')"><span style="font-size:13px;font-weight:600">Auto</span><div class="gs-radio gs-radio-active" id="aud-bpm-r-auto"></div></div>
+                <div class="gs-model-row" onclick="setAudBpm('80','80 BPM')"><span style="font-size:13px;font-weight:600">80 BPM</span><div class="gs-radio" id="aud-bpm-r-80"></div></div>
+                <div class="gs-model-row" onclick="setAudBpm('90','90 BPM')"><span style="font-size:13px;font-weight:600">90 BPM</span><div class="gs-radio" id="aud-bpm-r-90"></div></div>
+                <div class="gs-model-row" onclick="setAudBpm('100','100 BPM')"><span style="font-size:13px;font-weight:600">100 BPM</span><div class="gs-radio" id="aud-bpm-r-100"></div></div>
+                <div class="gs-model-row" onclick="setAudBpm('120','120 BPM')"><span style="font-size:13px;font-weight:600">120 BPM</span><div class="gs-radio" id="aud-bpm-r-120"></div></div>
+                <div class="gs-model-row" onclick="setAudBpm('140','140 BPM')"><span style="font-size:13px;font-weight:600">140 BPM</span><div class="gs-radio" id="aud-bpm-r-140"></div></div>
+              </div>
+            </div>
+          </div>
+          <button id="aud-gen-btn" onclick="generateAudioTrack()" class="btn-gen" style="background:linear-gradient(135deg,#10b981,#06b6d4)">
+            <i class="fas fa-music"></i>&nbsp; Generate Music
+          </button>
+          <div id="aud-status" style="display:none;margin-top:12px;text-align:center;padding:16px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);border-radius:10px">
+            <div id="aud-status-text" style="font-size:13px;color:var(--text-s);margin-bottom:8px"></div>
+            <audio id="aud-player" controls style="width:100%;display:none"></audio>
+            <a id="aud-download-link" href="#" download style="display:none;font-size:12px;color:#10b981;margin-top:8px;text-decoration:none"><i class="fas fa-download"></i> Download Track</a>
+          </div>
+        </div>
+      </div>
+      <div class="gen-sidebar">
+        <div class="gen-sidebar-hd"><i class="fas fa-bolt"></i> Live Status</div>
+        <div class="gen-sidebar-empty"><i class="fas fa-music" style="font-size:22px;opacity:.25;margin-bottom:8px;display:block"></i>Generate a track to see live status</div>
+        <div id="gsb-music-log" class="gen-sidebar-log"></div>
+        <div class="gen-sidebar-section" style="margin-top:auto">
+          <div class="gen-sidebar-label">POWERED BY</div>
+          <div class="gen-sidebar-row"><i class="fas fa-check-circle" style="color:#10b981"></i> MusicGen (Replicate)</div>
+          <div class="gen-sidebar-row"><i class="fas fa-circle" style="color:var(--text-m);font-size:8px"></i> Suno AI (add key)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════ TEXT TO SPEECH ═══════════════════════ -->
+    <div class="gen-sub-pane" id="gen-pane-tts">
+      <div class="gen-main-area">
+        <div class="gen-panel" style="flex:1">
+          <div class="gen-section-header">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="width:28px;height:28px;border-radius:8px;background:rgba(168,85,247,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-microphone" style="color:var(--accent);font-size:13px"></i></span>
+              <span class="gen-title" style="margin:0">Text to Speech</span>
+              <span style="font-size:11px;font-weight:600;color:#10b981;margin-left:4px">&#9679; ElevenLabs Live</span>
+            </div>
+            <span id="tts-voice-count" style="font-size:11px;color:var(--text-s)">Loading voices&#8230;</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+            <div class="gs-gen-picker" style="position:relative;flex:1" id="tts-voice-picker-wrap">
+              <button class="gs-model-pill" onclick="toggleAudPicker(event,'voice')" id="tts-voice-pill" style="width:100%;justify-content:space-between">
+                <span style="display:flex;align-items:center;gap:6px"><i class="fas fa-user-circle" style="font-size:13px;color:var(--accent)"></i><span id="tts-voice-label">Adam - Dominant, Firm</span></span>
+                <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+              </button>
+              <div class="gs-model-dropdown" id="tts-voice-dropdown" style="display:none;min-width:260px;max-height:320px;overflow-y:auto">
+                <div class="gs-model-row" onclick="setTTSVoice('pNInz6obpgDQGcFmaJgB','Adam - Dominant, Firm')"><div><div style="font-weight:600;font-size:13px">Adam</div><div style="font-size:11px;color:var(--text-s)">Dominant, Firm &middot; Male &middot; American</div></div><div class="gs-radio gs-radio-active" id="tvr-adam"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('EXAVITQu4vr4xnSDxMaL','Sarah - Mature, Confident')"><div><div style="font-weight:600;font-size:13px">Sarah</div><div style="font-size:11px;color:var(--text-s)">Mature, Confident &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-sarah"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('JBFqnCBsd6RMkjVDRZzb','George - Warm Storyteller')"><div><div style="font-weight:600;font-size:13px">George</div><div style="font-size:11px;color:var(--text-s)">Warm Storyteller &middot; Male &middot; British</div></div><div class="gs-radio" id="tvr-george"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('nPczCjzI2devNBz1zQrb','Brian - Deep, Resonant')"><div><div style="font-weight:600;font-size:13px">Brian</div><div style="font-size:11px;color:var(--text-s)">Deep, Resonant &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-brian"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('IKne3meq5aSn9XLyUdCD','Charlie - Deep, Energetic')"><div><div style="font-weight:600;font-size:13px">Charlie</div><div style="font-size:11px;color:var(--text-s)">Deep, Energetic &middot; Male &middot; Australian</div></div><div class="gs-radio" id="tvr-charlie"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('cgSgspJ2msm6clMCkdW9','Jessica - Playful, Bright')"><div><div style="font-weight:600;font-size:13px">Jessica</div><div style="font-size:11px;color:var(--text-s)">Playful, Bright &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-jessica"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('onwK4e9ZLuTAKqWW03F9','Daniel - Steady Broadcaster')"><div><div style="font-weight:600;font-size:13px">Daniel</div><div style="font-size:11px;color:var(--text-s)">Steady Broadcaster &middot; Male &middot; British</div></div><div class="gs-radio" id="tvr-daniel"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('CwhRBWXzGAHq8TQ4Fs17','Roger - Laid-Back, Casual')"><div><div style="font-weight:600;font-size:13px">Roger</div><div style="font-size:11px;color:var(--text-s)">Laid-Back, Casual &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-roger"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('SAz9YHcvj6GT2YYXdXww','River - Relaxed, Neutral')"><div><div style="font-weight:600;font-size:13px">River</div><div style="font-size:11px;color:var(--text-s)">Relaxed, Neutral &middot; Non-binary &middot; American</div></div><div class="gs-radio" id="tvr-river"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('TX3LPaxmHKxFdv7VOQHJ','Liam - Energetic Creator')"><div><div style="font-weight:600;font-size:13px">Liam</div><div style="font-size:11px;color:var(--text-s)">Energetic Creator &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-liam"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('bIHbv24MWmeRgasZH58o','Will - Relaxed Optimist')"><div><div style="font-weight:600;font-size:13px">Will</div><div style="font-size:11px;color:var(--text-s)">Relaxed Optimist &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-will"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('cjVigY5qzO86Huf0OWal','Eric - Smooth, Trustworthy')"><div><div style="font-weight:600;font-size:13px">Eric</div><div style="font-size:11px;color:var(--text-s)">Smooth, Trustworthy &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-eric"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('iP95p4xoKVk53GoZ742B','Chris - Charming, Casual')"><div><div style="font-weight:600;font-size:13px">Chris</div><div style="font-size:11px;color:var(--text-s)">Charming, Casual &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-chris"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('pqHfZKP75CvOlQylNhV4','Bill - Wise, Mature')"><div><div style="font-weight:600;font-size:13px">Bill</div><div style="font-size:11px;color:var(--text-s)">Wise, Mature &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-bill"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('XrExE9yKIg1WjnnlVkGX','Matilda - Professional')"><div><div style="font-weight:600;font-size:13px">Matilda</div><div style="font-size:11px;color:var(--text-s)">Professional &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-matilda"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('pFZP5JQG7iQjIQuC4Bku','Lily - Velvety Actress')"><div><div style="font-weight:600;font-size:13px">Lily</div><div style="font-size:11px;color:var(--text-s)">Velvety Actress &middot; Female &middot; British</div></div><div class="gs-radio" id="tvr-lily"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('FGY2WhTYpPnrIDTdsKH5','Laura - Enthusiast, Quirky')"><div><div style="font-weight:600;font-size:13px">Laura</div><div style="font-size:11px;color:var(--text-s)">Enthusiast, Quirky &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-laura"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('N2lVS1w4EtoT3dr4eOWO','Callum - Husky Trickster')"><div><div style="font-weight:600;font-size:13px">Callum</div><div style="font-size:11px;color:var(--text-s)">Husky Trickster &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-callum"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('SOYHLrjzK2X1ezoPC6cr','Harry - Fierce Warrior')"><div><div style="font-weight:600;font-size:13px">Harry</div><div style="font-size:11px;color:var(--text-s)">Fierce Warrior &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-harry"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('vfaqCOvlrKi4Zp7C2IAm','Demon Monster')"><div><div style="font-weight:600;font-size:13px">Demon Monster</div><div style="font-size:11px;color:var(--text-s)">Character Animation &middot; Deep</div></div><div class="gs-radio" id="tvr-demon"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('94D02IUHyb3D4r3i3feh','Rashid - Deep Narrative')"><div><div style="font-weight:600;font-size:13px">Rashid</div><div style="font-size:11px;color:var(--text-s)">Deep Narrative &middot; Male &middot; African</div></div><div class="gs-radio" id="tvr-rashid"></div></div>
+                <div class="gs-model-row" onclick="setTTSVoice('UFO0Yv86wqRxAt1DmXUu','Mordred - Evil Villain')"><div><div style="font-weight:600;font-size:13px">Mordred</div><div style="font-size:11px;color:var(--text-s)">Evil Villain &middot; Male &middot; German accent</div></div><div class="gs-radio" id="tvr-mordred"></div></div>
+              </div>
+            </div>
+            <div class="gs-gen-picker" style="position:relative" id="tts-model-picker-wrap">
+              <button class="gs-model-pill" onclick="toggleAudPicker(event,'ttsmodel')" id="tts-model-pill">
+                <i class="fas fa-bolt" style="font-size:11px;color:#f59e0b"></i>
+                <span id="tts-model-label">Turbo v2.5</span>
+                <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+              </button>
+              <div class="gs-model-dropdown" id="tts-model-dropdown" style="display:none;min-width:220px">
+                <div class="gs-model-row" onclick="setTTSModel('eleven_turbo_v2_5','Turbo v2.5')"><div><div style="font-weight:600;font-size:13px">Turbo v2.5</div><div style="font-size:11px;color:var(--text-s)">Fastest &middot; Best for real-time</div></div><div class="gs-radio gs-radio-active" id="tmr-t25"></div></div>
+                <div class="gs-model-row" onclick="setTTSModel('eleven_flash_v2_5','Flash v2.5')"><div><div style="font-weight:600;font-size:13px">Flash v2.5</div><div style="font-size:11px;color:var(--text-s)">Ultra fast &middot; Low latency</div></div><div class="gs-radio" id="tmr-f25"></div></div>
+                <div class="gs-model-row" onclick="setTTSModel('eleven_turbo_v2','Turbo v2')"><div><div style="font-weight:600;font-size:13px">Turbo v2</div><div style="font-size:11px;color:var(--text-s)">Fast &middot; Balanced quality</div></div><div class="gs-radio" id="tmr-t2"></div></div>
+                <div class="gs-model-row" onclick="setTTSModel('eleven_multilingual_v2','Multilingual v2')"><div><div style="font-weight:600;font-size:13px">Multilingual v2</div><div style="font-size:11px;color:var(--text-s)">Best quality &middot; 29 languages</div></div><div class="gs-radio" id="tmr-ml2"></div></div>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px;margin-bottom:12px;flex-wrap:wrap">
+            <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Stability <span id="tts-stab-val">0.5</span><input id="tts-stability" type="range" min="0" max="1" step="0.05" value="0.5" oninput="document.getElementById('tts-stab-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
+            <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Similarity <span id="tts-sim-val">0.75</span><input id="tts-similarity" type="range" min="0" max="1" step="0.05" value="0.75" oninput="document.getElementById('tts-sim-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
+            <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Style <span id="tts-style-val">0</span><input id="tts-style-ex" type="range" min="0" max="1" step="0.05" value="0" oninput="document.getElementById('tts-style-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
+          </div>
+          <textarea id="tts-text" placeholder="Enter text to convert to speech&#8230;" class="gen-pmt" rows="4"></textarea>
+          <button onclick="generateTTS()" id="tts-btn" class="btn-gen" style="background:linear-gradient(135deg,#a855f7,#06b6d4)">
+            <i class="fas fa-microphone"></i>&nbsp; Generate Voice
+          </button>
+          <div id="tts-status" style="display:none;margin-top:12px;text-align:center">
+            <div id="tts-status-text" style="font-size:12px;color:var(--text-s);margin-bottom:8px"></div>
+            <audio id="tts-player" controls style="width:100%;margin-bottom:6px"></audio>
+            <a id="tts-download" href="#" download="flowstate-tts.mp3" style="display:none;font-size:11px;color:var(--accent);text-decoration:none"><i class="fas fa-download"></i> Download MP3</a>
+          </div>
+        </div>
+      </div>
+      <div class="gen-sidebar">
+        <div class="gen-sidebar-hd"><i class="fas fa-bolt"></i> Live Status</div>
+        <div class="gen-sidebar-empty"><i class="fas fa-microphone" style="font-size:22px;opacity:.25;margin-bottom:8px;display:block"></i>Generate speech to see voice details here</div>
+        <div id="gsb-tts-log" class="gen-sidebar-log"></div>
+        <div class="gen-sidebar-section" style="margin-top:auto">
+          <div class="gen-sidebar-label">VOICE ENGINE</div>
+          <div class="gen-sidebar-row"><i class="fas fa-check-circle" style="color:#10b981"></i> ElevenLabs Live</div>
+          <div class="gen-sidebar-row"><i class="fas fa-globe" style="color:var(--accent)"></i> 29 Languages</div>
+          <div class="gen-sidebar-row"><i class="fas fa-users" style="color:var(--cyan)"></i> <span id="tts-sidebar-voice-count">21</span> Voices</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════ FILE TOOLS ═══════════════════════ -->
+    <div class="gen-sub-pane" id="gen-pane-filetools">
+      <div class="gen-main-area" style="overflow-y:auto">
+        <div class="gen-panel" style="flex:1">
+          <div class="gen-section-header" style="margin-bottom:18px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="width:28px;height:28px;border-radius:8px;background:rgba(245,158,11,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-folder-open" style="color:var(--warn);font-size:13px"></i></span>
+              <span class="gen-title" style="margin:0">File Library &amp; Tools</span>
+            </div>
+          </div>
+          <div class="file-tool-grid">
+
+            <!-- PDF → Images -->
+            <div class="file-tool-card">
+              <div class="file-tool-icon" style="background:rgba(239,68,68,.15)"><i class="fas fa-file-pdf" style="color:#ef4444"></i></div>
+              <div class="file-tool-name">PDF &rarr; Images</div>
+              <div class="file-tool-desc">Convert each PDF page to a JPG / PNG image</div>
+              <label class="file-tool-drop" for="ft-pdf-input">
+                <input type="file" id="ft-pdf-input" accept=".pdf" style="display:none" onchange="handleFileTool('pdf2img',this)">
+                <i class="fas fa-cloud-upload-alt" style="font-size:20px;color:var(--warn);margin-bottom:6px"></i>
+                <span>Drop PDF or click to upload</span>
+              </label>
+              <div id="ft-pdf2img-status" class="file-tool-status"></div>
+              <div id="ft-pdf2img-results" class="file-tool-results"></div>
+            </div>
+
+            <!-- Images → PDF -->
+            <div class="file-tool-card">
+              <div class="file-tool-icon" style="background:rgba(168,85,247,.15)"><i class="fas fa-images" style="color:var(--accent)"></i></div>
+              <div class="file-tool-name">Images &rarr; PDF</div>
+              <div class="file-tool-desc">Merge multiple images into a single PDF</div>
+              <label class="file-tool-drop" for="ft-imgs-input">
+                <input type="file" id="ft-imgs-input" accept="image/*" multiple style="display:none" onchange="handleFileTool('imgs2pdf',this)">
+                <i class="fas fa-cloud-upload-alt" style="font-size:20px;color:var(--accent);margin-bottom:6px"></i>
+                <span>Drop images or click to upload</span>
+              </label>
+              <div id="ft-imgs2pdf-status" class="file-tool-status"></div>
+              <div id="ft-imgs2pdf-results" class="file-tool-results"></div>
+            </div>
+
+            <!-- Image Resize -->
+            <div class="file-tool-card">
+              <div class="file-tool-icon" style="background:rgba(6,182,212,.15)"><i class="fas fa-crop-alt" style="color:var(--cyan)"></i></div>
+              <div class="file-tool-name">Image Resize</div>
+              <div class="file-tool-desc">Resize images to exact dimensions or percentage</div>
+              <label class="file-tool-drop" for="ft-resize-input">
+                <input type="file" id="ft-resize-input" accept="image/*" style="display:none" onchange="ftResizePreview(this)">
+                <i class="fas fa-cloud-upload-alt" style="font-size:20px;color:var(--cyan);margin-bottom:6px"></i>
+                <span>Drop image or click to upload</span>
+              </label>
+              <div id="ft-resize-opts" style="display:none;margin-top:10px">
+                <img id="ft-resize-preview" style="max-width:100%;max-height:110px;border-radius:8px;margin-bottom:10px;display:block;margin-left:auto;margin-right:auto">
+                <div style="display:flex;gap:8px;margin-bottom:8px">
+                  <input id="ft-resize-w" type="number" placeholder="Width px" style="flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:7px;color:var(--text-p);font-size:12px">
+                  <input id="ft-resize-h" type="number" placeholder="Height px" style="flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:7px;color:var(--text-p);font-size:12px">
+                </div>
+                <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
+                  <label style="font-size:11px;color:var(--text-s);display:flex;align-items:center;gap:5px"><input type="checkbox" id="ft-resize-lock" checked style="accent-color:var(--accent)"> Lock aspect ratio</label>
+                  <select id="ft-resize-fmt" style="margin-left:auto;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:5px 8px;color:var(--text-p);font-size:12px">
+                    <option value="jpeg">JPG</option><option value="png">PNG</option><option value="webp">WebP</option>
+                  </select>
+                </div>
+                <button class="btn-gen" style="padding:8px 16px;font-size:12px" onclick="ftDoResize()"><i class="fas fa-expand-arrows-alt"></i> Resize &amp; Download</button>
+              </div>
+              <div id="ft-resize-result" class="file-tool-results"></div>
+            </div>
+
+            <!-- Image Convert -->
+            <div class="file-tool-card">
+              <div class="file-tool-icon" style="background:rgba(16,185,129,.15)"><i class="fas fa-exchange-alt" style="color:#10b981"></i></div>
+              <div class="file-tool-name">Image Convert</div>
+              <div class="file-tool-desc">Convert between JPG, PNG, WebP formats</div>
+              <label class="file-tool-drop" for="ft-conv-input">
+                <input type="file" id="ft-conv-input" accept="image/*" style="display:none" onchange="ftConvertPreview(this)">
+                <i class="fas fa-cloud-upload-alt" style="font-size:20px;color:#10b981;margin-bottom:6px"></i>
+                <span>Drop image or click to upload</span>
+              </label>
+              <div id="ft-conv-opts" style="display:none;margin-top:10px">
+                <img id="ft-conv-preview" style="max-width:100%;max-height:90px;border-radius:8px;margin-bottom:10px;display:block;margin-left:auto;margin-right:auto">
+                <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
+                  <label style="font-size:12px;color:var(--text-s)">To:</label>
+                  <select id="ft-conv-fmt" style="flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:7px;color:var(--text-p);font-size:12px">
+                    <option value="jpeg">JPG</option><option value="png">PNG</option><option value="webp">WebP</option>
+                  </select>
+                  <input id="ft-conv-quality" type="number" min="10" max="100" value="90" placeholder="Quality" style="width:68px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:7px;color:var(--text-p);font-size:12px">
+                </div>
+                <button class="btn-gen" style="padding:8px 16px;font-size:12px;background:linear-gradient(135deg,#10b981,#06b6d4)" onclick="ftDoConvert()"><i class="fas fa-exchange-alt"></i> Convert &amp; Download</button>
+              </div>
+              <div id="ft-conv-result" class="file-tool-results"></div>
+            </div>
+
+            <!-- Image Compress -->
+            <div class="file-tool-card">
+              <div class="file-tool-icon" style="background:rgba(236,72,153,.15)"><i class="fas fa-compress-alt" style="color:var(--pink)"></i></div>
+              <div class="file-tool-name">Image Compress</div>
+              <div class="file-tool-desc">Reduce file size while preserving quality</div>
+              <label class="file-tool-drop" for="ft-comp-input">
+                <input type="file" id="ft-comp-input" accept="image/*" style="display:none" onchange="ftCompressPreview(this)">
+                <i class="fas fa-cloud-upload-alt" style="font-size:20px;color:var(--pink);margin-bottom:6px"></i>
+                <span>Drop image or click to upload</span>
+              </label>
+              <div id="ft-comp-opts" style="display:none;margin-top:10px">
+                <img id="ft-comp-preview" style="max-width:100%;max-height:90px;border-radius:8px;margin-bottom:10px;display:block;margin-left:auto;margin-right:auto">
+                <label style="font-size:11px;color:var(--text-s);display:block;margin-bottom:8px">Quality: <span id="ft-comp-q-val">75</span>%
+                  <input id="ft-comp-quality" type="range" min="10" max="100" value="75" oninput="document.getElementById('ft-comp-q-val').textContent=this.value" style="width:100%;accent-color:var(--pink)">
+                </label>
+                <div id="ft-comp-info" style="font-size:11px;color:var(--text-m);margin-bottom:10px"></div>
+                <button class="btn-gen" style="padding:8px 16px;font-size:12px;background:linear-gradient(135deg,#ec4899,#f59e0b)" onclick="ftDoCompress()"><i class="fas fa-compress-alt"></i> Compress &amp; Download</button>
+              </div>
+              <div id="ft-comp-result" class="file-tool-results"></div>
+            </div>
+
+            <!-- Base64 Tools -->
+            <div class="file-tool-card">
+              <div class="file-tool-icon" style="background:rgba(168,85,247,.15)"><i class="fas fa-code" style="color:var(--accent)"></i></div>
+              <div class="file-tool-name">Base64 Tools</div>
+              <div class="file-tool-desc">Encode files to Base64 or decode Base64 back</div>
+              <div style="margin-top:10px">
+                <div style="display:flex;gap:6px;margin-bottom:10px">
+                  <button class="gen-dur-btn active" id="b64-enc-btn" onclick="switchB64Mode('encode')">Encode</button>
+                  <button class="gen-dur-btn" id="b64-dec-btn" onclick="switchB64Mode('decode')">Decode</button>
+                </div>
+                <div id="b64-encode-area">
+                  <label class="file-tool-drop" for="ft-b64-input" style="padding:12px">
+                    <input type="file" id="ft-b64-input" style="display:none" onchange="ftB64Encode(this)">
+                    <i class="fas fa-cloud-upload-alt" style="font-size:16px;color:var(--accent);margin-bottom:4px"></i>
+                    <span>Drop any file to encode</span>
+                  </label>
+                </div>
+                <div id="b64-decode-area" style="display:none">
+                  <textarea id="ft-b64-text" placeholder="Paste Base64 string here&#8230;" class="gen-pmt" rows="3" style="margin-bottom:8px"></textarea>
+                  <button class="btn-gen" style="padding:7px 14px;font-size:12px" onclick="ftB64Decode()"><i class="fas fa-unlock"></i> Decode &amp; Download</button>
+                </div>
+                <div id="ft-b64-result" class="file-tool-results"></div>
+              </div>
+            </div>
+
+          </div><!-- /file-tool-grid -->
+        </div>
+      </div>
+      <div class="gen-sidebar">
+        <div class="gen-sidebar-hd"><i class="fas fa-folder-open"></i> File Library</div>
+        <div class="gen-sidebar-empty" id="ft-sidebar-empty"><i class="fas fa-file" style="font-size:22px;opacity:.25;margin-bottom:8px;display:block"></i>Processed files appear here for download</div>
+        <div id="ft-sidebar-history" class="gen-sidebar-log"></div>
+        <div class="gen-sidebar-section" style="margin-top:auto">
+          <div class="gen-sidebar-label">TOOLS AVAILABLE</div>
+          <div class="gen-sidebar-row"><i class="fas fa-file-pdf" style="color:#ef4444"></i> PDF &rarr; Images</div>
+          <div class="gen-sidebar-row"><i class="fas fa-images" style="color:var(--accent)"></i> Images &rarr; PDF</div>
+          <div class="gen-sidebar-row"><i class="fas fa-crop-alt" style="color:var(--cyan)"></i> Image Resize</div>
+          <div class="gen-sidebar-row"><i class="fas fa-exchange-alt" style="color:#10b981"></i> Format Convert</div>
+          <div class="gen-sidebar-row"><i class="fas fa-compress-alt" style="color:var(--pink)"></i> Compress</div>
+          <div class="gen-sidebar-row"><i class="fas fa-code" style="color:var(--accent)"></i> Base64 Tools</div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /gen-body-wrap -->
 </div>
 
 <!-- 264 PRO TAB — Download / Landing Page -->
@@ -2673,7 +2949,7 @@ em{color:var(--accent);font-style:italic}
       </div>
     </div>
 
-    <div style="text-align:center;font-size:12px;color:var(--text-m)">Flowstate Audio is open source &mdash; <a href="https://github.com/mkbrown261/FS-AUDIO" target="_blank" style="color:var(--accent)">github.com/mkbrown261/FS-AUDIO</a></div>
+
     <div style="margin-top:40px;opacity:.4;width:100%;display:flex;justify-content:center"><img src="/static/fs-audio-banner.png" alt="Flowstate" style="max-width:500px;width:80%;border-radius:12px;display:block"></div>
   </div>
 </div>

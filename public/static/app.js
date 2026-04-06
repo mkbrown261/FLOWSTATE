@@ -463,7 +463,366 @@ function switchTab(id) {
   if (id==='restore')  loadRestore();
   if (id==='clawbot')  initClawbot();
   if (id==='audio')    { loadTTSVoices(); }
-  if (id==='generate') { setTimeout(()=>{ buildGenPicker('img'); buildGenPicker('vid'); buildGenPicker('i2v'); }, 50); }
+  if (id==='generate') {
+    setTimeout(()=>{
+      buildGenPicker('img');
+      buildGenPicker('vid');
+      buildGenPicker('i2v');
+      // Ensure active sub-pane is showing
+      if (!document.querySelector('.gen-sub-pane.active')) switchGenSub('imggen');
+    }, 50);
+  }
+}
+
+// ── Generate sub-tab switching ────────────────────────────────────────────────
+function switchGenSub(sub) {
+  document.querySelectorAll('.gen-subtab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.gen-sub-pane').forEach(p => p.classList.remove('active'));
+  const btn  = document.getElementById('gsub-'+sub);
+  const pane = document.getElementById('gen-pane-'+sub);
+  if (btn)  btn.classList.add('active');
+  if (pane) pane.classList.add('active');
+  // Init pickers when switching to their pane
+  if (sub==='imggen')  { setTimeout(()=>buildGenPicker('img'), 30); }
+  if (sub==='vidgen')  { setTimeout(()=>buildGenPicker('vid'), 30); }
+  if (sub==='i2v')     { setTimeout(()=>buildGenPicker('i2v'), 30); }
+  if (sub==='tts')     { loadTTSVoices(); }
+}
+
+// ── Gen sidebar log helper ────────────────────────────────────────────────────
+function genSidebarLog(sub, msg, type) {
+  const log   = document.getElementById('gsb-'+sub+'-log');
+  const empty = document.querySelector('#gen-pane-'+sub+' .gen-sidebar-empty');
+  if (!log) return;
+  if (empty) empty.style.display = 'none';
+  const el = document.createElement('div');
+  el.className = 'gen-sidebar-entry' + (type ? ' '+type : '');
+  el.innerHTML = `<span style="opacity:.6;font-size:10px">${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</span><br>${msg}`;
+  log.prepend(el);
+  // Keep at most 20 entries
+  while (log.children.length > 20) log.removeChild(log.lastChild);
+}
+
+// ── File Tools ────────────────────────────────────────────────────────────────
+
+function ftAddHistory(name, url, mimeHint) {
+  const hist = document.getElementById('ft-sidebar-history');
+  const empty = document.getElementById('ft-sidebar-empty');
+  if (empty) empty.style.display = 'none';
+  if (!hist) return;
+  const el = document.createElement('a');
+  el.className = 'file-tool-dl';
+  el.href = url;
+  el.download = name;
+  el.innerHTML = `<i class="fas fa-download"></i> ${name}`;
+  hist.prepend(el);
+}
+
+/* PDF → Images  (client-side via Canvas — shows a friendly info message since
+   PDF rendering in a pure browser env requires PDF.js which we load from CDN) */
+async function handleFileTool(tool, input) {
+  if (tool === 'pdf2img') {
+    const statusEl  = document.getElementById('ft-pdf2img-status');
+    const resultsEl = document.getElementById('ft-pdf2img-results');
+    if (!input.files || !input.files[0]) return;
+    const file = input.files[0];
+    statusEl.textContent = 'Loading PDF…';
+    resultsEl.innerHTML  = '';
+    try {
+      // Load PDF.js if not already present
+      if (!window.pdfjsLib) {
+        await new Promise((res, rej) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+          s.onload = res; s.onerror = rej;
+          document.head.appendChild(s);
+        });
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+      }
+      const arrayBuf = await file.arrayBuffer();
+      const pdf      = await window.pdfjsLib.getDocument({data: arrayBuf}).promise;
+      statusEl.textContent = `Converting ${pdf.numPages} page(s)…`;
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page    = await pdf.getPage(i);
+        const vp      = page.getViewport({scale: 2});
+        const canvas  = document.createElement('canvas');
+        canvas.width  = vp.width;
+        canvas.height = vp.height;
+        await page.render({canvasContext: canvas.getContext('2d'), viewport: vp}).promise;
+        const dataUrl  = canvas.toDataURL('image/jpeg', 0.92);
+        const fileName = file.name.replace('.pdf','') + `_page${i}.jpg`;
+        // Display thumbnail + download
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'display:flex;align-items:center;gap:8px;';
+        const img = document.createElement('img');
+        img.src = dataUrl; img.style.cssText = 'width:44px;height:44px;object-fit:cover;border-radius:6px;border:1px solid var(--border)';
+        const link = document.createElement('a');
+        link.className = 'file-tool-dl'; link.href = dataUrl; link.download = fileName;
+        link.innerHTML = `<i class="fas fa-download"></i> Page ${i} JPG`;
+        wrap.appendChild(img); wrap.appendChild(link);
+        resultsEl.appendChild(wrap);
+        ftAddHistory(fileName, dataUrl, 'image/jpeg');
+      }
+      statusEl.textContent = `✅ ${pdf.numPages} image(s) ready`;
+      genSidebarLog('filetools', `PDF → ${pdf.numPages} images`, 'success');
+    } catch (err) {
+      statusEl.textContent = '❌ ' + err.message;
+      genSidebarLog('filetools', 'PDF convert failed: ' + err.message, 'error');
+    }
+  }
+
+  if (tool === 'imgs2pdf') {
+    const statusEl  = document.getElementById('ft-imgs2pdf-status');
+    const resultsEl = document.getElementById('ft-imgs2pdf-results');
+    if (!input.files || !input.files.length) return;
+    statusEl.textContent = 'Building PDF…';
+    resultsEl.innerHTML  = '';
+    try {
+      // Load jsPDF if needed
+      if (!window.jspdf) {
+        await new Promise((res, rej) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
+          s.onload = res; s.onerror = rej;
+          document.head.appendChild(s);
+        });
+      }
+      const { jsPDF } = window.jspdf;
+      const files = Array.from(input.files);
+      const doc   = new jsPDF({orientation:'portrait', unit:'px'});
+      let firstPage = true;
+      for (const file of files) {
+        const dataUrl = await new Promise(res => {
+          const r = new FileReader(); r.onload = e => res(e.target.result); r.readAsDataURL(file);
+        });
+        const img = await new Promise((res, rej) => {
+          const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = dataUrl;
+        });
+        const pw = doc.internal.pageSize.getWidth();
+        const ph = doc.internal.pageSize.getHeight();
+        const ratio = Math.min(pw / img.width, ph / img.height);
+        const w = img.width  * ratio;
+        const h = img.height * ratio;
+        const x = (pw - w) / 2;
+        const y = (ph - h) / 2;
+        if (!firstPage) doc.addPage();
+        firstPage = false;
+        doc.addImage(dataUrl, 'JPEG', x, y, w, h);
+      }
+      const pdfBlob = doc.output('blob');
+      const url     = URL.createObjectURL(pdfBlob);
+      const fileName = 'flowstate_images.pdf';
+      const link = document.createElement('a');
+      link.className = 'file-tool-dl'; link.href = url; link.download = fileName;
+      link.innerHTML = `<i class="fas fa-file-pdf"></i> Download PDF (${files.length} pages)`;
+      resultsEl.appendChild(link);
+      statusEl.textContent = `✅ PDF ready (${files.length} pages)`;
+      ftAddHistory(fileName, url, 'application/pdf');
+      genSidebarLog('filetools', `${files.length} images → PDF`, 'success');
+    } catch (err) {
+      statusEl.textContent = '❌ ' + err.message;
+      genSidebarLog('filetools', 'PDF build failed: ' + err.message, 'error');
+    }
+  }
+}
+
+/* Image Resize */
+let _ftResizeFile = null, _ftResizeNatW = 1, _ftResizeNatH = 1;
+function ftResizePreview(input) {
+  if (!input.files || !input.files[0]) return;
+  _ftResizeFile = input.files[0];
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = document.getElementById('ft-resize-preview');
+    img.onload = () => {
+      _ftResizeNatW = img.naturalWidth;
+      _ftResizeNatH = img.naturalHeight;
+      document.getElementById('ft-resize-w').value = _ftResizeNatW;
+      document.getElementById('ft-resize-h').value = _ftResizeNatH;
+      document.getElementById('ft-resize-opts').style.display = 'block';
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(_ftResizeFile);
+}
+function ftDoResize() {
+  if (!_ftResizeFile) return;
+  const w   = parseInt(document.getElementById('ft-resize-w').value) || _ftResizeNatW;
+  const h   = parseInt(document.getElementById('ft-resize-h').value) || _ftResizeNatH;
+  const fmt = document.getElementById('ft-resize-fmt').value;
+  const ext = fmt === 'jpeg' ? 'jpg' : fmt;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const dataUrl  = canvas.toDataURL('image/'+fmt, 0.93);
+      const fileName = _ftResizeFile.name.replace(/\.[^.]+$/,'') + `_${w}x${h}.${ext}`;
+      const resultEl = document.getElementById('ft-resize-result');
+      resultEl.innerHTML = '';
+      const link = document.createElement('a');
+      link.className = 'file-tool-dl'; link.href = dataUrl; link.download = fileName;
+      link.innerHTML = `<i class="fas fa-download"></i> ${fileName}`;
+      resultEl.appendChild(link);
+      ftAddHistory(fileName, dataUrl, 'image/'+fmt);
+      genSidebarLog('filetools', `Resized to ${w}×${h}`, 'success');
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(_ftResizeFile);
+}
+// Lock aspect ratio
+document.addEventListener('DOMContentLoaded', () => {
+  const wIn = document.getElementById('ft-resize-w');
+  const hIn = document.getElementById('ft-resize-h');
+  if (wIn) wIn.addEventListener('input', () => {
+    if (document.getElementById('ft-resize-lock')?.checked) {
+      hIn.value = Math.round(parseInt(wIn.value) * _ftResizeNatH / _ftResizeNatW) || '';
+    }
+  });
+  if (hIn) hIn.addEventListener('input', () => {
+    if (document.getElementById('ft-resize-lock')?.checked) {
+      wIn.value = Math.round(parseInt(hIn.value) * _ftResizeNatW / _ftResizeNatH) || '';
+    }
+  });
+});
+
+/* Image Convert */
+let _ftConvFile = null;
+function ftConvertPreview(input) {
+  if (!input.files || !input.files[0]) return;
+  _ftConvFile = input.files[0];
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = document.getElementById('ft-conv-preview');
+    img.src = e.target.result;
+    document.getElementById('ft-conv-opts').style.display = 'block';
+  };
+  reader.readAsDataURL(_ftConvFile);
+}
+function ftDoConvert() {
+  if (!_ftConvFile) return;
+  const fmt     = document.getElementById('ft-conv-fmt').value;
+  const quality = parseInt(document.getElementById('ft-conv-quality').value) / 100;
+  const ext     = fmt === 'jpeg' ? 'jpg' : fmt;
+  const reader  = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      const dataUrl  = canvas.toDataURL('image/'+fmt, quality);
+      const fileName = _ftConvFile.name.replace(/\.[^.]+$/,'') + '.' + ext;
+      const resultEl = document.getElementById('ft-conv-result');
+      resultEl.innerHTML = '';
+      const link = document.createElement('a');
+      link.className = 'file-tool-dl'; link.href = dataUrl; link.download = fileName;
+      link.innerHTML = `<i class="fas fa-download"></i> ${fileName}`;
+      resultEl.appendChild(link);
+      ftAddHistory(fileName, dataUrl, 'image/'+fmt);
+      genSidebarLog('filetools', `Converted to ${fmt.toUpperCase()}`, 'success');
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(_ftConvFile);
+}
+
+/* Image Compress */
+let _ftCompFile = null;
+function ftCompressPreview(input) {
+  if (!input.files || !input.files[0]) return;
+  _ftCompFile = input.files[0];
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = document.getElementById('ft-comp-preview');
+    img.src = e.target.result;
+    const kb = (_ftCompFile.size / 1024).toFixed(1);
+    document.getElementById('ft-comp-info').textContent = `Original: ${kb} KB`;
+    document.getElementById('ft-comp-opts').style.display = 'block';
+  };
+  reader.readAsDataURL(_ftCompFile);
+}
+function ftDoCompress() {
+  if (!_ftCompFile) return;
+  const quality = parseInt(document.getElementById('ft-comp-quality').value) / 100;
+  const reader  = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      const dataUrl  = canvas.toDataURL('image/jpeg', quality);
+      const bytes    = Math.round(dataUrl.length * 0.75);
+      const kb       = (bytes / 1024).toFixed(1);
+      const origKb   = (_ftCompFile.size / 1024).toFixed(1);
+      const savings  = Math.max(0, Math.round((1 - bytes / _ftCompFile.size) * 100));
+      const fileName = _ftCompFile.name.replace(/\.[^.]+$/,'') + '_compressed.jpg';
+      const resultEl = document.getElementById('ft-comp-result');
+      resultEl.innerHTML = `<div style="font-size:11px;color:var(--text-m);margin-bottom:4px">${origKb} KB → ~${kb} KB (${savings}% smaller)</div>`;
+      const link = document.createElement('a');
+      link.className = 'file-tool-dl'; link.href = dataUrl; link.download = fileName;
+      link.innerHTML = `<i class="fas fa-download"></i> ${fileName}`;
+      resultEl.appendChild(link);
+      ftAddHistory(fileName, dataUrl, 'image/jpeg');
+      genSidebarLog('filetools', `Compressed ${savings}% smaller`, 'success');
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(_ftCompFile);
+}
+
+/* Base64 Tools */
+function switchB64Mode(mode) {
+  document.getElementById('b64-enc-btn')?.classList.toggle('active', mode==='encode');
+  document.getElementById('b64-dec-btn')?.classList.toggle('active', mode==='decode');
+  document.getElementById('b64-encode-area').style.display = mode==='encode' ? 'block' : 'none';
+  document.getElementById('b64-decode-area').style.display = mode==='decode' ? 'block' : 'none';
+}
+function ftB64Encode(input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const reader = new FileReader();
+  reader.onload = e => {
+    const b64 = e.target.result.split(',')[1];
+    const el  = document.getElementById('ft-b64-result');
+    el.innerHTML = '';
+    const ta = document.createElement('textarea');
+    ta.className = 'gen-pmt'; ta.rows = 4; ta.readOnly = true;
+    ta.value = b64; ta.style.cssText = 'font-size:10px;word-break:break-all;margin-top:8px';
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'btn-gen'; copyBtn.style.cssText = 'padding:6px 14px;font-size:11px;margin-top:6px';
+    copyBtn.innerHTML = '<i class="fas fa-copy"></i> Copy Base64';
+    copyBtn.onclick = () => { navigator.clipboard.writeText(b64).then(()=>notify('Base64 copied!','success')); };
+    el.appendChild(ta); el.appendChild(copyBtn);
+    genSidebarLog('filetools', `${file.name} encoded (${Math.round(b64.length/1024)}KB)`, 'success');
+  };
+  reader.readAsDataURL(file);
+}
+function ftB64Decode() {
+  const raw = (document.getElementById('ft-b64-text')?.value || '').trim();
+  if (!raw) { notify('Paste a Base64 string first.', 'warn'); return; }
+  try {
+    const clean = raw.startsWith('data:') ? raw.split(',')[1] : raw;
+    const bytes = Uint8Array.from(atob(clean), c => c.charCodeAt(0));
+    const blob  = new Blob([bytes]);
+    const url   = URL.createObjectURL(blob);
+    const el    = document.getElementById('ft-b64-result');
+    el.innerHTML = '';
+    const link = document.createElement('a');
+    link.className = 'file-tool-dl'; link.href = url; link.download = 'decoded_file';
+    link.innerHTML = `<i class="fas fa-download"></i> Download Decoded File`;
+    el.appendChild(link);
+    ftAddHistory('decoded_file', url, 'application/octet-stream');
+    genSidebarLog('filetools', 'Base64 decoded successfully', 'success');
+  } catch (err) {
+    notify('Invalid Base64 string.', 'error');
+    genSidebarLog('filetools', 'Decode failed: ' + err.message, 'error');
+  }
 }
 
 function startClock() {
@@ -2027,14 +2386,22 @@ async function generateImage() {
   const model  = state.gen?.imgModel || 'dalle3';
   if (!prompt) { notify('Enter a prompt','error'); return; }
   const btn = document.getElementById('btn-gen-img'); btn.disabled=true; btn.textContent='Generating...';
+  genSidebarLog('imggen', `Sending: "${prompt.slice(0,50)}${prompt.length>50?'…':''}"`);
   try {
     const r = await fetch('/api/generate/image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,model})});
     const d = await r.json();
     const results = document.getElementById('img-results');
-    if (d.imageUrl) results.innerHTML = `<div style="position:relative"><img class="gen-img" src="${d.imageUrl}" alt="${escHtml(prompt)}" onclick="window.open('${d.imageUrl}')"><a href="${d.imageUrl}" download class="btn-gen" style="position:absolute;bottom:8px;right:8px;padding:6px 12px;font-size:11px"><i class="fas fa-download"></i></a></div>`;
-    else if (d.imageBase64) results.innerHTML = `<img class="gen-img" src="data:image/jpeg;base64,${d.imageBase64}" alt="${escHtml(prompt)}">`;
-    else results.innerHTML = `<div style="color:var(--danger);font-size:13px">${d.error||'Generation failed — add API key in Credentials'}</div>`;
-  } catch(e) { notify('Image generation error','error'); }
+    if (d.imageUrl) {
+      results.innerHTML = `<div style="position:relative"><img class="gen-img" src="${d.imageUrl}" alt="${escHtml(prompt)}" onclick="window.open('${d.imageUrl}')"><a href="${d.imageUrl}" download class="btn-gen" style="position:absolute;bottom:8px;right:8px;padding:6px 12px;font-size:11px"><i class="fas fa-download"></i></a></div>`;
+      genSidebarLog('imggen', '✅ Image generated', 'success');
+    } else if (d.imageBase64) {
+      results.innerHTML = `<img class="gen-img" src="data:image/jpeg;base64,${d.imageBase64}" alt="${escHtml(prompt)}">`;
+      genSidebarLog('imggen', '✅ Image generated', 'success');
+    } else {
+      results.innerHTML = `<div style="color:var(--danger);font-size:13px">${d.error||'Generation failed — add API key in Credentials'}</div>`;
+      genSidebarLog('imggen', '❌ ' + (d.error||'Failed'), 'error');
+    }
+  } catch(e) { notify('Image generation error','error'); genSidebarLog('imggen','❌ Network error','error'); }
   finally { btn.disabled=false; btn.innerHTML='<i class="fas fa-wand-magic-sparkles"></i>&nbsp; Generate Image'; }
 }
 
@@ -2044,11 +2411,22 @@ async function generateVideo() {
   const dur    = document.getElementById('vid-dur')?.value || '5';
   if (!prompt) { notify('Enter a prompt','error'); return; }
   const btn = document.getElementById('btn-gen-vid'); btn.disabled=true; btn.textContent='Queuing...';
+  genSidebarLog('vidgen', `Queuing ${dur}s video: "${prompt.slice(0,45)}${prompt.length>45?'…':''}"`);
   try {
     const r = await fetch('/api/generate/video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,model,duration:parseInt(dur)})});
     const d = await r.json();
-    document.getElementById('vid-result').innerHTML = d.queued ? `<i class="fas fa-clock" style="color:var(--warn)"></i> ${d.message||'Video queued.'}` : (d.videoUrl ? `<video src="${d.videoUrl}" controls style="width:100%;border-radius:11px"></video>` : `<span style="color:var(--danger)">${d.error||'Generation failed'}</span>`);
-  } catch(e) { notify('Video generation error','error'); }
+    const resultEl = document.getElementById('vid-result');
+    if (d.queued) {
+      resultEl.innerHTML = `<i class="fas fa-clock" style="color:var(--warn)"></i> ${d.message||'Video queued.'}`;
+      genSidebarLog('vidgen', '⏳ Video queued — check back soon');
+    } else if (d.videoUrl) {
+      resultEl.innerHTML = `<video src="${d.videoUrl}" controls style="width:100%;border-radius:11px"></video>`;
+      genSidebarLog('vidgen', '✅ Video ready', 'success');
+    } else {
+      resultEl.innerHTML = `<span style="color:var(--danger)">${d.error||'Generation failed'}</span>`;
+      genSidebarLog('vidgen', '❌ ' + (d.error||'Failed'), 'error');
+    }
+  } catch(e) { notify('Video generation error','error'); genSidebarLog('vidgen','❌ Network error','error'); }
   finally { btn.disabled=false; btn.innerHTML='<i class="fas fa-film"></i>&nbsp; Generate Video'; }
 }
 
