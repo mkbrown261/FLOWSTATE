@@ -32,12 +32,10 @@ type Bindings = {
   CLAWBOT_API_KEY: string
   // Upstash Redis — rate limiting, token tracking, abuse prevention
   UPSTASH_REDIS_URL: string; UPSTASH_REDIS_TOKEN: string
-  // Image generation models
-  IDEOGRAM_API_KEY: string; STABILITY_API_KEY: string; BFL_API_KEY: string; RECRAFT_API_KEY: string
-  // Video generation models
-  RUNWAY_API_KEY: string; KLING_API_KEY: string; PIKA_API_KEY: string; MINIMAX_API_KEY: string; LUMA_API_KEY: string
-  // AI inference
-  REPLICATE_API_KEY: string; HUGGINGFACE_API_KEY: string
+  // Image & Video generation — all via Replicate (FLUX, SD3.5, Ideogram, Recraft, Seedream, Runway, Kling, MiniMax, HunyuanVideo, LTX)
+  REPLICATE_API_KEY: string
+  // Optional separate keys (not required if using Replicate)
+  RUNWAY_API_KEY: string; LUMA_API_KEY: string; PIKA_API_KEY: string
   // FlowState Audio — Music AI
   SUNO_API_KEY: string; MUSICGEN_API_KEY: string; UDIO_API_KEY: string
   LOUDME_API_KEY: string; MOISES_API_KEY: string; DOLBY_API_KEY: string
@@ -525,98 +523,142 @@ function getDemoResponse(message: string, modelName: string): string {
   return modelName + ' demo mode. Add API keys via Settings to unlock real responses. Your message: "' + message.slice(0, 80) + (message.length > 80 ? '...' : '') + '"'
 }
 
+// ─── Replicate polling helper ─────────────────────────────────────────────────
+async function pollReplicate(predictionId: string, apiKey: string, maxWaitMs = 120000): Promise<any> {
+  const start = Date.now()
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise(r => setTimeout(r, 3000))
+    const res = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
+      headers: { Authorization: 'Token ' + apiKey }
+    })
+    const data: any = await res.json()
+    if (data.status === 'succeeded') return { ok: true, output: data.output }
+    if (data.status === 'failed' || data.status === 'canceled') return { ok: false, error: data.error || 'Generation failed' }
+  }
+  return { ok: false, error: 'Timed out waiting for Replicate result' }
+}
+
 // ─── Image Generation ─────────────────────────────────────────────────────────
 app.post('/api/generate/image', async (c) => {
-  const { prompt, model: modelId = 'dalle3', size = '1024x1024' } = await c.req.json()
+  const { prompt, model: modelId = 'flux_pro', size = '1024x1024', aspectRatio = '1:1' } = await c.req.json()
   const spec = IMAGE_MODEL_REGISTRY[modelId as keyof typeof IMAGE_MODEL_REGISTRY]
   if (!spec) return c.json({ error: 'Unknown image model' }, 400)
   const apiKey = (c.env as any)?.[spec.envKey]
-  if (!apiKey) return c.json({ error: spec.name + ' API key not configured (' + spec.envKey + ')', demo: true, imageUrl: 'https://placehold.co/512x512/1a1a2e/a855f7?text=' + encodeURIComponent(prompt.slice(0,30)) })
+  if (!apiKey) return c.json({ error: spec.name + ' requires ' + spec.envKey, demo: true, imageUrl: 'https://placehold.co/1024x1024/1a1a2e/a855f7?text=' + encodeURIComponent(prompt.slice(0, 30)) })
+
   try {
-    if (modelId === 'dalle3') {
-      const data: any = await (await fetch(spec.apiEndpoint, { method: 'POST', headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'dall-e-3', prompt, n: 1, size, response_format: 'url' }) })).json()
-      return c.json({ imageUrl: data.data?.[0]?.url, revisedPrompt: data.data?.[0]?.revised_prompt })
-    }
-    if (modelId === 'sd3') {
-      const form = new FormData(); form.append('prompt', prompt); form.append('output_format', 'jpeg')
-      const data: any = await (await fetch(spec.apiEndpoint, { method: 'POST', headers: { Authorization: 'Bearer ' + apiKey, Accept: 'application/json' }, body: form })).json()
-      return c.json({ imageUrl: 'data:image/jpeg;base64,' + data.image })
-    }
-    if (modelId === 'imagen3') {
+    // ── Google Imagen models ──────────────────────────────────────────────────
+    if (modelId === 'imagen3' || modelId === 'imagen4') {
       const data: any = await (await fetch(spec.apiEndpoint + '?key=' + apiKey, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instances: [{ prompt }], parameters: { sampleCount: 1, aspectRatio: '1:1' } })
+        body: JSON.stringify({ instances: [{ prompt }], parameters: { sampleCount: 1, aspectRatio } })
       })).json()
       const b64 = data.predictions?.[0]?.bytesBase64Encoded
       if (b64) return c.json({ imageUrl: 'data:image/jpeg;base64,' + b64 })
-      return c.json({ error: data.error?.message || 'Imagen 3 generation failed', demo: true })
+      return c.json({ error: data.error?.message || spec.name + ' generation failed', demo: true })
     }
-    if (modelId === 'flux_pro') {
-      const data: any = await (await fetch(spec.apiEndpoint, {
-        method: 'POST', headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, width: 1024, height: 1024, steps: 40 })
-      })).json()
-      if (data.id) {
-        // Poll for result
-        let result: any = null
-        for (let i = 0; i < 10; i++) {
-          await new Promise(r => setTimeout(r, 2000))
-          const poll: any = await (await fetch('https://api.bfl.ml/v1/get_result?id=' + data.id, { headers: { Authorization: 'Bearer ' + apiKey } })).json()
-          if (poll.status === 'Ready') { result = poll; break }
-        }
-        if (result?.result?.sample) return c.json({ imageUrl: result.result.sample })
+
+    // ── All Replicate image models ────────────────────────────────────────────
+    const inputMap: Record<string, any> = {
+      flux_pro:    { prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90 },
+      flux_dev:    { prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90, num_inference_steps: 28 },
+      flux_schnell:{ prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90, num_inference_steps: 4 },
+      sd35:        { prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90 },
+      sd35_medium: { prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90 },
+      ideogram2:   { prompt, aspect_ratio: aspectRatio.replace(':', '_'), magic_prompt_option: 'AUTO' },
+      recraft:     { prompt, size: '1024x1024', style: 'realistic_image' },
+      seedream:    { prompt, aspect_ratio: aspectRatio },
+      runway_img:  { prompt, ratio: aspectRatio, duration: 5 },
+    }
+    const input = inputMap[modelId] || { prompt }
+    const predRes: any = await (await fetch(spec.apiEndpoint, {
+      method: 'POST',
+      headers: { Authorization: 'Token ' + apiKey, 'Content-Type': 'application/json', 'Prefer': 'wait=60' },
+      body: JSON.stringify({ input })
+    })).json()
+
+    if (predRes.error) return c.json({ error: predRes.error, demo: true })
+
+    // If already done (Prefer: wait worked)
+    if (predRes.status === 'succeeded') {
+      const out = Array.isArray(predRes.output) ? predRes.output[0] : predRes.output
+      return c.json({ imageUrl: out })
+    }
+
+    // Otherwise poll
+    if (predRes.id) {
+      const result = await pollReplicate(predRes.id, apiKey, 90000)
+      if (result.ok) {
+        const out = Array.isArray(result.output) ? result.output[0] : result.output
+        return c.json({ imageUrl: out })
       }
-      return c.json({ error: 'FLUX Pro generation failed or timed out', demo: true })
+      return c.json({ error: result.error, demo: true })
     }
-    if (modelId === 'ideogram2') {
-      const data: any = await (await fetch(spec.apiEndpoint, {
-        method: 'POST', headers: { 'Api-Key': apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_request: { prompt, aspect_ratio: 'ASPECT_1_1', model: 'V_2', magic_prompt_option: 'AUTO' } })
-      })).json()
-      const url = data.data?.[0]?.url
-      if (url) return c.json({ imageUrl: url })
-      return c.json({ error: data.error || 'Ideogram generation failed', demo: true })
-    }
-    return c.json({ error: 'Model ' + modelId + ' endpoint not fully implemented yet.', demo: true })
+
+    return c.json({ error: 'Unexpected response from Replicate', demo: true })
   } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
 // ─── Video Generation ─────────────────────────────────────────────────────────
 app.post('/api/generate/video', async (c) => {
-  const { prompt, model: modelId = 'veo2', duration = 5, imageUrl } = await c.req.json()
+  const { prompt, model: modelId = 'kling26', duration = 5, imageUrl } = await c.req.json()
   const spec = VIDEO_MODEL_REGISTRY[modelId as keyof typeof VIDEO_MODEL_REGISTRY]
   if (!spec) return c.json({ error: 'Unknown video model' }, 400)
   const apiKey = (c.env as any)?.[spec.envKey]
   const isImg2Vid = !!imageUrl
-  if (!apiKey) {
-    const demoMsg = isImg2Vid
-      ? `Demo: Would animate your image into a ${duration}s video using ${spec.name}. Add ${spec.envKey} to enable.`
-      : `Demo: Would generate ${duration}s video with ${spec.name}: "${prompt.slice(0, 60)}"`
-    return c.json({ error: spec.name + ' API key not configured (' + spec.envKey + ')', demo: true, queued: false, message: demoMsg })
-  }
-  // Route to appropriate video API
+
+  if (!apiKey) return c.json({ error: spec.name + ' requires ' + spec.envKey, demo: true, queued: false,
+    message: `Demo: Would generate ${duration}s video with ${spec.name}: "${prompt.slice(0, 60)}"` })
+
   try {
-    if (modelId === 'runway_gen4' && isImg2Vid) {
-      const res = await fetch('https://api.runwayml.com/v1/image_to_video', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json', 'X-Runway-Version': '2024-11-06' },
-        body: JSON.stringify({ promptImage: imageUrl, promptText: prompt, model: 'gen4_turbo', duration: Math.min(duration, 10) })
-      })
-      const data: any = await res.json()
-      if (data.id) return c.json({ queued: true, jobId: data.id, model: spec.name, message: 'Image-to-video queued via Runway Gen-4.' })
+    // ── Google Veo models ─────────────────────────────────────────────────────
+    if (modelId === 'veo2' || modelId === 'veo3') {
+      const body: any = { instances: [{ prompt }], parameters: { sampleCount: 1, durationSeconds: Math.min(duration, 8), aspectRatio: '16:9' } }
+      if (isImg2Vid) body.instances[0].image = { bytesBase64Encoded: imageUrl }
+      const data: any = await (await fetch(spec.apiEndpoint + '?key=' + apiKey, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      })).json()
+      if (data.name) return c.json({ queued: true, jobId: data.name, model: spec.name, message: 'Video queued via ' + spec.name + '. Check back in 2-3 minutes.' })
+      return c.json({ error: data.error?.message || spec.name + ' failed', demo: true })
     }
-    if (modelId === 'kling16') {
-      const endpoint = isImg2Vid ? 'https://api.klingai.com/v1/videos/image2video' : 'https://api.klingai.com/v1/videos/text2video'
-      const body: any = { prompt, duration: Math.min(duration, 10), aspect_ratio: '16:9', mode: 'std' }
-      if (isImg2Vid) body.image_url = imageUrl
-      const res = await fetch(endpoint, { method: 'POST', headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      const data: any = await res.json()
-      if (data.data?.task_id) return c.json({ queued: true, jobId: data.data.task_id, model: spec.name, message: 'Video queued via Kling 1.6.' })
+
+    // ── All Replicate video models ────────────────────────────────────────────
+    const inputMap: Record<string, any> = {
+      kling26:      { prompt, duration: Math.min(duration, 10), aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
+      kling16:      { prompt, duration: Math.min(duration, 10), aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
+      minimax:      { prompt, ...(isImg2Vid ? { first_frame_image: imageUrl } : {}) },
+      minimax_live: { prompt, ...(isImg2Vid ? { first_frame_image: imageUrl } : {}) },
+      hunyuan:      { prompt, video_length: Math.min(duration, 5), flow_shift: 7, embedded_guidance_scale: 6 },
+      ltx:          { prompt, duration: Math.min(duration, 5), aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
     }
-  } catch (err: any) {
-    return c.json({ error: err.message, queued: false }, 500)
-  }
-  return c.json({ queued: true, model: spec.name, prompt, message: 'Video generation queued via ' + spec.name + '. This typically takes 1-3 minutes.' })
+    const input = inputMap[modelId] || { prompt }
+    const predRes: any = await (await fetch(spec.apiEndpoint, {
+      method: 'POST',
+      headers: { Authorization: 'Token ' + apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input })
+    })).json()
+
+    if (predRes.error) return c.json({ error: predRes.error, demo: true })
+    if (predRes.id) return c.json({ queued: true, jobId: predRes.id, model: spec.name, message: 'Video queued via ' + spec.name + '. This typically takes 1-4 minutes.' })
+
+    return c.json({ error: 'Unexpected response from Replicate', demo: true })
+  } catch (err: any) { return c.json({ error: err.message, queued: false }, 500) }
+})
+
+// ─── Video Generation Status (poll Replicate prediction) ─────────────────────
+app.get('/api/generate/video/status/:jobId', async (c) => {
+  const jobId = c.req.param('jobId')
+  const apiKey = c.env?.REPLICATE_API_KEY
+  if (!apiKey) return c.json({ error: 'REPLICATE_API_KEY not configured' }, 400)
+  try {
+    const res = await fetch(`https://api.replicate.com/v1/predictions/${jobId}`, {
+      headers: { Authorization: 'Token ' + apiKey }
+    })
+    const data: any = await res.json()
+    const output = data.output
+    const videoUrl = Array.isArray(output) ? output[0] : output
+    return c.json({ status: data.status, videoUrl: videoUrl || null, error: data.error || null, progress: data.logs || null })
+  } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
 // ─── Session Context + Intent ─────────────────────────────────────────────────
@@ -1536,23 +1578,12 @@ app.get('/api/key-status', (c) => {
     resend:          check('RESEND_API_KEY'),
     notion:          check('NOTION_CLIENT_ID','NOTION_CLIENT_SECRET'),
     slack:           check('SLACK_CLIENT_ID','SLACK_CLIENT_SECRET','SLACK_BOT_TOKEN'),
-    // AI
-    google_ai:       check('GOOGLE_AI_KEY'),
-    elevenlabs:      check('ELEVENLABS_API_KEY'),
-    replicate:       check('REPLICATE_API_KEY'),
-    openai:          check('OPENAI_API_KEY'),
-    xai:             check('XAI_API_KEY'),
-    stability:       check('STABILITY_API_KEY'),
-    bfl:             check('BFL_API_KEY'),
-    ideogram:        check('IDEOGRAM_API_KEY'),
-    recraft:         check('RECRAFT_API_KEY'),
-    // Video
-    runway:          check('RUNWAY_API_KEY'),
-    kling:           check('KLING_API_KEY'),
-    pika:            check('PIKA_API_KEY'),
-    minimax:         check('MINIMAX_API_KEY'),
-    luma:            check('LUMA_API_KEY'),
-    suno:            check('SUNO_API_KEY'),
+    // AI — Image & Video (all via Replicate)
+    google_ai:       check('GOOGLE_AI_KEY'),        // Imagen 3/4, Veo 2/3
+    elevenlabs:      check('ELEVENLABS_API_KEY'),   // TTS
+    replicate:       check('REPLICATE_API_KEY'),    // FLUX, SD3.5, Ideogram, Recraft, Seedream, Runway img, Kling, MiniMax, HunyuanVideo, LTX
+    xai:             check('XAI_API_KEY'),          // Grok (optional — covered by OpenRouter)
+    suno:            check('SUNO_API_KEY'),          // Music (optional)
   })
 })
 
