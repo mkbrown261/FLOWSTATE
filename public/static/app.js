@@ -180,7 +180,16 @@ function showLogin() {
 }
 
 // Reusable OAuth popup opener — used for Google login AND calendar connect
+function isSafari() {
+  return /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+}
+
 function openAuthPopup(url, onSuccess) {
+  // Safari blocks cookies set in OAuth popups due to ITP — use full page redirect instead
+  if (isSafari()) {
+    window.location.href = url;
+    return;
+  }
   const w = 520, h = 640;
   const left = Math.round(screen.width/2 - w/2);
   const top  = Math.round(screen.height/2 - h/2);

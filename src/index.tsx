@@ -89,7 +89,7 @@ app.get('/api/auth/google/callback', async (c) => {
     if (!tokens.access_token) throw new Error('No access token')
     const profile: any = await (await fetch('https://www.googleapis.com/oauth2/v2/userinfo', { headers: { Authorization: 'Bearer ' + tokens.access_token } })).json()
     const session = { access_token: tokens.access_token, refresh_token: tokens.refresh_token, expires_at: Date.now() + tokens.expires_in * 1000, name: profile.name, email: profile.email, picture: profile.picture, provider: 'google' }
-    setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 7*24*3600, path: '/' })
+    setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'None', maxAge: 7*24*3600, path: '/' })
     return c.html(authSuccessPage(profile.name, profile.picture))
   } catch (err: any) { return c.html(authErrorPage('Authentication failed: ' + err.message)) }
 })
