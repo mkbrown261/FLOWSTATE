@@ -889,10 +889,10 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   // Google AI key covers: Imagen 3, Imagen 4
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Stability AI', purpose: 'Stable Diffusion 3 — open-source image generation, fine-tunable', envKey: 'STABILITY_API_KEY', url: 'https://platform.stability.ai', required: 'optional', tier: 'pro' },
-  { service: 'Black Forest Labs (BFL)', purpose: 'FLUX Pro 1.1 + FLUX Dev — ultra-high detail, accurate anatomy, open-weight', envKey: 'BFL_API_KEY', url: 'https://api.bfl.ml', required: 'optional', tier: 'pro' },
-  { service: 'Ideogram', purpose: 'Ideogram 2.0 — text-in-image specialist, logos, typography, design', envKey: 'IDEOGRAM_API_KEY', url: 'https://ideogram.ai/api', required: 'optional', tier: 'pro' },
-  { service: 'Recraft', purpose: 'Recraft V3 — vector art, brand assets, icons, consistent visual style', envKey: 'RECRAFT_API_KEY', url: 'https://recraft.ai/profile', required: 'optional', tier: 'pro' },
+  { service: 'Stability AI', purpose: 'Stable Diffusion 3 — open-source image generation, fine-tunable', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'pro' },
+  { service: 'Black Forest Labs (BFL)', purpose: 'FLUX Pro 1.1 + FLUX Dev — ultra-high detail, accurate anatomy, open-weight', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'pro' },
+  { service: 'Ideogram', purpose: 'Ideogram 2.0 — text-in-image specialist, logos, typography, design', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'pro' },
+  { service: 'Recraft', purpose: 'Recraft V3 — vector art, brand assets, icons, consistent visual style', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'pro' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── VIDEO GENERATION MODELS ─────────────────────────────────────────────
@@ -901,11 +901,11 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   // Google AI key covers: Veo 2, Veo 3
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Runway ML', purpose: 'Runway Gen-4 + Gen-4 Turbo — film-quality video, image-to-video', envKey: 'RUNWAY_API_KEY', url: 'https://dev.runwayml.com', required: 'optional', tier: 'pro' },
-  { service: 'Kling / Kuaishou', purpose: 'Kling 1.6 + Kling 2.1 — smooth motion, text-to-video, image-to-video', envKey: 'KLING_API_KEY', url: 'https://klingai.com/dev', required: 'optional', tier: 'pro' },
-  { service: 'Pika Labs', purpose: 'Pika 2.0 — creative effects, templates, fast video generation', envKey: 'PIKA_API_KEY', url: 'https://pika.art/api', required: 'optional', tier: 'pro' },
-  { service: 'MiniMax (Hailuo)', purpose: 'Hailuo 2 — fast video gen, excellent face & character consistency', envKey: 'MINIMAX_API_KEY', url: 'https://api.minimax.chat', required: 'optional', tier: 'pro' },
-  { service: 'Luma AI', purpose: 'Luma Dream Machine — photorealistic video, great for product & lifestyle shots', envKey: 'LUMA_API_KEY', url: 'https://lumalabs.ai/dream-machine/api', required: 'optional', tier: 'pro' },
+  { service: 'Runway ML', purpose: 'Runway Gen-4 + Gen-4 Turbo — film-quality video, image-to-video', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'pro' },
+  { service: 'Kling / Kuaishou', purpose: 'Kling 1.6 + Kling 2.1 — smooth motion, text-to-video, image-to-video', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'pro' },
+  { service: 'Pika Labs', purpose: 'Pika 2.0 — creative effects, templates, fast video generation', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'pro' },
+  { service: 'MiniMax (Hailuo)', purpose: 'Hailuo 2 — fast video gen, excellent face & character consistency', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'pro' },
+  { service: 'Luma AI', purpose: 'Luma Dream Machine — photorealistic video, great for product & lifestyle shots', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'pro' },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ── INTEGRATIONS — PRODUCTIVITY & TEAM ─────────────────────────────────
@@ -949,10 +949,10 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   // ── FLOWSTATE AUDIO — MUSIC AI ─────────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  { service: 'Suno AI', purpose: 'FlowState Audio: AI full-track & stem generation — songs, vocals, loops, instrumentals', envKey: 'SUNO_API_KEY', url: 'https://suno.com/account', required: 'optional', tier: 'clawflow' },
+  { service: 'Suno AI', purpose: 'FlowState Audio: AI full-track & stem generation — songs, vocals, loops, instrumentals', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'clawflow' },
   { service: 'Udio', purpose: 'FlowState Audio: AI song generation — high-quality vocals and full tracks', envKey: 'UDIO_API_KEY', url: 'https://www.udio.com/api', required: 'optional', tier: 'clawflow' },
-  { service: 'MusicGen / AudioCraft (Meta)', purpose: 'FlowState Audio: AI melody, beat & instrumental composition via Replicate', envKey: 'MUSICGEN_API_KEY', url: 'https://replicate.com/meta/musicgen', required: 'optional', tier: 'clawflow' },
-  { service: 'Moises AI', purpose: 'FlowState Audio: AI stem separation (vocals, drums, bass, keys, guitar), BPM detection', envKey: 'MOISES_API_KEY', url: 'https://developer.moises.ai', required: 'optional', tier: 'clawflow' },
+  { service: 'MusicGen / AudioCraft (Meta)', purpose: 'FlowState Audio: AI melody, beat & instrumental composition via Replicate', envKey: 'REPLICATE_API_KEY', url: 'https://replicate.com/account/api-tokens', required: 'optional', tier: 'clawflow' },
+  { service: 'Moises AI', purpose: 'FlowState Audio: AI stem separation (vocals, drums, bass, keys, guitar), BPM detection', envKey: 'AUDIOSHAKE_API_KEY', url: 'https://app.audioshake.ai', required: 'optional', tier: 'clawflow' },
   { service: 'Loudme / Matchering', purpose: 'FlowState Audio: AI mastering — loudness normalisation, reference-track matching', envKey: 'LOUDME_API_KEY', url: 'https://loudme.ai', required: 'optional', tier: 'clawflow' },
   { service: 'ACRCloud', purpose: 'FlowState Audio: Audio fingerprinting, BPM & key detection, pitch correction', envKey: 'ACRCLOUD_ACCESS_KEY, ACRCLOUD_ACCESS_SECRET', url: 'https://console.acrcloud.com', required: 'optional', tier: 'clawflow' },
   { service: 'Dolby.io Media APIs', purpose: 'FlowState Audio: AI noise suppression, speech enhancement, loudness correction', envKey: 'DOLBY_API_KEY', url: 'https://dashboard.dolby.io', required: 'optional', tier: 'clawflow' },

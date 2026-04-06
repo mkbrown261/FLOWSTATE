@@ -2730,6 +2730,7 @@ function openCredsModal() {
       'MINIMAX_API_KEY': ks.minimax,
       'LUMA_API_KEY': ks.luma,
       'SUNO_API_KEY': ks.suno,
+      'HUGGINGFACE_API_KEY': ks.huggingface,
     };
 
     const isLive = (envKey) => {

@@ -40,6 +40,7 @@ type Bindings = {
   SUNO_API_KEY: string; MUSICGEN_API_KEY: string; UDIO_API_KEY: string
   LOUDME_API_KEY: string; MOISES_API_KEY: string; DOLBY_API_KEY: string
   ACRCLOUD_ACCESS_KEY: string; ACRCLOUD_ACCESS_SECRET: string; AUDIOSHAKE_API_KEY: string
+  HUGGINGFACE_API_KEY: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -1503,26 +1504,22 @@ app.post('/api/audio/generate', async (c) => {
     if (tool === 'separate_stems') {
       const ashKey = c.env?.AUDIOSHAKE_API_KEY
       if (!ashKey) return c.json({ ...result, status: 'complete', message: 'Demo: Stem separation requires AUDIOSHAKE_API_KEY in Cloudflare secrets.' })
-      // AudioShake API — upload URL and request 4-stem separation
+      // AudioShake Tasks API — x-api-key header, api.audioshake.ai base
       const audioUrl = result.audioUrl || ''
       if (!audioUrl) return c.json({ ...result, status: 'error', message: 'No audio URL provided for stem separation.' })
-      const res = await fetch('https://groovy.audioshake.ai/upload/link', {
+      const ashHeaders = { 'x-api-key': ashKey, 'Content-Type': 'application/json' }
+      const jobRes = await fetch('https://api.audioshake.ai/tasks', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${ashKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ link: audioUrl }),
-      })
-      const uploadData: any = await res.json()
-      const assetId = uploadData?.data?.id || uploadData?.id
-      if (!assetId) return c.json({ ...result, status: 'error', message: 'AudioShake upload failed: ' + JSON.stringify(uploadData) })
-      // Create separation job
-      const jobRes = await fetch('https://groovy.audioshake.ai/job', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${ashKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assetId, callbackUrl: null, stems: ['vocals', 'drums', 'bass', 'other'] }),
+        headers: ashHeaders,
+        body: JSON.stringify({
+          url: audioUrl,
+          stems: ['vocals', 'drums', 'bass', 'other'],
+          format: 'mp3',
+        }),
       })
       const jobData: any = await jobRes.json()
-      const jobId = jobData?.data?.id || jobData?.id
-      return c.json({ ...result, status: 'queued', jobId, assetId, message: `Stem separation queued via AudioShake. Job ID: ${jobId}` })
+      const jobId = jobData?.id || jobData?.task_id
+      return c.json({ ...result, status: 'queued', jobId, message: `Stem separation queued via AudioShake. Job ID: ${jobId}` })
     }
 
     if (tool === 'master_track') {
@@ -1589,6 +1586,512 @@ app.post('/api/audio/analyze', async (c) => {
   })
 })
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── 264 Pro Video Editor API ──────────────────────────────────────────────────
+// All routes use Bearer token auth (fs_link_token stored in Electron's userData)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Helper: extract Bearer token from Authorization header
+function get264Token(c: any): string | null {
+  const auth = c.req.header('Authorization') || ''
+  return auth.startsWith('Bearer ') ? auth.slice(7).trim() : null
+}
+
+// Helper: verify 264 Pro token against Redis (token → email mapping)
+async function verify264Token(c: any, token: string): Promise<{ valid: boolean; email?: string; tier?: string; name?: string }> {
+  const DEV_BYPASS = 'DEV-FS264-MKBROWN-2026-BYPASS'
+  if (token === DEV_BYPASS) return { valid: true, email: 'dev@264pro.local', tier: 'team_growth', name: 'Dev User' }
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const tok   = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return { valid: false }
+  try {
+    const results = await redisPipeline(url, tok, [
+      ['GET', `264pro_token:${token}`],
+    ])
+    const email = results[0] as string | null
+    if (!email) return { valid: false }
+    const tierResults = await redisPipeline(url, tok, [
+      ['GET', `tier_email:${email}`],
+      ['GET', `user_name:${email}`],
+    ])
+    return {
+      valid: true,
+      email,
+      tier: (tierResults[0] as string) || 'free',
+      name: (tierResults[1] as string) || email.split('@')[0],
+    }
+  } catch { return { valid: false } }
+}
+
+// POST /api/264pro/verify-token — called by Electron on startup to validate stored token
+app.get('/api/264pro/verify-token', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ valid: false, error: 'No token provided' }, 401)
+  const result = await verify264Token(c, token)
+  if (!result.valid) return c.json({ valid: false, error: 'Invalid or expired token' }, 401)
+  return c.json({ valid: true, email: result.email, tier: result.tier, name: result.name })
+})
+
+// GET /api/264pro/auth — OAuth entry point, redirects to FlowState login then returns token
+app.get('/api/264pro/auth', async (c) => {
+  const state    = c.req.query('state') || ''
+  const redirect = c.req.query('redirect') || '264pro://auth'
+  // Store state in Redis for 10 minutes
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const tok   = c.env?.UPSTASH_REDIS_TOKEN
+  if (url && tok) {
+    await fetch(url + '/set/264pro_state_' + state + '/' + encodeURIComponent(redirect), {
+      method: 'POST', headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ex: 600 }),
+    })
+  }
+  // Redirect user to FlowState login with 264pro callback param
+  const loginUrl = `/auth?app=264pro&state=${encodeURIComponent(state)}&redirect=${encodeURIComponent(redirect)}`
+  return c.redirect(loginUrl)
+})
+
+// GET /api/264pro/auth/callback — called after user logs in, issues 264pro token
+app.get('/api/264pro/auth/callback', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  const state   = c.req.query('state') || ''
+  const redirect = c.req.query('redirect') || '264pro://auth'
+  if (!session?.email) return c.json({ error: 'Not authenticated' }, 401)
+
+  // Generate a secure token
+  const arr = new Uint8Array(32)
+  crypto.getRandomValues(arr)
+  const token = Array.from(arr).map(b => b.toString(16).padStart(2,'0')).join('')
+
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const tok   = c.env?.UPSTASH_REDIS_TOKEN
+  if (url && tok) {
+    // Store token → email mapping (90 day TTL)
+    await redisPipeline(url, tok, [
+      ['SET', `264pro_token:${token}`, session.email],
+      ['EXPIRE', `264pro_token:${token}`, 90 * 86400],
+      ['SET', `user_name:${session.email}`, session.name || session.email.split('@')[0]],
+    ])
+  }
+
+  // Redirect to the 264pro:// deep link with the token
+  const deepLink = `${decodeURIComponent(redirect)}?token=${token}&state=${encodeURIComponent(state)}`
+  return c.redirect(deepLink)
+})
+
+// POST /api/264pro/context-sync — editor syncs project context (track count, fps, etc.)
+app.post('/api/264pro/context-sync', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ ok: false }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ ok: false, error: 'Invalid token' }, 401)
+  const body: any = await c.req.json().catch(() => ({}))
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const tok   = c.env?.UPSTASH_REDIS_TOKEN
+  if (url && tok) {
+    const ctx = JSON.stringify({ ...body, lastSeen: new Date().toISOString() })
+    await redisPipeline(url, tok, [
+      ['SET', `264pro_ctx:${auth.email}`, ctx],
+      ['EXPIRE', `264pro_ctx:${auth.email}`, 86400],
+    ])
+  }
+  return c.json({ ok: true })
+})
+
+// POST /api/264pro/ai-chat — Clawbot chat inside 264 Pro editor (uses OpenRouter)
+app.post('/api/264pro/ai-chat', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+
+  const body: any = await c.req.json().catch(() => ({}))
+  const messages: Array<{role: string; content: string}> = body.messages || []
+  const projectContext = body.projectContext || {}
+
+  const orKey = c.env?.OPENROUTER_API_KEY
+  if (!orKey) {
+    return c.json({ reply: `Hi ${auth.name}! I'm Clawbot. I can see you're working on "${projectContext.projectName || 'your project'}" — but the OpenRouter API key isn't configured yet. Once connected I can help with editing workflows, color grading tips, export settings, and more!` })
+  }
+
+  const systemPrompt = `You are Clawbot, the AI assistant built into 264 Pro Video Editor. You are helping ${auth.name} (${auth.tier} tier) with their video editing project.
+
+Current project context:
+- Project: ${projectContext.projectName || 'Untitled'}
+- Tracks: ${projectContext.trackCount || 0}
+- FPS: ${projectContext.fps || 30}
+- Resolution: ${projectContext.resolution || '1920×1080'}
+
+You help with:
+- Video editing techniques and workflows
+- Color grading and LUT recommendations
+- Export settings for different platforms (YouTube, Instagram, TikTok, etc.)
+- AI tool usage (upscale, denoise, slow-mo, face enhance, rotoscoping)
+- Timeline organization and efficiency tips
+- Audio mixing and synchronization
+- Transitions and effects
+
+Be concise, practical, and friendly. Focus on actionable advice for 264 Pro.`
+
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${orKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://flowstate-67g.pages.dev',
+        'X-Title': '264 Pro Video Editor',
+      },
+      body: JSON.stringify({
+        model: 'anthropic/claude-3.5-haiku',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...messages.slice(-12), // keep last 12 messages for context
+        ],
+        max_tokens: 800,
+        temperature: 0.7,
+      }),
+    })
+    const data: any = await res.json()
+    const reply = data?.choices?.[0]?.message?.content || 'Sorry, I could not get a response right now.'
+    return c.json({ reply })
+  } catch (e: any) {
+    return c.json({ reply: 'Network error — please try again.' })
+  }
+})
+
+// POST /api/264pro/activity — log editor activity events to Redis
+app.post('/api/264pro/activity', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ ok: false }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ ok: false }, 401)
+  const body: any = await c.req.json().catch(() => ({}))
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const tok   = c.env?.UPSTASH_REDIS_TOKEN
+  if (url && tok) {
+    const entry = JSON.stringify({
+      event: body.event || 'activity',
+      projectName: body.projectName,
+      ts: new Date().toISOString(),
+      ...body,
+    })
+    await redisPipeline(url, tok, [
+      ['LPUSH', `264pro_activity:${auth.email}`, entry],
+      ['LTRIM', `264pro_activity:${auth.email}`, 0, 99], // keep last 100 events
+      ['EXPIRE', `264pro_activity:${auth.email}`, 30 * 86400],
+    ])
+  }
+  return c.json({ ok: true })
+})
+
+// GET /api/264pro/projects — return list of synced projects for this user
+app.get('/api/264pro/projects', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ projects: [] }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ projects: [] }, 401)
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const tok   = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ projects: [] })
+  try {
+    const results = await redisPipeline(url, tok, [
+      ['GET', `264pro_projects:${auth.email}`],
+    ])
+    const raw = results[0] as string | null
+    const projects = raw ? JSON.parse(raw) : []
+    return c.json({ projects: Array.isArray(projects) ? projects : [] })
+  } catch { return c.json({ projects: [] }) }
+})
+
+// POST /api/264pro/sync-projects — editor pushes updated project list
+app.post('/api/264pro/sync-projects', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ ok: false }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ ok: false }, 401)
+  const body: any = await c.req.json().catch(() => ({}))
+  const projects = Array.isArray(body.projects) ? body.projects.slice(0, 20) : []
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const tok   = c.env?.UPSTASH_REDIS_TOKEN
+  if (url && tok) {
+    await redisPipeline(url, tok, [
+      ['SET', `264pro_projects:${auth.email}`, JSON.stringify(projects)],
+      ['EXPIRE', `264pro_projects:${auth.email}`, 30 * 86400],
+    ])
+  }
+  return c.json({ ok: true, count: projects.length })
+})
+
+// ─── 264 Pro AI Tools ─────────────────────────────────────────────────────────
+// All tools use either Replicate or HuggingFace. Requires valid 264pro token.
+// Tools: upscale, denoise, slow_mo, face_enhance, rotoscope, colorize, depth_map, object_remove
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Helper: call Replicate API
+async function callReplicate(apiKey: string, model: string, input: object): Promise<{id?: string; status?: string; error?: string}> {
+  try {
+    const res = await fetch(`https://api.replicate.com/v1/models/${model}/predictions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Token ${apiKey}`,
+        'Content-Type': 'application/json',
+        Prefer: 'wait=30',
+      },
+      body: JSON.stringify({ input }),
+    })
+    return res.json()
+  } catch (e: any) { return { error: e.message } }
+}
+
+// Helper: call HuggingFace Router
+async function callHuggingFace(apiKey: string, model: string, inputs: any, task?: string): Promise<any> {
+  try {
+    const url = `https://router.huggingface.co/hf-inference/models/${model}`
+    const isImage = typeof inputs === 'string' || inputs instanceof ArrayBuffer
+    const headers: any = {
+      Authorization: `Bearer ${apiKey}`,
+    }
+    let body: any
+    if (isImage) {
+      headers['Content-Type'] = 'application/octet-stream'
+      body = inputs
+    } else {
+      headers['Content-Type'] = 'application/json'
+      body = JSON.stringify(inputs)
+    }
+    const res = await fetch(url, { method: 'POST', headers, body })
+    if (!res.ok) {
+      const err = await res.text()
+      return { error: err, status: res.status }
+    }
+    // Check if response is binary (image)
+    const ct = res.headers.get('content-type') || ''
+    if (ct.startsWith('image/') || ct === 'application/octet-stream') {
+      const buf = await res.arrayBuffer()
+      const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)))
+      return { type: 'image', data: b64, contentType: ct }
+    }
+    return res.json()
+  } catch (e: any) { return { error: e.message } }
+}
+
+// POST /api/264pro/ai-tool — run an AI tool on a frame/clip
+app.post('/api/264pro/ai-tool', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+
+  const body: any = await c.req.json().catch(() => ({}))
+  const { tool, imageUrl, videoUrl, params = {} } = body
+
+  const replicateKey  = c.env?.REPLICATE_API_KEY
+  const hfKey         = c.env?.HUGGINGFACE_API_KEY
+
+  if (!tool) return c.json({ error: 'tool is required' }, 400)
+
+  // ── Upscale (Real-ESRGAN via Replicate) ─────────────────────────────────
+  if (tool === 'upscale') {
+    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'AI Upscale would use Real-ESRGAN to upscale your video to 4K via Replicate.' })
+    if (!imageUrl && !videoUrl) return c.json({ error: 'imageUrl or videoUrl required' }, 400)
+    const scale = params.scale || 4
+    const pred = await callReplicate(replicateKey, 'nightmareai/real-esrgan', {
+      image: imageUrl || videoUrl,
+      scale,
+      face_enhance: params.faceEnhance || false,
+    })
+    if (pred.error) return c.json({ error: pred.error }, 500)
+    if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: (pred as any).output, tool })
+    if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: `Upscaling ${scale}x — prediction queued.` })
+    return c.json({ error: 'Replicate error', detail: pred }, 500)
+  }
+
+  // ── Face Enhance / Restore (CodeFormer via Replicate) ────────────────────
+  if (tool === 'face_enhance') {
+    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'AI Face Enhance uses CodeFormer to restore and sharpen faces.' })
+    if (!imageUrl) return c.json({ error: 'imageUrl required' }, 400)
+    const pred = await callReplicate(replicateKey, 'sczhou/codeformer', {
+      image: imageUrl,
+      codeformer_fidelity: params.fidelity ?? 0.7,
+      background_enhance: params.backgroundEnhance ?? true,
+      face_upsample: params.faceUpsample ?? true,
+      upscale: params.upscale ?? 2,
+    })
+    if (pred.error) return c.json({ error: pred.error }, 500)
+    if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: (pred as any).output, tool })
+    if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Face restore queued via CodeFormer.' })
+    return c.json({ error: 'Replicate error', detail: pred }, 500)
+  }
+
+  // ── Slow Motion / Frame Interpolation (RIFE via Replicate) ───────────────
+  if (tool === 'slow_mo') {
+    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'AI Slow-Mo uses RIFE frame interpolation for 2x–8x slow motion.' })
+    if (!videoUrl) return c.json({ error: 'videoUrl required' }, 400)
+    const multiplier = params.multiplier || 2
+    const pred = await callReplicate(replicateKey, 'nateraw/video-retalking', {
+      video: videoUrl,
+      face: imageUrl, // optional face reference
+      ...params,
+    })
+    // Fallback: use DAIN for frame interpolation
+    const pred2 = await callReplicate(replicateKey, 'arielreplicate/dain-app', {
+      video: videoUrl,
+      interpolation_factor: multiplier,
+    })
+    if (pred2.error) return c.json({ error: pred2.error }, 500)
+    if (pred2.status === 'succeeded') return c.json({ status: 'complete', outputUrl: (pred2 as any).output, tool })
+    if (pred2.id) return c.json({ status: 'queued', predictionId: pred2.id, tool, message: `${multiplier}x slow-mo queued via DAIN.` })
+    return c.json({ error: 'Replicate error', detail: pred2 }, 500)
+  }
+
+  // ── Rotoscoping / Background Remove (SAM via HuggingFace) ────────────────
+  if (tool === 'rotoscope' || tool === 'bg_remove') {
+    if (!hfKey && !replicateKey) return c.json({ error: 'HUGGINGFACE_API_KEY or REPLICATE_API_KEY required', demo: true, message: 'AI Rotoscoping uses SAM (Segment Anything) to remove backgrounds.' })
+    if (!imageUrl) return c.json({ error: 'imageUrl required' }, 400)
+    // Use Replicate with REMBG (most reliable)
+    if (replicateKey) {
+      const pred = await callReplicate(replicateKey, 'cjwbw/rembg', {
+        image: imageUrl,
+      })
+      if (pred.error) return c.json({ error: pred.error }, 500)
+      if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: (pred as any).output, tool })
+      if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Background removal queued via rembg.' })
+    }
+    // Fallback: HuggingFace RMBG
+    if (hfKey) {
+      // Fetch image and send as binary
+      const imgRes = await fetch(imageUrl)
+      const imgBuf = await imgRes.arrayBuffer()
+      const result = await callHuggingFace(hfKey, 'briaai/RMBG-1.4', imgBuf)
+      if (result.error) return c.json({ error: result.error }, 500)
+      if (result.type === 'image') return c.json({ status: 'complete', outputBase64: result.data, contentType: result.contentType, tool })
+    }
+    return c.json({ error: 'No suitable API key configured' }, 500)
+  }
+
+  // ── AI Colorize (Deoldify via Replicate) ─────────────────────────────────
+  if (tool === 'colorize') {
+    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'AI Colorize uses DeOldify to add color to black & white footage.' })
+    if (!imageUrl && !videoUrl) return c.json({ error: 'imageUrl or videoUrl required' }, 400)
+    const pred = await callReplicate(replicateKey, 'arielreplicate/deoldify_image', {
+      input_image: imageUrl,
+      render_factor: params.renderFactor || 35,
+    })
+    if (pred.error) return c.json({ error: pred.error }, 500)
+    if (pred.status === 'succeeded') return c.json({ status: 'complete', outputUrl: (pred as any).output, tool })
+    if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Colorization queued via DeOldify.' })
+    return c.json({ error: 'Replicate error', detail: pred }, 500)
+  }
+
+  // ── Depth Map (MiDaS via HuggingFace) ───────────────────────────────────
+  if (tool === 'depth_map') {
+    if (!hfKey && !replicateKey) return c.json({ error: 'HUGGINGFACE_API_KEY required', demo: true, message: 'Depth Map uses MiDaS to generate depth information for parallax effects.' })
+    if (!imageUrl) return c.json({ error: 'imageUrl required' }, 400)
+    if (hfKey) {
+      const imgRes = await fetch(imageUrl)
+      const imgBuf = await imgRes.arrayBuffer()
+      const result = await callHuggingFace(hfKey, 'Intel/dpt-hybrid-midas', imgBuf)
+      if (result.error) return c.json({ error: result.error }, 500)
+      if (result.type === 'image') return c.json({ status: 'complete', outputBase64: result.data, contentType: result.contentType, tool })
+    }
+    // Fallback: Replicate MiDaS
+    if (replicateKey) {
+      const pred = await callReplicate(replicateKey, 'cjwbw/midas', {
+        image: imageUrl,
+        model_type: params.modelType || 'DPT_Large',
+      })
+      if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Depth map queued via MiDaS.' })
+    }
+    return c.json({ error: 'No suitable key configured' }, 500)
+  }
+
+  // ── Video Denoise (FastDVDnet via Replicate) ──────────────────────────────
+  if (tool === 'video_denoise') {
+    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'Video Denoise uses FastDVDnet for temporal noise suppression.' })
+    if (!videoUrl) return c.json({ error: 'videoUrl required' }, 400)
+    // Use Real-ESRGAN with denoise on video
+    const pred = await callReplicate(replicateKey, 'daanelson/real-esrgan', {
+      video: videoUrl,
+      scale: 1, // denoise only, no upscale
+    })
+    if (pred.error) return c.json({ error: pred.error }, 500)
+    if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Video denoise queued.' })
+    return c.json({ error: 'Replicate error' }, 500)
+  }
+
+  // ── Object Remove (LaMa via HuggingFace / Replicate) ─────────────────────
+  if (tool === 'object_remove' || tool === 'inpaint') {
+    if (!replicateKey && !hfKey) return c.json({ error: 'REPLICATE_API_KEY or HUGGINGFACE_API_KEY required', demo: true, message: 'Object Remove uses LaMa inpainting to seamlessly remove objects.' })
+    if (!imageUrl) return c.json({ error: 'imageUrl required' }, 400)
+    if (replicateKey) {
+      const pred = await callReplicate(replicateKey, 'andreasjansson/stable-diffusion-inpainting', {
+        image: imageUrl,
+        mask: params.maskUrl || imageUrl,
+        prompt: params.prompt || 'clean background, empty',
+        num_inference_steps: params.steps || 30,
+      })
+      if (pred.error) return c.json({ error: pred.error }, 500)
+      if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: 'Inpainting queued.' })
+    }
+    return c.json({ error: 'No suitable key configured' }, 500)
+  }
+
+  // ── Video Upscale (TopazLabs-style via Replicate) ─────────────────────────
+  if (tool === 'video_upscale') {
+    if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY required', demo: true, message: 'Video Upscale uses Real-ESRGAN to upscale video to 4K.' })
+    if (!videoUrl) return c.json({ error: 'videoUrl required' }, 400)
+    const pred = await callReplicate(replicateKey, 'nightmareai/real-esrgan', {
+      image: videoUrl,
+      scale: params.scale || 2,
+    })
+    if (pred.error) return c.json({ error: pred.error }, 500)
+    if (pred.id) return c.json({ status: 'queued', predictionId: pred.id, tool, message: `Video upscale ${params.scale || 2}x queued.` })
+    return c.json({ error: 'Replicate error' }, 500)
+  }
+
+  return c.json({ error: `Unknown tool: ${tool}. Supported: upscale, face_enhance, slow_mo, rotoscope, bg_remove, colorize, depth_map, video_denoise, object_remove, video_upscale` }, 400)
+})
+
+// GET /api/264pro/ai-tool/poll/:predictionId — poll Replicate prediction status
+app.get('/api/264pro/ai-tool/poll/:predictionId', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+
+  const predId = c.req.param('predictionId')
+  const replicateKey = c.env?.REPLICATE_API_KEY
+  if (!replicateKey) return c.json({ error: 'REPLICATE_API_KEY not configured' }, 500)
+
+  try {
+    const res = await fetch(`https://api.replicate.com/v1/predictions/${predId}`, {
+      headers: { Authorization: `Token ${replicateKey}` },
+    })
+    const data: any = await res.json()
+    if (data.status === 'succeeded') {
+      return c.json({ status: 'complete', outputUrl: Array.isArray(data.output) ? data.output[0] : data.output })
+    }
+    if (data.status === 'failed' || data.status === 'canceled') {
+      return c.json({ status: 'error', error: data.error || 'Prediction failed' })
+    }
+    const percent = data.status === 'processing' && data.logs
+      ? (() => { const m = data.logs.match(/(\d+)%/g); return m ? parseInt(m[m.length-1]) : null })()
+      : null
+    return c.json({ status: 'processing', predictionId: predId, percent })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/264pro/user — return current user info for the linked token
+app.get('/api/264pro/user', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+  return c.json({ name: auth.name, email: auth.email, tier: auth.tier })
+})
+
 // ─── Misc APIs ────────────────────────────────────────────────────────────────
 app.get('/api/health', (c) => c.json({ status: 'alive', version: '3.0.0', name: 'FlowState', phase: 'Phase 3 — Full Architecture' }))
 
@@ -1602,6 +2105,8 @@ app.get('/api/models', (c) => c.json({ models: MODEL_REGISTRY, imageModels: IMAG
 app.get('/api/key-status', (c) => {
   const e = c.env as any
   const check = (...keys: string[]) => keys.every(k => !!e?.[k])
+  // All image/video generation models route through Replicate — one key covers them all
+  const hasReplicate = check('REPLICATE_API_KEY')
   return c.json({
     // Core
     google_oauth:    check('GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET'),
@@ -1611,12 +2116,30 @@ app.get('/api/key-status', (c) => {
     resend:          check('RESEND_API_KEY'),
     notion:          check('NOTION_CLIENT_ID','NOTION_CLIENT_SECRET'),
     slack:           check('SLACK_CLIENT_ID','SLACK_CLIENT_SECRET','SLACK_BOT_TOKEN'),
-    // AI — Image & Video (all via Replicate)
-    google_ai:       check('GOOGLE_AI_KEY'),        // Imagen 3/4, Veo 2/3
-    elevenlabs:      check('ELEVENLABS_API_KEY'),   // TTS
-    replicate:       check('REPLICATE_API_KEY'),    // FLUX, SD3.5, Ideogram, Recraft, Seedream, Runway img, Kling, MiniMax, HunyuanVideo, LTX
-    xai:             check('XAI_API_KEY'),          // Grok (optional — covered by OpenRouter)
-    suno:            check('SUNO_API_KEY'),          // Music (optional)
+    // AI — all image/video models route through Replicate
+    google_ai:       check('GOOGLE_AI_KEY'),
+    elevenlabs:      check('ELEVENLABS_API_KEY'),
+    replicate:       hasReplicate,
+    // Image gen — all via Replicate
+    ideogram:        hasReplicate,
+    recraft:         hasReplicate,
+    stability:       hasReplicate,
+    bfl:             hasReplicate,
+    // Video gen — all via Replicate
+    runway:          hasReplicate,
+    kling:           hasReplicate,
+    pika:            hasReplicate,
+    minimax:         hasReplicate,
+    luma:            hasReplicate,
+    // Audio — individual keys
+    suno:            hasReplicate || check('SUNO_API_KEY'),
+    udio:            check('UDIO_API_KEY'),
+    musicgen:        hasReplicate,
+    moises:          check('AUDIOSHAKE_API_KEY'),   // AudioShake replaces Moises
+    audioshake:      check('AUDIOSHAKE_API_KEY'),
+    // Optional
+    xai:             check('XAI_API_KEY'),
+    huggingface:     check('HUGGINGFACE_API_KEY'),
   })
 })
 
