@@ -684,12 +684,50 @@ app.get('/api/behavior/insight', async (c) => {
 app.post('/api/auth/magic-link', async (c) => {
   const { email } = await c.req.json()
   if (!email || !email.includes('@')) return c.json({ error: 'invalid_email' }, 400)
-  // In production: generate token, store in KV, send via Resend/SendGrid
-  // For now: auto-sign-in with email as identifier (demo mode)
+  const resendKey = c.env?.RESEND_API_KEY
   const name = email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
-  const session = { name, email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
-  setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
-  return c.json({ success: true, user: { name, email } })
+  if (resendKey) {
+    // Send real magic link email via Resend
+    const baseUrl = new URL(c.req.url).origin
+    const token = btoa(JSON.stringify({ email, name, exp: Date.now() + 15 * 60 * 1000 }))
+    const magicUrl = `${baseUrl}/api/auth/magic-link/verify?token=${encodeURIComponent(token)}`
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'FlowState <noreply@flowst8.cc>',
+        to: [email],
+        subject: 'Your FlowState sign-in link',
+        html: `
+          <div style="font-family:system-ui,sans-serif;background:#0f0f1a;color:#f0f0f0;padding:40px;max-width:480px;margin:0 auto;border-radius:16px">
+            <div style="font-size:32px;margin-bottom:8px">⚡</div>
+            <h1 style="font-size:22px;font-weight:800;margin-bottom:8px">Sign in to FlowState</h1>
+            <p style="color:#888;margin-bottom:24px">Click the button below to sign in. This link expires in 15 minutes.</p>
+            <a href="${magicUrl}" style="display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:14px 32px;border-radius:12px;font-weight:700;font-size:15px">Sign in to FlowState →</a>
+            <p style="color:#555;font-size:12px;margin-top:24px">If you didn't request this, you can safely ignore this email.</p>
+          </div>
+        `
+      })
+    })
+    return c.json({ success: true, message: 'Magic link sent! Check your email.' })
+  } else {
+    // Fallback: auto-sign-in (dev/demo mode)
+    const session = { name, email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
+    setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
+    return c.json({ success: true, user: { name, email } })
+  }
+})
+
+app.get('/api/auth/magic-link/verify', async (c) => {
+  const { token } = c.req.query() as any
+  if (!token) return c.html(authErrorPage('Invalid or missing token.'))
+  try {
+    const data = JSON.parse(atob(decodeURIComponent(token)))
+    if (Date.now() > data.exp) return c.html(authErrorPage('This link has expired. Please request a new one.'))
+    const session = { name: data.name, email: data.email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
+    setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'None', maxAge: 604800, path: '/' })
+    return c.html(authSuccessPage(data.name, ''))
+  } catch { return c.html(authErrorPage('Invalid token. Please request a new sign-in link.')) }
 })
 
 // ─── Stripe Billing ───────────────────────────────────────────────────────────
