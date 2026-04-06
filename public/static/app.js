@@ -2561,7 +2561,7 @@ async function loadClawbotPromo() {
     const el = document.getElementById('clawbot-promo');
     if (!el) return;
     el.innerHTML = `
-      <div class="clawbot-promo-logo"><img src="/static/clawbot-mascot.png" style="width:80px;height:80px;object-fit:contain"></div>
+      <div class="clawbot-promo-logo"><img src="/static/clawbot-mascot.png" style="width:105px;height:105px;object-fit:contain;display:block;margin:0 auto"></div>
       <div class="clawbot-promo-title">${d.headline}</div>
       <div class="clawbot-promo-sub">Your AI brain for 264 Pro, Flowstate Audio &amp; Hub. Agentic workflows, walkthrough generation, and smart automation — all in one.</div>
       <div class="clawbot-price-row">
@@ -2575,7 +2575,7 @@ async function loadClawbotPromo() {
     `;
   } catch(e) {
     const el = document.getElementById('clawbot-promo');
-    if (el) el.innerHTML = `<div class="clawbot-promo-logo"><img src="/static/clawbot-mascot.png" style="width:80px;height:80px;object-fit:contain"></div><div class="clawbot-promo-title">Unlock Clawbot</div><div class="clawbot-promo-sub">Add CLAWBOT_API_KEY to your Cloudflare secrets to activate ClawFlow.</div>`;
+    if (el) el.innerHTML = `<div class="clawbot-promo-logo"><img src="/static/clawbot-mascot.png" style="width:105px;height:105px;object-fit:contain;display:block;margin:0 auto"></div><div class="clawbot-promo-title">Unlock Clawbot</div><div class="clawbot-promo-sub">Add CLAWBOT_API_KEY to your Cloudflare secrets to activate ClawFlow.</div>`;
   }
 }
 

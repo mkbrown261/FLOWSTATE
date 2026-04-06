@@ -1997,7 +1997,7 @@ em{color:var(--accent);font-style:italic}
 .clawbot-app-sel{display:flex;align-items:center;gap:9px}
 .clawbot-coins{font-size:11px;font-weight:700;padding:4px 10px;border-radius:7px;background:rgba(168,85,247,.12);color:var(--accent);border:1px solid rgba(168,85,247,.25)}
 .clawbot-promo-card{background:linear-gradient(135deg,rgba(168,85,247,.1),rgba(6,182,212,.07));border:1px solid rgba(168,85,247,.3);border-radius:18px;padding:32px;text-align:center;max-width:480px;margin:40px auto}
-.clawbot-promo-logo{font-size:52px;margin-bottom:14px}
+.clawbot-promo-logo{font-size:52px;margin-bottom:14px;display:flex;justify-content:center;align-items:center}
 .clawbot-promo-title{font-size:22px;font-weight:900;margin-bottom:6px}
 .clawbot-promo-sub{font-size:14px;color:var(--text-s);margin-bottom:20px;line-height:1.6}
 .clawbot-price-row{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:6px}
@@ -2450,7 +2450,7 @@ em{color:var(--accent);font-style:italic}
 
     <!-- AI Tools callout -->
     <div style="max-width:680px;width:100%;background:linear-gradient(135deg,rgba(236,72,153,.1),rgba(245,158,11,.07));border:1px solid rgba(236,72,153,.3);border-radius:18px;padding:28px 32px;text-align:center;margin-bottom:40px">
-      <img src="/static/clawbot-mascot.png" style="width:64px;height:64px;object-fit:contain;margin-bottom:8px">
+      <img src="/static/clawbot-mascot.png" style="width:89px;height:89px;object-fit:contain;display:block;margin:0 auto 12px">
       <div style="font-size:18px;font-weight:900;margin-bottom:6px">Supercharge with Clawbot &amp; ClawFlow</div>
       <div style="font-size:13px;color:var(--text-s);margin-bottom:20px;line-height:1.7">Clawbot connects directly to 264 Pro for real-time AI assistance &mdash; walkthrough generation, AI tool suggestions, export optimization, and automated editing workflows. ClawFlow subscription required ($40/month &mdash; first month $20).</div>
       <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
@@ -2589,7 +2589,7 @@ em{color:var(--accent);font-style:italic}
 
     <!-- Clawbot / ClawFlow callout -->
     <div style="max-width:680px;width:100%;background:linear-gradient(135deg,rgba(168,85,247,.1),rgba(6,182,212,.07));border:1px solid rgba(168,85,247,.3);border-radius:18px;padding:28px 32px;text-align:center;margin-bottom:40px">
-      <img src="/static/clawbot-mascot.png" style="width:64px;height:64px;object-fit:contain;margin-bottom:8px">
+      <img src="/static/clawbot-mascot.png" style="width:89px;height:89px;object-fit:contain;display:block;margin:0 auto 12px">
       <div style="font-size:18px;font-weight:900;margin-bottom:6px">Supercharge with Clawbot &amp; ClawFlow</div>
       <div style="font-size:13px;color:var(--text-s);margin-bottom:20px;line-height:1.7">Clawbot connects directly to Flowstate Audio for real-time AI assistance &mdash; arrangement suggestions, beat generation, vocal pitch correction, AI mastering, and stem separation. ClawFlow subscription required ($40/month &mdash; first month $20).</div>
       <button class="clawbot-cta" style="max-width:320px;margin:0 auto" onclick="switchTab('clawbot')">Activate ClawFlow &rarr;</button>
