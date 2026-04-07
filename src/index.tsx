@@ -2286,10 +2286,12 @@ app.get('/', (c) => {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FlowState — Intelligent Workspace</title>
-<!-- Favicon — SVG fills tab at any size, PNG fallback for older browsers -->
+<!-- Favicon — full cross-browser coverage -->
+<link rel="icon" href="/static/favicon.ico" sizes="16x16 32x32 48x48">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="alternate icon" href="/static/app-icon.png" type="image/png" sizes="1024x1024">
-<link rel="apple-touch-icon" href="/static/app-icon.png">
+<link rel="icon" href="/static/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+<link rel="manifest" href="/static/site.webmanifest">
 <meta name="theme-color" content="#1a0533">
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
