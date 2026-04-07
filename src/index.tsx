@@ -41,6 +41,8 @@ type Bindings = {
   LOUDME_API_KEY: string; MOISES_API_KEY: string; DOLBY_API_KEY: string
   ACRCLOUD_ACCESS_KEY: string; ACRCLOUD_ACCESS_SECRET: string; AUDIOSHAKE_API_KEY: string
   HUGGINGFACE_API_KEY: string
+  // Canonical public domain — pins OAuth redirect_uri so it never varies by access domain
+  CANONICAL_ORIGIN: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -58,7 +60,9 @@ app.get('/api/auth/google', async (c) => {
   if (existingSession) {
     return c.redirect('/')
   }
-  const baseUrl = new URL(c.req.url).origin
+  // Always use canonical domain so redirect_uri matches what's registered in Google Console
+  // Both flowst8.cc and flowstate-67g.pages.dev route here — pin to flowst8.cc
+  const baseUrl = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
   const intent = declareGoogleOAuth(baseUrl)
   setCookie(c, 'oauth_state', intent.stateParam, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' })
   const params = new URLSearchParams({
@@ -79,7 +83,8 @@ app.get('/api/auth/google/callback', async (c) => {
   deleteCookie(c, 'oauth_state', { path: '/' })
   if (error || state !== storedState || !code) return c.html(authErrorPage('Google sign-in was cancelled or failed.'))
   try {
-    const baseUrl = new URL(c.req.url).origin
+    // Must match exactly what was sent in the authorize request — use same canonical origin
+    const baseUrl = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ code, client_id: c.env?.GOOGLE_CLIENT_ID || '', client_secret: c.env?.GOOGLE_CLIENT_SECRET || '', redirect_uri: baseUrl + '/api/auth/google/callback', grant_type: 'authorization_code' }),
