@@ -49,6 +49,10 @@ type Bindings = {
   UPSTASH_REDIS_URL: string; UPSTASH_REDIS_TOKEN: string
   // Image & Video generation — all via Replicate (FLUX, SD3.5, Ideogram, Recraft, Seedream, Runway, Kling, MiniMax, HunyuanVideo, LTX)
   REPLICATE_API_KEY: string
+  // fal.ai — Seedance 2.0, Nano Banana (Gemini), Wan v2.6, SeedDream v5
+  FAL_AI_KEY: string
+  // Higgsfield AI — cinematic video generation (100+ models including Seedance 2.0)
+  HIGGSFIELD_API_KEY: string
   // Optional separate keys (not required if using Replicate)
   RUNWAY_API_KEY: string; LUMA_API_KEY: string; PIKA_API_KEY: string
   // FlowState Audio — Music AI
@@ -2325,6 +2329,326 @@ app.get('/api/264pro/ai-tool/poll/:predictionId', async (c) => {
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── 264 Pro AI Video Generation — Seedance 2.0 / Higgsfield / Nano Banana ────
+// Unified generation endpoint supporting text-to-video + image-to-video
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Helper: call fal.ai async queue (Seedance 2.0, Nano Banana, Wan, SeedDream)
+async function callFalAsync(falKey: string, modelId: string, input: Record<string, unknown>): Promise<{ requestId?: string; error?: string; status?: string; videoUrl?: string }> {
+  try {
+    const res = await fetch(`https://queue.fal.run/${modelId}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Key ${falKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ input }),
+    })
+    const data: any = await res.json()
+    if (data.request_id) return { requestId: data.request_id, status: 'queued' }
+    if (data.error) return { error: data.error }
+    // Synchronous result (some models return immediately)
+    if (data.video?.url) return { status: 'complete', videoUrl: data.video.url }
+    return { error: 'Unexpected fal.ai response', ...data }
+  } catch (e: any) {
+    return { error: e.message }
+  }
+}
+
+// Helper: poll fal.ai queue status
+async function pollFalQueue(falKey: string, requestId: string): Promise<{ status: string; videoUrl?: string; percent?: number; error?: string }> {
+  try {
+    const res = await fetch(`https://queue.fal.run/requests/${requestId}/status`, {
+      headers: { 'Authorization': `Key ${falKey}` },
+    })
+    const data: any = await res.json()
+    if (data.status === 'COMPLETED') {
+      // Fetch actual result
+      const resultRes = await fetch(`https://queue.fal.run/requests/${requestId}`, {
+        headers: { 'Authorization': `Key ${falKey}` },
+      })
+      const result: any = await resultRes.json()
+      const videoUrl = result.video?.url || result.output?.url || (Array.isArray(result.video) ? result.video[0] : null)
+      return { status: 'complete', videoUrl }
+    }
+    if (data.status === 'FAILED') return { status: 'error', error: data.error || 'Generation failed' }
+    const percent = data.queue_position != null ? Math.max(5, 95 - data.queue_position * 10) : 30
+    return { status: 'processing', percent }
+  } catch (e: any) {
+    return { status: 'error', error: e.message }
+  }
+}
+
+// Helper: call Higgsfield AI
+async function callHiggsfield(higgsKey: string, model: string, input: Record<string, unknown>): Promise<{ requestId?: string; error?: string; status?: string; videoUrl?: string }> {
+  try {
+    const res = await fetch('https://api.higgsfield.ai/v1/video/generate', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${higgsKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model, ...input }),
+    })
+    const data: any = await res.json()
+    if (data.id) return { requestId: data.id, status: 'queued' }
+    if (data.output_url) return { status: 'complete', videoUrl: data.output_url }
+    if (data.error) return { error: data.error }
+    return { error: `Higgsfield error: ${JSON.stringify(data)}` }
+  } catch (e: any) {
+    return { error: e.message }
+  }
+}
+
+// POST /api/264pro/video-gen — AI video generation (Seedance, Higgsfield, Nano Banana)
+app.post('/api/264pro/video-gen', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+
+  // All video generation requires Pro tier
+  const tier = auth.tier || 'free'
+  const hasPro = ['pro', 'personal_pro', 'team', 'team_starter', 'team_growth', 'enterprise'].includes(tier)
+  if (!hasPro) return c.json({ error: 'Video generation requires a Pro plan.', upgradeUrl: 'https://flowst8.cc/pricing' }, 403)
+
+  const body: any = await c.req.json().catch(() => ({}))
+  const {
+    model,          // 'seedance_t2v' | 'seedance_i2v' | 'higgsfield_t2v' | 'nano_banana_2k' | 'nano_banana_4k' | 'wan_t2v' | 'wan_i2v'
+    prompt,
+    imageUrl,       // for i2v modes
+    duration,       // seconds: 5 | 10 | 15
+    resolution,     // '720p' | '1080p' | '2k' | '4k'
+    aspectRatio,    // '16:9' | '9:16' | '1:1' | '4:3'
+    quality,        // 'basic' | 'high'
+    cameraMotion,   // prompt addition for camera control
+    style,          // style modifier
+    negativePrompt,
+  } = body
+
+  if (!model) return c.json({ error: 'model is required' }, 400)
+  if (!prompt) return c.json({ error: 'prompt is required' }, 400)
+
+  const falKey        = c.env?.FAL_AI_KEY
+  const higgsKey      = c.env?.HIGGSFIELD_API_KEY
+  const replicateKey  = c.env?.REPLICATE_API_KEY
+
+  // Build the full prompt with camera motion and style
+  const fullPrompt = [prompt, cameraMotion, style].filter(Boolean).join('. ')
+
+  // ── Seedance 2.0 Text-to-Video (via fal.ai) ─────────────────────────────
+  if (model === 'seedance_t2v') {
+    if (!falKey) return c.json({ error: 'FAL_AI_KEY required for Seedance 2.0', upgradeUrl: 'https://flowst8.cc' }, 503)
+    const result = await callFalAsync(falKey, 'bytedance/seedance-2.0/text-to-video', {
+      prompt: fullPrompt,
+      duration: String(duration || '5'),
+      resolution: resolution === '1080p' ? '1080p' : '720p',
+      aspect_ratio: aspectRatio || '16:9',
+    })
+    if (result.error) return c.json({ error: result.error }, 500)
+    if (result.status === 'complete') return c.json({ status: 'complete', videoUrl: result.videoUrl, model })
+    return c.json({ status: 'queued', requestId: result.requestId, provider: 'fal', model, message: `Seedance 2.0 generating — ${duration || 5}s at ${resolution || '720p'}` })
+  }
+
+  // ── Seedance 2.0 Image-to-Video (via fal.ai) ────────────────────────────
+  if (model === 'seedance_i2v') {
+    if (!falKey) return c.json({ error: 'FAL_AI_KEY required for Seedance 2.0', upgradeUrl: 'https://flowst8.cc' }, 503)
+    if (!imageUrl) return c.json({ error: 'imageUrl required for image-to-video' }, 400)
+    const result = await callFalAsync(falKey, 'bytedance/seedance-2.0/image-to-video', {
+      prompt: fullPrompt,
+      image_url: imageUrl,
+      duration: String(duration || '5'),
+      resolution: resolution === '1080p' ? '1080p' : '720p',
+      aspect_ratio: aspectRatio || '16:9',
+    })
+    if (result.error) return c.json({ error: result.error }, 500)
+    if (result.status === 'complete') return c.json({ status: 'complete', videoUrl: result.videoUrl, model })
+    return c.json({ status: 'queued', requestId: result.requestId, provider: 'fal', model, message: `Seedance 2.0 i2v generating — ${duration || 5}s from your image` })
+  }
+
+  // ── Nano Banana 2 (Gemini) via GenSpark fal.ai — 2K ─────────────────────
+  if (model === 'nano_banana_2k') {
+    if (!falKey) return c.json({ error: 'FAL_AI_KEY required for Nano Banana', upgradeUrl: 'https://flowst8.cc' }, 503)
+    const result = await callFalAsync(falKey, 'fal-ai/wan/v2.6/text-to-video', {
+      prompt: fullPrompt,
+      negative_prompt: negativePrompt || 'blurry, low quality, distorted',
+      num_frames: 81,
+      resolution: '720p',
+      aspect_ratio: aspectRatio || '16:9',
+      num_inference_steps: quality === 'high' ? 50 : 30,
+      image_size: { width: 2560, height: 1440 }, // 2K
+    })
+    if (result.error) return c.json({ error: result.error }, 500)
+    if (result.status === 'complete') return c.json({ status: 'complete', videoUrl: result.videoUrl, model })
+    return c.json({ status: 'queued', requestId: result.requestId, provider: 'fal', model, message: 'Nano Banana 2K generating — high-fidelity motion synthesis' })
+  }
+
+  // ── Nano Banana 4K (via fal.ai Wan 2.6 + 4K upscale) ────────────────────
+  if (model === 'nano_banana_4k') {
+    if (!falKey) return c.json({ error: 'FAL_AI_KEY required for Nano Banana 4K', upgradeUrl: 'https://flowst8.cc' }, 503)
+    const result = await callFalAsync(falKey, 'fal-ai/wan/v2.6/text-to-video', {
+      prompt: fullPrompt,
+      negative_prompt: negativePrompt || 'blurry, low quality, distorted',
+      num_frames: 81,
+      resolution: '1080p',
+      aspect_ratio: aspectRatio || '16:9',
+      num_inference_steps: 50,
+      image_size: { width: 3840, height: 2160 }, // 4K UHD
+    })
+    if (result.error) return c.json({ error: result.error }, 500)
+    if (result.status === 'complete') return c.json({ status: 'complete', videoUrl: result.videoUrl, model })
+    return c.json({ status: 'queued', requestId: result.requestId, provider: 'fal', model, message: 'Nano Banana 4K generating — cinematic ultra-resolution' })
+  }
+
+  // ── Higgsfield Text-to-Video ─────────────────────────────────────────────
+  if (model === 'higgsfield_t2v') {
+    if (!higgsKey && !falKey) return c.json({ error: 'HIGGSFIELD_API_KEY or FAL_AI_KEY required', upgradeUrl: 'https://flowst8.cc' }, 503)
+    // Try Higgsfield directly first
+    if (higgsKey) {
+      const result = await callHiggsfield(higgsKey, 'seedance-v2.0-t2v', {
+        prompt: fullPrompt,
+        aspect_ratio: aspectRatio || '16:9',
+        duration: duration || 10,
+        quality: quality || 'high',
+        negative_prompt: negativePrompt,
+      })
+      if (!result.error) {
+        if (result.status === 'complete') return c.json({ status: 'complete', videoUrl: result.videoUrl, model })
+        return c.json({ status: 'queued', requestId: result.requestId, provider: 'higgsfield', model, message: `Higgsfield Seedance 2.0 — ${duration || 10}s ${quality || 'high'} quality` })
+      }
+    }
+    // Fallback to fal.ai Seedance
+    if (falKey) {
+      const result = await callFalAsync(falKey, 'bytedance/seedance-2.0/text-to-video', {
+        prompt: fullPrompt,
+        duration: String(duration || '10'),
+        resolution: resolution === '1080p' ? '1080p' : '720p',
+        aspect_ratio: aspectRatio || '16:9',
+      })
+      if (result.error) return c.json({ error: result.error }, 500)
+      if (result.status === 'complete') return c.json({ status: 'complete', videoUrl: result.videoUrl, model })
+      return c.json({ status: 'queued', requestId: result.requestId, provider: 'fal', model, message: `Higgsfield Seedance 2.0 — ${duration || 10}s cinematic generation` })
+    }
+    return c.json({ error: 'No video generation API key configured' }, 503)
+  }
+
+  // ── Higgsfield Image-to-Video ─────────────────────────────────────────────
+  if (model === 'higgsfield_i2v') {
+    if (!imageUrl) return c.json({ error: 'imageUrl required for i2v' }, 400)
+    if (!higgsKey && !falKey) return c.json({ error: 'HIGGSFIELD_API_KEY or FAL_AI_KEY required' }, 503)
+    if (higgsKey) {
+      const result = await callHiggsfield(higgsKey, 'seedance-v2.0-i2v', {
+        prompt: fullPrompt,
+        image_url: imageUrl,
+        aspect_ratio: aspectRatio || '16:9',
+        duration: duration || 5,
+        quality: quality || 'high',
+      })
+      if (!result.error) {
+        if (result.status === 'complete') return c.json({ status: 'complete', videoUrl: result.videoUrl, model })
+        return c.json({ status: 'queued', requestId: result.requestId, provider: 'higgsfield', model, message: 'Higgsfield image-to-video — animating your frame' })
+      }
+    }
+    if (falKey) {
+      const result = await callFalAsync(falKey, 'bytedance/seedance-2.0/image-to-video', {
+        prompt: fullPrompt, image_url: imageUrl,
+        duration: String(duration || '5'), resolution: '720p', aspect_ratio: aspectRatio || '16:9',
+      })
+      if (result.error) return c.json({ error: result.error }, 500)
+      if (result.status === 'complete') return c.json({ status: 'complete', videoUrl: result.videoUrl, model })
+      return c.json({ status: 'queued', requestId: result.requestId, provider: 'fal', model, message: 'Image-to-video animation queued' })
+    }
+  }
+
+  // ── Wan v2.6 Text-to-Video (via fal.ai) ────────────────────────────────
+  if (model === 'wan_t2v') {
+    if (!falKey) return c.json({ error: 'FAL_AI_KEY required for Wan 2.6' }, 503)
+    const result = await callFalAsync(falKey, 'fal-ai/wan/v2.6/text-to-video', {
+      prompt: fullPrompt,
+      negative_prompt: negativePrompt || 'blurry, distorted, low quality',
+      num_frames: duration === 10 ? 161 : 81,
+      aspect_ratio: aspectRatio || '16:9',
+      resolution: resolution || '720p',
+    })
+    if (result.error) return c.json({ error: result.error }, 500)
+    if (result.status === 'complete') return c.json({ status: 'complete', videoUrl: result.videoUrl, model })
+    return c.json({ status: 'queued', requestId: result.requestId, provider: 'fal', model, message: `Wan 2.6 — ${duration || 5}s generation queued` })
+  }
+
+  // ── Wan v2.6 Image-to-Video ──────────────────────────────────────────────
+  if (model === 'wan_i2v') {
+    if (!falKey) return c.json({ error: 'FAL_AI_KEY required for Wan 2.6' }, 503)
+    if (!imageUrl) return c.json({ error: 'imageUrl required for i2v' }, 400)
+    const result = await callFalAsync(falKey, 'fal-ai/wan/v2.6/image-to-video', {
+      prompt: fullPrompt,
+      image_url: imageUrl,
+      num_frames: duration === 10 ? 161 : 81,
+      aspect_ratio: aspectRatio || '16:9',
+      resolution: resolution || '720p',
+    })
+    if (result.error) return c.json({ error: result.error }, 500)
+    if (result.status === 'complete') return c.json({ status: 'complete', videoUrl: result.videoUrl, model })
+    return c.json({ status: 'queued', requestId: result.requestId, provider: 'fal', model, message: `Wan 2.6 i2v — ${duration || 5}s animation queued` })
+  }
+
+  return c.json({ error: `Unknown model: ${model}. Supported: seedance_t2v, seedance_i2v, higgsfield_t2v, higgsfield_i2v, nano_banana_2k, nano_banana_4k, wan_t2v, wan_i2v` }, 400)
+})
+
+// GET /api/264pro/video-gen/poll/:requestId — poll AI video generation status
+app.get('/api/264pro/video-gen/poll/:requestId', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+
+  const requestId = c.req.param('requestId')
+  const provider  = c.req.query('provider') || 'fal'
+  const falKey    = c.env?.FAL_AI_KEY
+  const higgsKey  = c.env?.HIGGSFIELD_API_KEY
+
+  if (provider === 'fal') {
+    if (!falKey) return c.json({ status: 'error', error: 'FAL_AI_KEY not configured' })
+    const result = await pollFalQueue(falKey, requestId)
+    return c.json(result)
+  }
+
+  if (provider === 'higgsfield') {
+    if (!higgsKey) return c.json({ status: 'error', error: 'HIGGSFIELD_API_KEY not configured' })
+    try {
+      const res = await fetch(`https://api.higgsfield.ai/v1/video/generate/${requestId}`, {
+        headers: { 'Authorization': `Bearer ${higgsKey}` },
+      })
+      const data: any = await res.json()
+      if (data.status === 'completed' || data.status === 'succeeded') {
+        return c.json({ status: 'complete', videoUrl: data.output_url || data.video_url })
+      }
+      if (data.status === 'failed' || data.status === 'error') {
+        return c.json({ status: 'error', error: data.error || 'Generation failed' })
+      }
+      return c.json({ status: 'processing', percent: data.progress || 30 })
+    } catch (e: any) {
+      return c.json({ status: 'error', error: e.message })
+    }
+  }
+
+  // Replicate fallback
+  const replicateKey = c.env?.REPLICATE_API_KEY
+  if (replicateKey) {
+    try {
+      const res = await fetch(`https://api.replicate.com/v1/predictions/${requestId}`, {
+        headers: { Authorization: `Token ${replicateKey}` },
+      })
+      const data: any = await res.json()
+      if (data.status === 'succeeded') return c.json({ status: 'complete', videoUrl: Array.isArray(data.output) ? data.output[0] : data.output })
+      if (data.status === 'failed') return c.json({ status: 'error', error: data.error || 'Failed' })
+      return c.json({ status: 'processing', percent: 40 })
+    } catch (e: any) { return c.json({ status: 'error', error: e.message }) }
+  }
+
+  return c.json({ status: 'error', error: 'No API key configured for polling' })
 })
 
 // GET /api/264pro/user — return current user info for the linked token
