@@ -74,9 +74,12 @@ function decodeSession(token: string): any { try { return JSON.parse(atob(token)
 
 // ─── Google OAuth ─────────────────────────────────────────────────────────────
 app.get('/api/auth/google', async (c) => {
-  // If already logged in, redirect straight to app instead of re-authing
+  // If already logged in AND no app-specific flow, redirect straight to app
   const existingSession = decodeSession(getCookie(c, 'fs_session') || '')
-  if (existingSession) {
+  const appParam      = c.req.query('app')      || ''
+  const appState      = c.req.query('state')    || ''
+  const appRedirect   = c.req.query('redirect') || ''
+  if (existingSession && !appParam) {
     return c.redirect('/')
   }
   // Always use canonical domain so redirect_uri matches what's registered in Google Console
@@ -84,6 +87,11 @@ app.get('/api/auth/google', async (c) => {
   const baseUrl = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
   const intent = declareGoogleOAuth(baseUrl)
   setCookie(c, 'oauth_state', intent.stateParam, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' })
+  // Persist app-specific params so callback can forward to the right place
+  if (appParam) {
+    const appCtx = JSON.stringify({ app: appParam, state: appState, redirect: appRedirect })
+    setCookie(c, 'oauth_app_ctx', btoa(appCtx), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' })
+  }
   const params = new URLSearchParams({
     client_id: c.env?.GOOGLE_CLIENT_ID || '',
     redirect_uri: intent.redirectPath,
@@ -100,6 +108,12 @@ app.get('/api/auth/google/callback', async (c) => {
   const { code, state, error } = c.req.query() as any
   const storedState = getCookie(c, 'oauth_state')
   deleteCookie(c, 'oauth_state', { path: '/' })
+  // Read & clear app-specific context (set by /api/auth/google when app= param was present)
+  const appCtxRaw = getCookie(c, 'oauth_app_ctx') || ''
+  deleteCookie(c, 'oauth_app_ctx', { path: '/' })
+  let appCtx: { app?: string; state?: string; redirect?: string } = {}
+  try { appCtx = appCtxRaw ? JSON.parse(atob(appCtxRaw)) : {} } catch { appCtx = {} }
+
   if (error || state !== storedState || !code) return c.html(authErrorPage('Google sign-in was cancelled or failed.'))
   try {
     // Must match exactly what was sent in the authorize request — use same canonical origin
@@ -113,6 +127,18 @@ app.get('/api/auth/google/callback', async (c) => {
     const profile: any = await (await fetch('https://www.googleapis.com/oauth2/v2/userinfo', { headers: { Authorization: 'Bearer ' + tokens.access_token } })).json()
     const session = { access_token: tokens.access_token, refresh_token: tokens.refresh_token, expires_at: Date.now() + tokens.expires_in * 1000, name: profile.name, email: profile.email, picture: profile.picture, provider: 'google' }
     setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'None', maxAge: 7*24*3600, path: '/' })
+
+    // If this auth was initiated from a desktop app, forward to that app's callback
+    if (appCtx.app === 'fsaudio') {
+      const cbUrl = `/api/fsaudio/auth/callback?state=${encodeURIComponent(appCtx.state || '')}&redirect=${encodeURIComponent(appCtx.redirect || 'fsaudio://auth')}`
+      return c.redirect(cbUrl)
+    }
+    if (appCtx.app === '264pro') {
+      const cbUrl = `/api/264pro/auth/callback?state=${encodeURIComponent(appCtx.state || '')}&redirect=${encodeURIComponent(appCtx.redirect || '264pro://auth')}`
+      return c.redirect(cbUrl)
+    }
+
+    // Regular web sign-in — show success page
     return c.html(authSuccessPage(profile.name, profile.picture))
   } catch (err: any) { return c.html(authErrorPage('Authentication failed: ' + err.message)) }
 })
@@ -2430,6 +2456,152 @@ function slackSuccessPage(team: string): string {
 function authErrorPage(message: string): string {
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Auth Error</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#0f0f1a;color:#f0f0f0;display:flex;align-items:center;justify-content:center;min-height:100vh}.card{background:#1a1a2e;border:1px solid rgba(239,68,68,.3);border-radius:20px;padding:40px;text-align:center;max-width:380px}h1{font-size:22px;font-weight:800;margin-bottom:8px;color:#ef4444}p{color:#888;font-size:14px;margin-bottom:24px}.btn{display:inline-block;background:#1a1a2e;border:1px solid #ef4444;color:#ef4444;text-decoration:none;padding:12px 28px;border-radius:12px;font-weight:700;font-size:14px}</style></head><body><div class="card"><div style="font-size:48px;margin-bottom:16px">⚠️</div><h1>Auth Error</h1><p>' + message + '</p><a class="btn" href="/">Back to FlowState</a></div></body></html>'
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// GET /auth — Standalone sign-in page (used by desktop app OAuth flows)
+// Called after /api/fsaudio/auth or /api/264pro/auth redirects here
+// with ?app=fsaudio|264pro&state=...&redirect=...
+// ═══════════════════════════════════════════════════════════════════
+app.get('/auth', async (c) => {
+  const appParam    = c.req.query('app')      || ''
+  const appState    = c.req.query('state')    || ''
+  const appRedirect = c.req.query('redirect') || ''
+
+  // If the user already has a valid session, go straight to the app callback
+  const existingSession = decodeSession(getCookie(c, 'fs_session') || '')
+  if (existingSession?.email) {
+    if (appParam === 'fsaudio') {
+      return c.redirect(`/api/fsaudio/auth/callback?state=${encodeURIComponent(appState)}&redirect=${encodeURIComponent(appRedirect || 'fsaudio://auth')}`)
+    }
+    if (appParam === '264pro') {
+      return c.redirect(`/api/264pro/auth/callback?state=${encodeURIComponent(appState)}&redirect=${encodeURIComponent(appRedirect || '264pro://auth')}`)
+    }
+    return c.redirect('/')
+  }
+
+  // Build the Google sign-in URL — carries app context so callback can forward correctly
+  const googleUrl = `/api/auth/google?app=${encodeURIComponent(appParam)}&state=${encodeURIComponent(appState)}&redirect=${encodeURIComponent(appRedirect)}`
+
+  // App display names / branding
+  const appLabel  = appParam === 'fsaudio' ? 'FS-Audio' : appParam === '264pro' ? '264 Pro' : 'FlowState'
+  const appIcon   = appParam === 'fsaudio' ? '🎧' : appParam === '264pro' ? '🎬' : '⚡'
+  const appColor  = appParam === 'fsaudio' ? '#06b6d4' : appParam === '264pro' ? '#a855f7' : '#a855f7'
+
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in — FlowState</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#0f0f1a;color:#f0f0f0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.orb{position:fixed;border-radius:50%;filter:blur(80px);pointer-events:none;opacity:.35}
+.orb1{width:400px;height:400px;background:radial-gradient(circle,#a855f7,transparent);top:-100px;right:-100px}
+.orb2{width:350px;height:350px;background:radial-gradient(circle,#06b6d4,transparent);bottom:-80px;left:-80px}
+.card{background:#1a1a2e;border:1px solid rgba(168,85,247,.35);border-radius:24px;padding:44px 40px;max-width:420px;width:100%;text-align:center;position:relative;z-index:1;animation:fadeUp .4s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.app-badge{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border-radius:99px;font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;margin-bottom:20px;border:1px solid rgba(168,85,247,.3);background:rgba(168,85,247,.1);color:#a855f7}
+.logo{font-size:52px;margin-bottom:12px;line-height:1}
+.title{font-size:26px;font-weight:900;margin-bottom:8px;background:linear-gradient(135deg,#f0f0f0,#a0a0c0);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.subtitle{color:#888;font-size:14px;margin-bottom:32px;line-height:1.65}
+.btn-google{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;padding:14px;border-radius:13px;background:#fff;border:none;color:#1a1a2e;font-size:15px;font-weight:700;cursor:pointer;transition:.2s;margin-bottom:12px;text-decoration:none}
+.btn-google:hover{transform:scale(1.02);box-shadow:0 4px 24px rgba(255,255,255,.15)}
+.btn-google svg{width:20px;height:20px;flex-shrink:0}
+.divider{display:flex;align-items:center;gap:10px;margin:6px 0 16px;color:#444;font-size:12px}
+.divider::before,.divider::after{content:'';flex:1;border-top:1px solid #2a2a40}
+.magic-form{display:flex;flex-direction:column;gap:10px;margin-bottom:20px}
+.magic-input{background:#16213e;border:1px solid rgba(168,85,247,.25);border-radius:10px;color:#f0f0f0;padding:13px 16px;font-size:14px;outline:none;transition:.2s;font-family:inherit}
+.magic-input:focus{border-color:rgba(168,85,247,.7);background:rgba(168,85,247,.06)}
+.magic-input::placeholder{color:#555}
+.btn-magic{width:100%;padding:13px;border-radius:12px;background:linear-gradient(135deg,#a855f7,#ec4899);border:none;color:#fff;font-size:14px;font-weight:700;cursor:pointer;transition:.2s}
+.btn-magic:hover{opacity:.88;transform:scale(1.01)}
+.btn-magic:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.magic-sent{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.3);border-radius:12px;padding:14px;color:#10b981;font-size:13px;font-weight:600;display:none}
+.features{display:grid;grid-template-columns:1fr 1fr;gap:8px;text-align:left;margin-bottom:20px}
+.feat{display:flex;align-items:center;gap:8px;font-size:12px;color:#888}
+.feat-icon{color:#a855f7;font-size:11px;flex-shrink:0}
+.legal{font-size:11px;color:#444;line-height:1.5;margin-top:4px}
+.legal a{color:#666;text-decoration:underline}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="orb orb1"></div>
+<div class="orb orb2"></div>
+<div class="card">
+  ${appParam ? `<div class="app-badge">${appIcon} ${appLabel}</div>` : ''}
+  <div class="logo">⚡</div>
+  <h1 class="title">Sign in to FlowState</h1>
+  <p class="subtitle">
+    ${appParam
+      ? `You need a FlowState account to use ${appLabel}. Sign in below — it's free.`
+      : 'The intelligent workspace for focused teams.'}
+  </p>
+
+  <a class="btn-google" href="${googleUrl}">
+    <svg viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+    Continue with Google
+  </a>
+
+  <div class="divider">or</div>
+
+  <div class="magic-form" id="magic-form">
+    <input class="magic-input" id="magic-email" type="email" placeholder="your@email.com" autocomplete="email">
+    <button class="btn-magic" id="magic-btn" onclick="sendMagicLink()">
+      ✉️ &nbsp;Send sign-in link
+    </button>
+  </div>
+  <div class="magic-sent" id="magic-sent">
+    ✅ &nbsp;Check your inbox — we sent a sign-in link!
+  </div>
+
+  <div class="features">
+    <div class="feat"><span class="feat-icon">✓</span> Free account</div>
+    <div class="feat"><span class="feat-icon">✓</span> No credit card</div>
+    <div class="feat"><span class="feat-icon">✓</span> All DAW tools</div>
+    <div class="feat"><span class="feat-icon">✓</span> Cloud sync</div>
+  </div>
+
+  <p class="legal">By signing in you agree to our <a href="https://flowst8.cc/terms" target="_blank">Terms</a> &amp; <a href="https://flowst8.cc/privacy" target="_blank">Privacy Policy</a>.<br>Your data is never sold.</p>
+</div>
+
+<script>
+async function sendMagicLink() {
+  const email = document.getElementById('magic-email').value.trim()
+  if (!email || !email.includes('@')) { alert('Please enter a valid email.'); return }
+  const btn = document.getElementById('magic-btn')
+  btn.disabled = true
+  btn.innerHTML = '<span class="spinner"></span>Sending…'
+  try {
+    const res = await fetch('/api/auth/magic-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, app: ${JSON.stringify(appParam)}, state: ${JSON.stringify(appState)}, redirect: ${JSON.stringify(appRedirect)} })
+    })
+    const data = await res.json()
+    if (data.ok || data.sent) {
+      document.getElementById('magic-form').style.display = 'none'
+      document.getElementById('magic-sent').style.display = 'block'
+    } else {
+      btn.disabled = false
+      btn.innerHTML = '✉️ &nbsp;Send sign-in link'
+      alert(data.error || 'Something went wrong. Try again.')
+    }
+  } catch(e) {
+    btn.disabled = false
+    btn.innerHTML = '✉️ &nbsp;Send sign-in link'
+    alert('Network error. Please try again.')
+  }
+}
+document.getElementById('magic-email').addEventListener('keydown', function(e){
+  if (e.key === 'Enter') sendMagicLink()
+})
+</script>
+</body>
+</html>`)
+})
 
 // ═══════════════════════════════════════════════════════════════════
 // MAIN HTML — FlowState v3 — Full Rebuild
