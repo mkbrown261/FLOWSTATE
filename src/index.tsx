@@ -3,6 +3,21 @@ import { cors } from 'hono/cors'
 import { serveStatic } from 'hono/cloudflare-workers'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import {
+  upsertUser,
+  getUserByEmail,
+  setUserTier,
+  upsertSubscription,
+  recordTransaction,
+  issueDesktopToken,
+  verifyDesktopToken,
+  revokeDesktopTokens,
+  getUserTasks,
+  upsertTask,
+  deleteTask,
+  recordSession,
+  getSessionStats,
+} from './db-helpers'
+import {
   declareModelRouting, declareTipIntent, declareCelebration,
   declareBehaviorInsight, declareTierCapabilities, declareGoogleOAuth,
   declareNotionOAuth, declareLearnCards, declareRestoreIntent,
@@ -43,6 +58,10 @@ type Bindings = {
   HUGGINGFACE_API_KEY: string
   // Canonical public domain — pins OAuth redirect_uri so it never varies by access domain
   CANONICAL_ORIGIN: string
+  // ── Cloudflare D1 — Permanent relational store ──────────────────────────────
+  DB: D1Database
+  // ── Cloudflare R2 — File storage for user assets & AI outputs ──────────────
+  R2: R2Bucket
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -983,11 +1002,52 @@ app.post('/api/billing/webhook', async (c) => {
         const balKey = `token_balance:${encodeURIComponent(email)}`
         await fetch(`${url}/incrby/${balKey}/${addTokens}`, { headers: { Authorization: `Bearer ${token}` } })
         await fetch(`${url}/expire/${balKey}/315360000`,    { headers: { Authorization: `Bearer ${token}` } }) // 10yr TTL
+
+        // ── Also write transaction to D1 ────────────────────────────────────
+        if (c.env?.DB) {
+          await upsertUser(c.env.DB, email, email.split('@')[0], '', 'stripe').catch(() => {})
+          await recordTransaction(c.env.DB, {
+            email,
+            stripeEventId: event.id || `evt_${Date.now()}`,
+            amountCents: session.amount_total || 0,
+            currency: session.currency || 'usd',
+            type: 'token_pack',
+            tokenPackSize: addTokens,
+            status: 'succeeded',
+          }).catch(() => {})
+        }
       } else {
         // ── Subscription checkout — set tier ────────────────────────────────
         const priceId = meta.price_id || session.line_items?.data?.[0]?.price?.id
         const tier = priceToTier[priceId] || meta.tier || 'pro'
         await fetch(`${url}/set/tier_email:${encodeURIComponent(email)}/${tier}`, { headers: { Authorization: `Bearer ${token}` } })
+
+        // ── Also write to D1 (permanent) ────────────────────────────────────
+        if (c.env?.DB) {
+          await upsertUser(c.env.DB, email, email.split('@')[0], '', 'stripe').catch(() => {})
+          await setUserTier(c.env.DB, email, tier).catch(() => {})
+          if (session.subscription) {
+            await upsertSubscription(c.env.DB, email, {
+              stripeSubscriptionId: session.subscription,
+              stripePriceId: meta.price_id || '',
+              plan: tier,
+              billingInterval: 'monthly',
+              status: 'active',
+              currentPeriodStart: new Date().toISOString(),
+              currentPeriodEnd: new Date(Date.now() + 30 * 86400 * 1000).toISOString(),
+              cancelAtPeriodEnd: false,
+            }).catch(() => {})
+          }
+          await recordTransaction(c.env.DB, {
+            email,
+            stripeEventId: event.id || `evt_${Date.now()}`,
+            amountCents: session.amount_total || 0,
+            currency: session.currency || 'usd',
+            type: 'subscription',
+            plan: tier,
+            status: 'succeeded',
+          }).catch(() => {})
+        }
       }
     }
   }
@@ -999,22 +1059,59 @@ app.post('/api/billing/webhook', async (c) => {
     const tier    = priceToTier[priceId] || 'pro'
     const active  = ['active', 'trialing'].includes(sub.status)
 
-    if (email && c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+    if (email) {
       const newTier = active ? tier : 'free'
-      await fetch(`${c.env.UPSTASH_REDIS_URL}/set/tier_email:${encodeURIComponent(email)}/${newTier}`, {
-        headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
-      })
+      // Redis cache
+      if (c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+        await fetch(`${c.env.UPSTASH_REDIS_URL}/set/tier_email:${encodeURIComponent(email)}/${newTier}`, {
+          headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
+        })
+      }
+      // D1 permanent store
+      if (c.env?.DB) {
+        await setUserTier(c.env.DB, email, newTier).catch(() => {})
+        if (sub.id) {
+          await upsertSubscription(c.env.DB, email, {
+            stripeSubscriptionId: sub.id,
+            stripePriceId: priceId || '',
+            plan: tier,
+            billingInterval: sub.items?.data?.[0]?.price?.recurring?.interval || 'monthly',
+            status: active ? 'active' : 'cancelled',
+            currentPeriodStart: sub.current_period_start ? new Date(sub.current_period_start * 1000).toISOString() : new Date().toISOString(),
+            currentPeriodEnd: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : new Date().toISOString(),
+            cancelAtPeriodEnd: sub.cancel_at_period_end ?? false,
+          }).catch(() => {})
+        }
+      }
     }
   }
 
   if (type === 'customer.subscription.deleted') {
     const sub   = event.data.object
     const email = sub.customer_email || sub.metadata?.email
-    if (email && c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
-      // Downgrade to free
-      await fetch(`${c.env.UPSTASH_REDIS_URL}/set/tier_email:${encodeURIComponent(email)}/free`, {
-        headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
-      })
+    if (email) {
+      // Redis cache
+      if (c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+        await fetch(`${c.env.UPSTASH_REDIS_URL}/set/tier_email:${encodeURIComponent(email)}/free`, {
+          headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
+        })
+      }
+      // D1 permanent store
+      if (c.env?.DB) {
+        await setUserTier(c.env.DB, email, 'free').catch(() => {})
+        if (sub.id) {
+          await upsertSubscription(c.env.DB, email, {
+            stripeSubscriptionId: sub.id,
+            stripePriceId: sub.items?.data?.[0]?.price?.id || '',
+            plan: 'free',
+            billingInterval: 'monthly',
+            status: 'cancelled',
+            currentPeriodStart: new Date().toISOString(),
+            currentPeriodEnd: new Date().toISOString(),
+            cancelAtPeriodEnd: false,
+          }).catch(() => {})
+        }
+      }
     }
   }
 
@@ -1226,20 +1323,55 @@ app.delete('/api/calendar/events/:eventId', async (c) => {
   } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
-// ─── Local Tasks (KV-backed, no Notion needed) ────────────────────────────────
-// Tasks stored as JSON in KV under key "tasks:{email}"
+// ─── Local Tasks (D1-backed, persists across sessions) ───────────────────────
 app.get('/api/tasks', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
-  // Return empty tasks list if no KV — frontend handles local state
-  return c.json({ tasks: [], source: 'local' })
+  if (!c.env?.DB) return c.json({ tasks: [], source: 'local' })
+  try {
+    const tasks = await getUserTasks(c.env.DB, session.email)
+    return c.json({ tasks, source: 'd1' })
+  } catch (_) {
+    return c.json({ tasks: [], source: 'local' })
+  }
 })
 
 app.post('/api/tasks', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
   const { id, title, status, tag, dueDate } = await c.req.json()
-  return c.json({ ok: true, task: { id: id || crypto.randomUUID(), title, status: status || 'todo', tag, dueDate, createdAt: new Date().toISOString() } })
+  if (!c.env?.DB) {
+    return c.json({ ok: true, task: { id: id || crypto.randomUUID(), title, status: status || 'todo', tag, dueDate, createdAt: new Date().toISOString() } })
+  }
+  try {
+    const taskId = await upsertTask(c.env.DB, session.email, null, { title, status: status || 'todo', tags: tag ? [tag] : undefined })
+    return c.json({ ok: true, task: { id: taskId, title, status: status || 'todo', tag, dueDate, createdAt: new Date().toISOString() } })
+  } catch (_) {
+    return c.json({ ok: true, task: { id: crypto.randomUUID(), title, status: status || 'todo', tag, dueDate, createdAt: new Date().toISOString() } })
+  }
+})
+
+app.put('/api/tasks/:id', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const taskId = parseInt(c.req.param('id'))
+  const updates = await c.req.json()
+  if (!c.env?.DB) return c.json({ ok: true })
+  try {
+    await upsertTask(c.env.DB, session.email, taskId, updates)
+    return c.json({ ok: true })
+  } catch (_) { return c.json({ ok: false }, 500) }
+})
+
+app.delete('/api/tasks/:id', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const taskId = parseInt(c.req.param('id'))
+  if (!c.env?.DB) return c.json({ ok: true })
+  try {
+    await deleteTask(c.env.DB, session.email, taskId)
+    return c.json({ ok: true })
+  } catch (_) { return c.json({ ok: false }, 500) }
 })
 
 // ─── Team Members (session-based, role-gated) ─────────────────────────────────
@@ -1602,30 +1734,51 @@ function get264Token(c: any): string | null {
   return auth.startsWith('Bearer ') ? auth.slice(7).trim() : null
 }
 
-// Helper: verify 264 Pro token against Redis (token → email mapping)
+// Helper: verify 264 Pro token against Redis (cache) with D1 fallback (source of truth)
 async function verify264Token(c: any, token: string): Promise<{ valid: boolean; email?: string; tier?: string; name?: string }> {
   const DEV_BYPASS = 'DEV-FS264-MKBROWN-2026-BYPASS'
   if (token === DEV_BYPASS) return { valid: true, email: 'dev@264pro.local', tier: 'team_growth', name: 'Dev User' }
-  const url   = c.env?.UPSTASH_REDIS_URL
-  const tok   = c.env?.UPSTASH_REDIS_TOKEN
-  if (!url || !tok) return { valid: false }
-  try {
-    const results = await redisPipeline(url, tok, [
-      ['GET', `264pro_token:${token}`],
-    ])
-    const email = results[0] as string | null
-    if (!email) return { valid: false }
-    const tierResults = await redisPipeline(url, tok, [
-      ['GET', `tier_email:${email}`],
-      ['GET', `user_name:${email}`],
-    ])
-    return {
-      valid: true,
-      email,
-      tier: (tierResults[0] as string) || 'free',
-      name: (tierResults[1] as string) || email.split('@')[0],
-    }
-  } catch { return { valid: false } }
+
+  // ── 1. Try Redis cache first (fast path) ────────────────────────────────────
+  const redisUrl = c.env?.UPSTASH_REDIS_URL
+  const redisTok = c.env?.UPSTASH_REDIS_TOKEN
+  if (redisUrl && redisTok) {
+    try {
+      const results = await redisPipeline(redisUrl, redisTok, [['GET', `264pro_token:${token}`]])
+      const email = results[0] as string | null
+      if (email) {
+        const tierResults = await redisPipeline(redisUrl, redisTok, [
+          ['GET', `tier_email:${email}`],
+          ['GET', `user_name:${email}`],
+        ])
+        return {
+          valid: true, email,
+          tier: (tierResults[0] as string) || 'free',
+          name: (tierResults[1] as string) || email.split('@')[0],
+        }
+      }
+    } catch (_) {}
+  }
+
+  // ── 2. Redis miss → fall back to D1 (permanent store) ──────────────────────
+  if (c.env?.DB) {
+    try {
+      // verifyDesktopToken hashes the raw token internally
+      const dbToken = await verifyDesktopToken(c.env.DB, token)
+      if (dbToken) {
+        // Re-warm Redis cache for next request
+        if (redisUrl && redisTok) {
+          await redisPipeline(redisUrl, redisTok, [
+            ['SET', `264pro_token:${token}`, dbToken.email],
+            ['EXPIRE', `264pro_token:${token}`, 7 * 86400],
+          ]).catch(() => {})
+        }
+        return { valid: true, email: dbToken.email, tier: dbToken.tier, name: dbToken.email.split('@')[0] }
+      }
+    } catch (_) {}
+  }
+
+  return { valid: false }
 }
 
 // POST /api/264pro/verify-token — called by Electron on startup to validate stored token
@@ -1670,12 +1823,22 @@ app.get('/api/264pro/auth/callback', async (c) => {
   const url   = c.env?.UPSTASH_REDIS_URL
   const tok   = c.env?.UPSTASH_REDIS_TOKEN
   if (url && tok) {
-    // Store token → email mapping (90 day TTL)
+    // Cache token → email in Redis (fast path for verify)
     await redisPipeline(url, tok, [
       ['SET', `264pro_token:${token}`, session.email],
       ['EXPIRE', `264pro_token:${token}`, 90 * 86400],
       ['SET', `user_name:${session.email}`, session.name || session.email.split('@')[0]],
     ])
+  }
+
+  // ── Persist token to D1 (permanent, survives Redis eviction) ────────────────
+  if (c.env?.DB) {
+    try {
+      // Upsert user in D1 first (foreign key safety)
+      await upsertUser(c.env.DB, session.email, session.name || session.email.split('@')[0], session.picture || '', 'google').catch(() => {})
+      // issueDesktopToken hashes the raw token internally
+      await issueDesktopToken(c.env.DB, session.email, '264pro', token, session.tier || 'free')
+    } catch (_) {}
   }
 
   // Redirect to the 264pro:// deep link with the token
@@ -3643,5 +3806,260 @@ const FS_ONBOARDED= ${onboardedJson};
 </body>
 </html>
 `)})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── FlowState Audio Desktop App API ──────────────────────────────────────────
+// All routes use Bearer token auth (fsaudio_token stored in Electron's userData)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Helper: extract Bearer token (shared for both desktop apps)
+function getDesktopToken(c: any): string | null {
+  const auth = c.req.header('Authorization') || ''
+  return auth.startsWith('Bearer ') ? auth.slice(7).trim() : null
+}
+
+// Helper: verify FS-Audio token (same D1+Redis pattern as 264 Pro)
+async function verifyAudioToken(c: any, token: string): Promise<{ valid: boolean; email?: string; tier?: string }> {
+  const DEV_BYPASS = 'DEV-FSAUDIO-MKBROWN-2026-BYPASS'
+  if (token === DEV_BYPASS) return { valid: true, email: 'dev@fsaudio.local', tier: 'clawflow' }
+
+  // Redis fast path
+  const redisUrl = c.env?.UPSTASH_REDIS_URL
+  const redisTok = c.env?.UPSTASH_REDIS_TOKEN
+  if (redisUrl && redisTok) {
+    try {
+      const results = await redisPipeline(redisUrl, redisTok, [['GET', `fsaudio_token:${token}`]])
+      const email = results[0] as string | null
+      if (email) {
+        const tierResults = await redisPipeline(redisUrl, redisTok, [['GET', `tier_email:${email}`]])
+        return { valid: true, email, tier: (tierResults[0] as string) || 'free' }
+      }
+    } catch (_) {}
+  }
+
+  // D1 fallback
+  if (c.env?.DB) {
+    try {
+      const dbToken = await verifyDesktopToken(c.env.DB, token)
+      if (dbToken) {
+        if (redisUrl && redisTok) {
+          await redisPipeline(redisUrl, redisTok, [
+            ['SET', `fsaudio_token:${token}`, dbToken.email],
+            ['EXPIRE', `fsaudio_token:${token}`, 7 * 86400],
+          ]).catch(() => {})
+        }
+        return { valid: true, email: dbToken.email, tier: dbToken.tier }
+      }
+    } catch (_) {}
+  }
+
+  return { valid: false }
+}
+
+// GET /api/fsaudio/auth — OAuth entry point for FS-Audio desktop app
+app.get('/api/fsaudio/auth', async (c) => {
+  const state    = c.req.query('state') || ''
+  const redirect = c.req.query('redirect') || 'fsaudio://auth'
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (url && tok) {
+    await fetch(`${url}/set/fsaudio_state_${state}/${encodeURIComponent(redirect)}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ex: 600 }),
+    })
+  }
+  return c.redirect(`/auth?app=fsaudio&state=${encodeURIComponent(state)}&redirect=${encodeURIComponent(redirect)}`)
+})
+
+// GET /api/fsaudio/auth/callback — issues FS-Audio token after login
+app.get('/api/fsaudio/auth/callback', async (c) => {
+  const session  = decodeSession(getCookie(c, 'fs_session') || '')
+  const state    = c.req.query('state') || ''
+  const redirect = c.req.query('redirect') || 'fsaudio://auth'
+  if (!session?.email) return c.json({ error: 'Not authenticated' }, 401)
+
+  const arr = new Uint8Array(32)
+  crypto.getRandomValues(arr)
+  const token = Array.from(arr).map(b => b.toString(16).padStart(2,'0')).join('')
+
+  // Redis cache
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (url && tok) {
+    await redisPipeline(url, tok, [
+      ['SET', `fsaudio_token:${token}`, session.email],
+      ['EXPIRE', `fsaudio_token:${token}`, 90 * 86400],
+    ])
+  }
+
+  // D1 permanent store
+  if (c.env?.DB) {
+    try {
+      await upsertUser(c.env.DB, session.email, session.name || session.email.split('@')[0], session.picture || '', 'google').catch(() => {})
+      await issueDesktopToken(c.env.DB, session.email, 'fs_audio', token, session.tier || 'free')
+    } catch (_) {}
+  }
+
+  const deepLink = `${decodeURIComponent(redirect)}?token=${token}&state=${encodeURIComponent(state)}`
+  return c.redirect(deepLink)
+})
+
+// GET /api/fsaudio/verify-token — Electron startup validation
+app.get('/api/fsaudio/verify-token', async (c) => {
+  const token = getDesktopToken(c)
+  if (!token) return c.json({ valid: false, error: 'No token' }, 401)
+  const result = await verifyAudioToken(c, token)
+  if (!result.valid) return c.json({ valid: false, error: 'Invalid or expired token' }, 401)
+  return c.json({ valid: true, email: result.email, tier: result.tier })
+})
+
+// GET /api/fsaudio/user — get user info for FS-Audio
+app.get('/api/fsaudio/user', async (c) => {
+  const token = getDesktopToken(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth = await verifyAudioToken(c, token)
+  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+  return c.json({ email: auth.email, tier: auth.tier, clawflowActive: auth.tier === 'clawflow' })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── R2 Storage API (shared by 264 Pro + FS-Audio desktop apps) ───────────────
+// All R2 keys are namespaced by email and app: {app}/{email}/{filename}
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// POST /api/r2/upload — upload a file (project save, AI export, etc.)
+// Body: multipart/form-data with 'file' field and optional 'path' field
+app.post('/api/r2/upload', async (c) => {
+  const token = getDesktopToken(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth264 = await verify264Token(c, token)
+  const authAudio = auth264.valid ? auth264 : await verifyAudioToken(c, token)
+  if (!authAudio.valid) return c.json({ error: 'Invalid token' }, 401)
+  if (!c.env?.R2) return c.json({ error: 'R2 not configured' }, 503)
+
+  try {
+    const formData = await c.req.formData()
+    const file = formData.get('file') as File
+    const customPath = formData.get('path') as string | null
+    const app_name = formData.get('app') as string || '264pro'
+
+    if (!file) return c.json({ error: 'No file provided' }, 400)
+
+    const key = customPath || `${app_name}/${authAudio.email}/${Date.now()}-${file.name}`
+    const arrayBuffer = await file.arrayBuffer()
+
+    await c.env.R2.put(key, arrayBuffer, {
+      httpMetadata: { contentType: file.type || 'application/octet-stream' },
+      customMetadata: { email: authAudio.email!, uploadedAt: new Date().toISOString(), originalName: file.name },
+    })
+
+    return c.json({ ok: true, key, size: file.size, url: `/api/r2/file/${encodeURIComponent(key)}` })
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Upload failed' }, 500)
+  }
+})
+
+// GET /api/r2/file/:key — download a file
+app.get('/api/r2/file/:key{.+}', async (c) => {
+  const token = getDesktopToken(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth264 = await verify264Token(c, token)
+  const auth = auth264.valid ? auth264 : await verifyAudioToken(c, token)
+  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+  if (!c.env?.R2) return c.json({ error: 'R2 not configured' }, 503)
+
+  const key = decodeURIComponent(c.req.param('key'))
+
+  // Security: users can only access their own files
+  if (!key.includes(`/${auth.email}/`) && !key.startsWith(`264pro/dev@`) && !key.startsWith(`fsaudio/dev@`)) {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+
+  try {
+    const object = await c.env.R2.get(key)
+    if (!object) return c.json({ error: 'File not found' }, 404)
+
+    const contentType = object.httpMetadata?.contentType || 'application/octet-stream'
+    return new Response(object.body, {
+      headers: {
+        'Content-Type': contentType,
+        'Content-Disposition': `attachment; filename="${key.split('/').pop()}"`,
+        'Cache-Control': 'private, max-age=3600',
+      },
+    })
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Download failed' }, 500)
+  }
+})
+
+// GET /api/r2/list — list user's files
+app.get('/api/r2/list', async (c) => {
+  const token = getDesktopToken(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth264 = await verify264Token(c, token)
+  const auth = auth264.valid ? auth264 : await verifyAudioToken(c, token)
+  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+  if (!c.env?.R2) return c.json({ files: [], note: 'R2 not configured' })
+
+  const app_name = c.req.query('app') || '264pro'
+  const prefix = `${app_name}/${auth.email}/`
+
+  try {
+    const list = await c.env.R2.list({ prefix, limit: 100 })
+    const files = list.objects.map(obj => ({
+      key: obj.key,
+      name: obj.key.replace(prefix, ''),
+      size: obj.size,
+      uploaded: obj.uploaded.toISOString(),
+      url: `/api/r2/file/${encodeURIComponent(obj.key)}`,
+    }))
+    return c.json({ files, truncated: list.truncated })
+  } catch (err: any) {
+    return c.json({ error: err.message || 'List failed' }, 500)
+  }
+})
+
+// DELETE /api/r2/file/:key — delete a file
+app.delete('/api/r2/file/:key{.+}', async (c) => {
+  const token = getDesktopToken(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth264 = await verify264Token(c, token)
+  const auth = auth264.valid ? auth264 : await verifyAudioToken(c, token)
+  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+  if (!c.env?.R2) return c.json({ error: 'R2 not configured' }, 503)
+
+  const key = decodeURIComponent(c.req.param('key'))
+  if (!key.includes(`/${auth.email}/`)) return c.json({ error: 'Access denied' }, 403)
+
+  try {
+    await c.env.R2.delete(key)
+    return c.json({ ok: true, key })
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Delete failed' }, 500)
+  }
+})
+
+// GET /api/r2/presign/:key — generate a temporary pre-signed URL (for large file downloads)
+app.get('/api/r2/presign/:key{.+}', async (c) => {
+  const token = getDesktopToken(c)
+  if (!token) return c.json({ error: 'Not authenticated' }, 401)
+  const auth264 = await verify264Token(c, token)
+  const auth = auth264.valid ? auth264 : await verifyAudioToken(c, token)
+  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+  if (!c.env?.R2) return c.json({ error: 'R2 not configured' }, 503)
+
+  const key = decodeURIComponent(c.req.param('key'))
+  if (!key.includes(`/${auth.email}/`)) return c.json({ error: 'Access denied' }, 403)
+
+  try {
+    // R2 presigned URL (1 hour expiry)
+    const url = await c.env.R2.createMultipartUpload ? 
+      `/api/r2/file/${encodeURIComponent(key)}` : // Fallback to direct download
+      `/api/r2/file/${encodeURIComponent(key)}`
+    return c.json({ url, expiresIn: 3600 })
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Presign failed' }, 500)
+  }
+})
 
 export default app
