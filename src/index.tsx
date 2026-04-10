@@ -1895,7 +1895,7 @@ app.post('/api/264pro/context-sync', async (c) => {
   return c.json({ ok: true })
 })
 
-// POST /api/264pro/ai-chat — Clawbot chat inside 264 Pro editor (uses OpenRouter)
+// POST /api/264pro/ai-chat — Clawbot chat (context-aware, memory-powered)
 app.post('/api/264pro/ai-chat', async (c) => {
   const token = get264Token(c)
   if (!token) return c.json({ error: 'Not authenticated' }, 401)
@@ -1904,31 +1904,122 @@ app.post('/api/264pro/ai-chat', async (c) => {
 
   const body: any = await c.req.json().catch(() => ({}))
   const messages: Array<{role: string; content: string}> = body.messages || []
-  const projectContext = body.projectContext || {}
+  const projectContext  = body.projectContext  || {}  // live project state from editor
+  const sessionMemory   = body.sessionMemory   || {}  // in-session data (clips edited, tools used, issues)
+  const diagnostics     = body.diagnostics     || []  // real-time detected issues array
 
-  const orKey = c.env?.OPENROUTER_API_KEY
-  if (!orKey) {
-    return c.json({ reply: `Hi ${auth.name}! I'm Clawbot. I can see you're working on "${projectContext.projectName || 'your project'}" — but the OpenRouter API key isn't configured yet. Once connected I can help with editing workflows, color grading tips, export settings, and more!` })
+  const redisUrl = c.env?.UPSTASH_REDIS_URL
+  const redisTok = c.env?.UPSTASH_REDIS_TOKEN
+  const orKey    = c.env?.OPENROUTER_API_KEY
+
+  // ── Load user memory + recent activity from Redis ─────────────────────────
+  let userMemory: Record<string, any> = {}
+  let recentActivity: string[] = []
+  let savedProjectCtx: Record<string, any> = {}
+
+  if (redisUrl && redisTok) {
+    try {
+      const results = await redisPipeline(redisUrl, redisTok, [
+        ['GET',   `264pro_memory:${auth.email}`],
+        ['LRANGE', `264pro_activity:${auth.email}`, '0', '9'],
+        ['GET',   `264pro_ctx:${auth.email}`],
+      ])
+      userMemory       = results[0] ? JSON.parse(results[0] as string) : {}
+      recentActivity   = Array.isArray(results[1]) ? (results[1] as string[]).map(s => { try { return JSON.parse(s) } catch { return s } }) : []
+      savedProjectCtx  = results[2] ? JSON.parse(results[2] as string) : {}
+    } catch { /* Redis unavailable — proceed without memory */ }
   }
 
-  const systemPrompt = `You are Clawbot, the AI assistant built into 264 Pro Video Editor. You are helping ${auth.name} (${auth.tier} tier) with their video editing project.
+  // ── Build rich context block ──────────────────────────────────────────────
+  const projectName  = projectContext.projectName || savedProjectCtx.projectName || 'Untitled'
+  const trackCount   = projectContext.trackCount  ?? savedProjectCtx.trackCount  ?? 0
+  const fps          = projectContext.fps         ?? savedProjectCtx.fps          ?? 30
+  const resolution   = projectContext.resolution  || savedProjectCtx.resolution  || '1920×1080'
+  const duration     = projectContext.duration    || savedProjectCtx.duration    || null
+  const clipCount    = projectContext.clipCount   ?? sessionMemory.clipCount     ?? null
+  const editCount    = sessionMemory.editsMade    ?? 0
+  const toolsUsed    = Array.isArray(sessionMemory.toolsUsed) ? sessionMemory.toolsUsed : []
+  const selectedClip = projectContext.selectedClip || null
+  const currentTime  = projectContext.currentTime  || null
 
-Current project context:
-- Project: ${projectContext.projectName || 'Untitled'}
-- Tracks: ${projectContext.trackCount || 0}
-- FPS: ${projectContext.fps || 30}
-- Resolution: ${projectContext.resolution || '1920×1080'}
+  // Prefer live context over stale saved context
+  const contextBlock = [
+    `Project: "${projectName}"`,
+    `Tracks: ${trackCount} | FPS: ${fps} | Resolution: ${resolution}`,
+    duration ? `Duration: ${duration}` : null,
+    clipCount != null ? `Total clips: ${clipCount}` : null,
+    editCount > 0 ? `Edits made this session: ${editCount}` : null,
+    toolsUsed.length > 0 ? `AI tools used this session: ${toolsUsed.join(', ')}` : null,
+    selectedClip ? `Currently selected: "${selectedClip}"` : null,
+    currentTime  ? `Playhead: ${currentTime}` : null,
+  ].filter(Boolean).join('\n')
 
-You help with:
-- Video editing techniques and workflows
-- Color grading and LUT recommendations
-- Export settings for different platforms (YouTube, Instagram, TikTok, etc.)
-- AI tool usage (upscale, denoise, slow-mo, face enhance, rotoscoping)
-- Timeline organization and efficiency tips
-- Audio mixing and synchronization
-- Transitions and effects
+  // ── User memory block ──────────────────────────────────────────────────────
+  const memPrefs = userMemory.preferences || {}
+  const memStyle = userMemory.workflowStyle || null
+  const memStrengths = Array.isArray(userMemory.strengths) ? userMemory.strengths : []
+  const memWeaknesses = Array.isArray(userMemory.weaknesses) ? userMemory.weaknesses : []
+  const memFavTools = Array.isArray(userMemory.favoriteTools) ? userMemory.favoriteTools : []
+  const totalSessions = userMemory.totalSessions || 1
 
-Be concise, practical, and friendly. Focus on actionable advice for 264 Pro.`
+  const memoryBlock = [
+    memStyle ? `Editing style: ${memStyle}` : null,
+    memFavTools.length > 0 ? `Frequently uses: ${memFavTools.join(', ')}` : null,
+    Object.keys(memPrefs).length > 0 ? `Preferences: ${JSON.stringify(memPrefs)}` : null,
+    memStrengths.length > 0 ? `Strong at: ${memStrengths.join(', ')}` : null,
+    memWeaknesses.length > 0 ? `Tends to need help with: ${memWeaknesses.join(', ')}` : null,
+    totalSessions > 1 ? `Total sessions tracked: ${totalSessions}` : null,
+  ].filter(Boolean).join('\n')
+
+  // ── Diagnostics block (real-time issues detected by editor) ───────────────
+  const diagBlock = diagnostics.length > 0
+    ? `REAL-TIME ISSUES DETECTED IN PROJECT:\n${diagnostics.map((d: any) => `- [${d.type?.toUpperCase() || 'ISSUE'}] ${d.message}${d.track ? ` (Track: ${d.track})` : ''}`).join('\n')}`
+    : null
+
+  // ── Recent activity block ──────────────────────────────────────────────────
+  const actBlock = recentActivity.length > 0
+    ? `RECENT ACTIVITY (last ${recentActivity.length} events):\n${recentActivity.slice(0, 5).map((a: any) => `- ${a.event || a} ${a.projectName ? `[${a.projectName}]` : ''}`).join('\n')}`
+    : null
+
+  // ── Assemble system prompt ─────────────────────────────────────────────────
+  if (!orKey) {
+    return c.json({
+      reply: `Hi ${auth.name}! I'm Clawbot — your context-aware AI producer inside 264 Pro.\n\nI can see you're working on "${projectName}" (${trackCount} tracks, ${fps}fps, ${resolution}).${diagBlock ? `\n\n⚠️ I've detected some issues:\n${diagnostics.map((d: any) => `• ${d.message}`).join('\n')}` : ''}\n\nThe OpenRouter API key isn't configured yet, but once it's connected I can help you fix these issues, suggest mix decisions, and guide your entire workflow.`
+    })
+  }
+
+  const systemPrompt = `You are Clawbot, the intelligent AI producer built into 264 Pro Video Editor. You have deep context about the user's project, workflow style, and history.
+
+## WHO YOU'RE HELPING
+Name: ${auth.name} | Tier: ${auth.tier} | Session #${totalSessions}
+
+## CURRENT PROJECT
+${contextBlock}
+${memoryBlock ? `\n## USER MEMORY & STYLE\n${memoryBlock}` : ''}
+${diagBlock ? `\n## ${diagBlock}` : ''}
+${actBlock ? `\n## ${actBlock}` : ''}
+
+## YOUR CAPABILITIES
+You can suggest specific actions and the user can execute them. When relevant, suggest:
+- **AI Tools**: upscale, denoise, slow_mo, face_enhance, rotoscope, colorize
+- **Video Generation**: seedance_t2v (Seedance 2.0), higgsfield_t2v, nano_banana_2k, nano_banana_4k
+- **Workflow pipelines**: e.g. "FINISH TRACK" → balance → master chain → normalize → export
+- **Fix patterns**: for clipping → reduce gain; for masking → EQ carve; for imbalance → rebalance
+
+## RESPONSE STYLE
+- Be concise and direct — max 3-4 sentences unless explaining a multi-step process
+- When you detect issues, lead with the fix, not the explanation
+- Reference the user's specific project name, track counts, etc. — don't be generic
+- If the user asks to "finish" or "export" — give a specific step-by-step pipeline
+- Learn from this conversation: note if user corrects you, has specific preferences, or repeats questions
+- For diagnostic issues, provide actionable specific instructions
+
+## ACTIONS FORMAT
+When suggesting executable actions, format them as JSON at the END of your response:
+\`\`\`actions
+[{"action": "tool", "tool": "video_denoise", "reason": "reduce noise on clip"}, {"action": "generate_video", "model": "seedance_t2v", "prompt": "suggested prompt"}]
+\`\`\`
+Only include actions block if you're specifically recommending the user run something.`
 
   try {
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -1936,25 +2027,142 @@ Be concise, practical, and friendly. Focus on actionable advice for 264 Pro.`
       headers: {
         Authorization: `Bearer ${orKey}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://flowstate-67g.pages.dev',
-        'X-Title': '264 Pro Video Editor',
+        'HTTP-Referer': 'https://flowst8.cc',
+        'X-Title': '264 Pro — Clawbot',
       },
       body: JSON.stringify({
         model: 'anthropic/claude-3.5-haiku',
         messages: [
           { role: 'system', content: systemPrompt },
-          ...messages.slice(-12), // keep last 12 messages for context
+          ...messages.slice(-14),
         ],
-        max_tokens: 800,
-        temperature: 0.7,
+        max_tokens: 900,
+        temperature: 0.65,
       }),
     })
     const data: any = await res.json()
-    const reply = data?.choices?.[0]?.message?.content || 'Sorry, I could not get a response right now.'
-    return c.json({ reply })
+    const rawReply = data?.choices?.[0]?.message?.content || 'Sorry, I could not get a response right now.'
+
+    // ── Parse action suggestions out of reply ────────────────────────────────
+    let reply = rawReply
+    let suggestedActions: any[] = []
+    const actionsMatch = rawReply.match(/```actions\n([\s\S]*?)\n```/)
+    if (actionsMatch) {
+      try {
+        suggestedActions = JSON.parse(actionsMatch[1])
+        reply = rawReply.replace(/```actions\n[\s\S]*?\n```/, '').trim()
+      } catch { /* malformed actions block — ignore */ }
+    }
+
+    // ── Update user memory in background ────────────────────────────────────
+    if (redisUrl && redisTok) {
+      const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || ''
+      const updatedMemory = {
+        ...userMemory,
+        totalSessions: (userMemory.totalSessions || 0) + (messages.length === 1 ? 1 : 0),
+        lastSeen: new Date().toISOString(),
+        lastProject: projectName,
+        favoriteTools: toolsUsed.length > 0
+          ? [...new Set([...(userMemory.favoriteTools || []), ...toolsUsed])].slice(-10)
+          : (userMemory.favoriteTools || []),
+        // Detect workflow style from conversation
+        workflowStyle: userMemory.workflowStyle || (
+          /color.grad|lut|grade/i.test(lastUserMsg) ? 'colorist' :
+          /cut|trim|splice|edit/i.test(lastUserMsg) ? 'editor' :
+          /export|render|deliver/i.test(lastUserMsg) ? 'finisher' :
+          userMemory.workflowStyle || null
+        ),
+      }
+      redisPipeline(redisUrl, redisTok, [
+        ['SET', `264pro_memory:${auth.email}`, JSON.stringify(updatedMemory)],
+        ['EXPIRE', `264pro_memory:${auth.email}`, 90 * 86400],
+      ]).catch(() => {}) // fire-and-forget
+    }
+
+    return c.json({ reply, suggestedActions: suggestedActions.length > 0 ? suggestedActions : undefined })
   } catch (e: any) {
     return c.json({ reply: 'Network error — please try again.' })
   }
+})
+
+// POST /api/264pro/memory-save — save learned preferences from AI session
+app.post('/api/264pro/memory-save', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ ok: false }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ ok: false }, 401)
+  const body: any = await c.req.json().catch(() => ({}))
+  const redisUrl = c.env?.UPSTASH_REDIS_URL
+  const redisTok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!redisUrl || !redisTok) return c.json({ ok: false, error: 'Redis not configured' })
+
+  // Load existing memory and merge
+  const existing = await redisPipeline(redisUrl, redisTok, [['GET', `264pro_memory:${auth.email}`]])
+  const currentMem = existing[0] ? JSON.parse(existing[0] as string) : {}
+
+  const updated = {
+    ...currentMem,
+    preferences: { ...(currentMem.preferences || {}), ...(body.preferences || {}) },
+    favoriteTools: [...new Set([...(currentMem.favoriteTools || []), ...(body.favoriteTools || [])])].slice(-15),
+    strengths:    [...new Set([...(currentMem.strengths || []),    ...(body.strengths || [])])].slice(-10),
+    weaknesses:   [...new Set([...(currentMem.weaknesses || []),   ...(body.weaknesses || [])])].slice(-10),
+    workflowStyle: body.workflowStyle || currentMem.workflowStyle,
+    lastUpdated: new Date().toISOString(),
+  }
+
+  await redisPipeline(redisUrl, redisTok, [
+    ['SET', `264pro_memory:${auth.email}`, JSON.stringify(updated)],
+    ['EXPIRE', `264pro_memory:${auth.email}`, 90 * 86400],
+  ])
+  return c.json({ ok: true, memory: updated })
+})
+
+// POST /api/264pro/diagnostics — analyze project data and return actionable AI suggestions
+app.post('/api/264pro/diagnostics', async (c) => {
+  const token = get264Token(c)
+  if (!token) return c.json({ ok: false }, 401)
+  const auth = await verify264Token(c, token)
+  if (!auth.valid) return c.json({ ok: false }, 401)
+  const body: any = await c.req.json().catch(() => ({}))
+  const issues: Array<{type: string; message: string; track?: string; severity: string}> = []
+
+  // Analyze audio metrics
+  const audio = body.audioMetrics || {}
+  if (audio.peakDb != null && audio.peakDb > -1) {
+    issues.push({ type: 'clipping', message: `Peak level ${audio.peakDb.toFixed(1)} dBFS — reduce gain by ${Math.abs(audio.peakDb + 3).toFixed(1)} dB`, track: audio.peakTrack, severity: 'high' })
+  }
+  if (audio.lufs != null && audio.lufs > -8) {
+    issues.push({ type: 'loudness', message: `LUFS ${audio.lufs.toFixed(1)} — too hot for streaming. Target -14 LUFS for YouTube/Spotify`, severity: 'medium' })
+  }
+  if (audio.lufs != null && audio.lufs < -24) {
+    issues.push({ type: 'loudness', message: `LUFS ${audio.lufs.toFixed(1)} — too quiet. Boost gain or apply compression`, severity: 'medium' })
+  }
+
+  // Analyze frequency balance
+  const freq = body.frequencyProfile || {}
+  if (freq.low != null && freq.mid != null && freq.high != null) {
+    const total = freq.low + freq.mid + freq.high
+    const lowPct  = freq.low  / total
+    const midPct  = freq.mid  / total
+    const highPct = freq.high / total
+    if (lowPct > 0.55) issues.push({ type: 'frequency', message: `Heavy low-end (${(lowPct*100).toFixed(0)}%). Cut 200-400 Hz by 2-3 dB, highpass at 80 Hz`, severity: 'medium' })
+    if (highPct < 0.10) issues.push({ type: 'frequency', message: `Lacking air/presence (highs ${(highPct*100).toFixed(0)}%). Shelf boost 10-16 kHz +2 dB`, severity: 'low' })
+    if (midPct > 0.65) issues.push({ type: 'frequency', message: `Mid-heavy mix (${(midPct*100).toFixed(0)}%). Scoop 800 Hz-2 kHz by 2 dB for clarity`, severity: 'medium' })
+  }
+
+  // Analyze tracks
+  const tracks = Array.isArray(body.tracks) ? body.tracks : []
+  for (const t of tracks) {
+    if (t.hasClipping) issues.push({ type: 'clipping', message: `Track "${t.name}" is clipping — lower volume by 3-6 dB`, track: t.name, severity: 'high' })
+    if (t.hasFreqMasking) issues.push({ type: 'masking', message: `Track "${t.name}" may be masking other elements — try sidechain or EQ cut at overlap frequency`, track: t.name, severity: 'medium' })
+  }
+
+  // Timeline issues
+  const timeline = body.timelineInfo || {}
+  if (timeline.hasGaps) issues.push({ type: 'gap', message: `${timeline.gapCount || 'Multiple'} gaps found in timeline — fill with B-roll or adjust edits`, severity: 'low' })
+  if (timeline.hasOrphans) issues.push({ type: 'orphan', message: `Unlinked audio/video clips detected — check sync alignment`, severity: 'medium' })
+
+  return c.json({ ok: true, issues, count: issues.length, analyzedAt: new Date().toISOString() })
 })
 
 // POST /api/264pro/activity — log editor activity events to Redis
