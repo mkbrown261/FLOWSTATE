@@ -483,10 +483,11 @@ function switchGenSub(sub) {
   if (btn)  btn.classList.add('active');
   if (pane) pane.classList.add('active');
   // Init pickers when switching to their pane
-  if (sub==='imggen')  { setTimeout(()=>buildGenPicker('img'), 30); }
-  if (sub==='vidgen')  { setTimeout(()=>buildGenPicker('vid'), 30); }
-  if (sub==='i2v')     { setTimeout(()=>buildGenPicker('i2v'), 30); }
-  if (sub==='tts')     { loadTTSVoices(); }
+  if (sub==='imggen')    { setTimeout(()=>buildGenPicker('img'), 30); }
+  if (sub==='vidgen')    { setTimeout(()=>buildGenPicker('vid'), 30); }
+  if (sub==='i2v')       { setTimeout(()=>buildGenPicker('i2v'), 30); }
+  if (sub==='tts')       { loadTTSVoices(); }
+  if (sub==='higgsfield'){ initHiggsfield(); }
 }
 
 // ── Gen sidebar log helper ────────────────────────────────────────────────────
@@ -3445,3 +3446,207 @@ function clawbotQuick(msg) {
 
 // ── Start ──────────────────────────────────────────────────────────────────
 boot();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Higgsfield AI Studio ── Pro-only cinematic video generation ────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _higgsModel    = 'seedance-v2.0-t2v';
+let _higgsModelName = 'Seedance 2.0';
+let _higgsType     = 't2v';  // 't2v' or 'i2v'
+let _higgsMaxDur   = 15;
+let _higgsPollTimer = null;
+
+function initHiggsfield() {
+  // Check if user is Pro — show gate if not
+  const tier = FS_USER?.tier || 'free';
+  const isPro = ['personal_pro','team_starter','team_growth','enterprise','clawflow'].includes(tier);
+  const gate = document.getElementById('higgs-gate-banner');
+  if (gate) gate.style.display = isPro ? 'none' : 'block';
+  // Set default model
+  selectHiggsModel('seedance-v2.0-t2v', 'Seedance 2.0', 't2v', 15);
+}
+
+function selectHiggsModel(modelId, name, type, maxDur) {
+  _higgsModel     = modelId;
+  _higgsModelName = name;
+  _higgsType      = type;
+  _higgsMaxDur    = maxDur;
+
+  // Update card selection
+  document.querySelectorAll('.higgs-model-card').forEach(c => {
+    c.classList.toggle('active', c.dataset.model === modelId);
+  });
+
+  // Show/hide image URL row
+  const imgRow = document.getElementById('higgs-img-row');
+  if (imgRow) imgRow.style.display = type === 'i2v' ? 'block' : 'none';
+
+  // Cap duration select to model max
+  const durSel = document.getElementById('higgs-duration');
+  if (durSel) {
+    Array.from(durSel.options).forEach(opt => {
+      opt.disabled = parseInt(opt.value) > maxDur;
+    });
+    if (parseInt(durSel.value) > maxDur) durSel.value = String(maxDur);
+  }
+
+  // Update model info sidebar
+  const info = document.getElementById('higgs-model-info');
+  const descriptions = {
+    'seedance-v2.0-t2v':    'ByteDance Seedance 2.0 — flagship cinematic model. Native audio sync, multi-shot storytelling, frame-level control. Up to 15s.',
+    'seedance-v2.0-i2v':    'Seedance 2.0 Image-to-Video. Animates your reference image with consistent characters and smooth motion. Up to 15s.',
+    'seedance-v2.0-t2v-fx': 'Seedance FX — specialized for particle effects, fire, explosions, and physics-driven motion. Up to 10s.',
+    'wan2.6-t2v':           'Wan 2.6 by Alibaba — high motion fidelity, 1080p capable. Excellent for realistic human motion and dynamic scenes. Up to 15s.',
+    'wan2.6-i2v':           'Wan 2.6 Image-to-Video — smooth animated transitions from a reference image. Great for product shots and portraits.',
+    'kling-v3.0-pro-t2v':   'Kling v3 Pro — professional cinema quality, 1080p output. Best for high-end commercial and narrative content. Up to 10s.',
+  };
+  if (info) info.textContent = descriptions[modelId] || 'Select a model to see details.';
+}
+
+async function runHiggsfield() {
+  const tier  = FS_USER?.tier || 'free';
+  const isPro = ['personal_pro','team_starter','team_growth','enterprise','clawflow'].includes(tier);
+  if (!isPro) {
+    alert('Higgsfield AI requires a Pro subscription. Upgrade at flowst8.cc to unlock.');
+    return;
+  }
+
+  const prompt   = (document.getElementById('higgs-prompt')?.value || '').trim();
+  const imageUrl = (document.getElementById('higgs-img-url')?.value || '').trim();
+  const duration = parseInt(document.getElementById('higgs-duration')?.value || '10');
+  const aspect   = document.getElementById('higgs-aspect')?.value  || '16:9';
+  const quality  = document.getElementById('higgs-quality')?.value || 'high';
+
+  if (!prompt && !imageUrl) { alert('Please enter a prompt to generate.'); return; }
+  if (_higgsType === 'i2v' && !imageUrl) { alert('This model requires an image URL for Image-to-Video.'); return; }
+
+  // Update UI
+  const btn = document.getElementById('btn-higgs-gen');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>&nbsp; Generating…'; }
+  const prog = document.getElementById('higgs-progress');
+  const progMsg = document.getElementById('higgs-progress-msg');
+  const progBar = document.getElementById('higgs-progress-bar');
+  const result  = document.getElementById('higgs-result');
+  if (prog)   { prog.style.display = 'block'; }
+  if (result) { result.style.display = 'none'; result.innerHTML = ''; }
+  if (progMsg) progMsg.textContent = 'Sending to Higgsfield…';
+  if (progBar) progBar.style.width = '8%';
+
+  genSidebarLog('higgsfield', `▶ ${_higgsModelName} — "${prompt.slice(0,50)}${prompt.length>50?'…':''}"`, '');
+
+  try {
+    const res = await fetch('/api/higgsfield/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ model: _higgsModel, prompt, imageUrl: imageUrl || undefined, duration, aspectRatio: aspect, quality }),
+    });
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      const msg = data.message || data.error || 'Generation failed';
+      showHiggsError(msg);
+      if (data.upgradeUrl) {
+        genSidebarLog('higgsfield', '⚠ Pro required — <a href="/#pricing" style="color:#00d4ff">Upgrade</a>', 'error');
+      }
+      return;
+    }
+
+    if (data.status === 'complete' && data.videoUrl) {
+      showHiggsResult(data.videoUrl, prompt);
+      return;
+    }
+
+    if (data.status === 'queued' && data.requestId) {
+      if (progMsg) progMsg.textContent = data.message || 'Queued — generating your video…';
+      if (progBar) progBar.style.width = '15%';
+      genSidebarLog('higgsfield', `⏳ Queued: ${data.requestId.slice(0,12)}…`, '');
+      pollHiggsfield(data.requestId, prompt, 0);
+      return;
+    }
+
+    showHiggsError('Unexpected response from Higgsfield.');
+  } catch (e) {
+    showHiggsError('Network error — please try again.');
+  }
+}
+
+function pollHiggsfield(requestId, prompt, attempt) {
+  if (attempt > 90) {
+    showHiggsError('Generation timed out (3 min). Try a shorter duration or simpler prompt.');
+    return;
+  }
+  const progBar = document.getElementById('higgs-progress-bar');
+  const progMsg = document.getElementById('higgs-progress-msg');
+
+  _higgsPollTimer = setTimeout(async () => {
+    try {
+      const res  = await fetch(`/api/higgsfield/poll/${requestId}`, { credentials: 'include' });
+      const data = await res.json();
+
+      if (data.status === 'complete' && data.videoUrl) {
+        showHiggsResult(data.videoUrl, prompt);
+        genSidebarLog('higgsfield', `✓ Done! <a href="${data.videoUrl}" target="_blank" style="color:#00ffa3">Download</a>`, 'success');
+        return;
+      }
+      if (data.status === 'error') {
+        showHiggsError(data.error || 'Generation failed');
+        genSidebarLog('higgsfield', `✗ Error: ${data.error}`, 'error');
+        return;
+      }
+      // Still processing
+      const pct = data.percent || Math.min(15 + attempt * 2, 88);
+      if (progBar) progBar.style.width = pct + '%';
+      if (progMsg) progMsg.textContent = `Generating… ${pct}%`;
+      pollHiggsfield(requestId, prompt, attempt + 1);
+    } catch {
+      pollHiggsfield(requestId, prompt, attempt + 1);
+    }
+  }, attempt < 5 ? 4000 : 6000);
+}
+
+function showHiggsResult(videoUrl, prompt) {
+  const btn    = document.getElementById('btn-higgs-gen');
+  const prog   = document.getElementById('higgs-progress');
+  const result = document.getElementById('higgs-result');
+  if (btn)  { btn.disabled = false; btn.innerHTML = '<i class="fas fa-film"></i>&nbsp; Generate with Higgsfield'; }
+  if (prog) { prog.style.display = 'none'; }
+  if (!result) return;
+  result.style.display = 'block';
+  result.innerHTML = `
+    <div style="background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.2);border-radius:14px;padding:16px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="font-size:18px">✦</span>
+        <span style="font-size:13px;font-weight:800;color:#00d4ff">Generation Complete</span>
+        <span style="margin-left:auto;font-size:10px;color:rgba(0,212,255,.5)">${_higgsModelName}</span>
+      </div>
+      <video src="${videoUrl}" controls style="width:100%;border-radius:10px;background:#000;max-height:300px" preload="metadata"></video>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <a href="${videoUrl}" download target="_blank" style="background:linear-gradient(135deg,#00d4ff,#00ffa3);color:#000;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:800;text-decoration:none;display:inline-flex;align-items:center;gap:6px">
+          <i class="fas fa-download"></i> Download MP4
+        </a>
+        <button onclick="this.closest('div').previousElementSibling && navigator.clipboard.writeText('${videoUrl}')" style="background:rgba(0,212,255,.1);border:1px solid rgba(0,212,255,.25);color:#00d4ff;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer">
+          <i class="fas fa-copy"></i> Copy URL
+        </button>
+        <button onclick="document.getElementById('higgs-result').style.display='none';document.getElementById('btn-higgs-gen').disabled=false;document.getElementById('btn-higgs-gen').innerHTML='<i class=\\'fas fa-film\\'></i>&nbsp; Generate with Higgsfield'" style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:rgba(255,255,255,.5);border-radius:8px;padding:8px 14px;font-size:12px;cursor:pointer">
+          ↺ New Generation
+        </button>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:rgba(255,255,255,.35);line-height:1.5">"${prompt.slice(0,120)}${prompt.length>120?'…':''}"</div>
+    </div>`;
+}
+
+function showHiggsError(msg) {
+  const btn  = document.getElementById('btn-higgs-gen');
+  const prog = document.getElementById('higgs-progress');
+  const res  = document.getElementById('higgs-result');
+  if (btn)  { btn.disabled = false; btn.innerHTML = '<i class="fas fa-film"></i>&nbsp; Generate with Higgsfield'; }
+  if (prog) { prog.style.display = 'none'; }
+  if (!res) return;
+  res.style.display = 'block';
+  res.innerHTML = `<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:12px;padding:14px 16px;color:#ef4444;font-size:13px">
+    <strong>✗ Error:</strong> ${msg}
+  </div>`;
+  genSidebarLog('higgsfield', `✗ ${msg}`, 'error');
+}

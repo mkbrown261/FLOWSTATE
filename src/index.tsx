@@ -53,6 +53,7 @@ type Bindings = {
   FAL_AI_KEY: string
   // Higgsfield AI — cinematic video generation (100+ models including Seedance 2.0)
   HIGGSFIELD_API_KEY: string
+  HIGGSFIELD_API_SECRET: string
   // Optional separate keys (not required if using Replicate)
   RUNWAY_API_KEY: string; LUMA_API_KEY: string; PIKA_API_KEY: string
   // FlowState Audio — Music AI
@@ -2859,6 +2860,161 @@ app.get('/api/264pro/video-gen/poll/:requestId', async (c) => {
   return c.json({ status: 'error', error: 'No API key configured for polling' })
 })
 
+// ─── Higgsfield AI Studio — Web + 264 Pro (Pro tier gated) ──────────────────
+// Direct Higgsfield API integration. Uses HIGGSFIELD_API_KEY for auth.
+// Also served via /api/264pro/video-gen but these routes give the web app
+// its own auth flow via session cookie (FS_USER) rather than desktop token.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Helper: check session tier (web auth — FS_USER cookie)
+function getSessionTier(c: any): string {
+  const session = decodeSession(c.req.header ? '' : '', )
+  // Try cookie
+  const raw = c.req.header?.('cookie') || ''
+  const match = raw.match(/fs_session=([^;]+)/)
+  if (!match) return 'free'
+  try {
+    const decoded = decodeSession(decodeURIComponent(match[1]))
+    return decoded?.tier || 'free'
+  } catch { return 'free' }
+}
+
+// POST /api/higgsfield/generate — web-facing Higgsfield video generation (Pro gated)
+app.post('/api/higgsfield/generate', async (c) => {
+  // Auth: accept either session cookie (web) OR 264pro bearer token (desktop)
+  const token264 = get264Token(c)
+  let userEmail = '', userTier = 'free', userName = ''
+
+  if (token264) {
+    // Desktop app auth
+    const auth = await verify264Token(c, token264)
+    if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+    userEmail = auth.email || ''; userTier = auth.tier || 'free'; userName = auth.name || ''
+  } else {
+    // Web session auth
+    const cookieHeader = c.req.header('cookie') || ''
+    const match = cookieHeader.match(/fs_session=([^;]+)/)
+    if (!match) return c.json({ error: 'Not authenticated. Sign in at flowst8.cc' }, 401)
+    try {
+      const session = decodeSession(decodeURIComponent(match[1]))
+      if (!session?.email) return c.json({ error: 'Invalid session' }, 401)
+      userEmail = session.email; userTier = session.tier || 'free'; userName = session.name || ''
+    } catch { return c.json({ error: 'Session decode failed' }, 401) }
+  }
+
+  // Pro gate
+  const hasPro = ['personal_pro','team_starter','team_growth','enterprise','clawflow'].includes(userTier)
+  if (!hasPro) {
+    return c.json({
+      error: 'higgsfield_pro_required',
+      message: 'Higgsfield AI is available to Pro members. Upgrade at flowst8.cc to unlock 100+ cinematic models.',
+      upgradeUrl: 'https://flowst8.cc/#pricing',
+    }, 403)
+  }
+
+  const higgsKey = c.env?.HIGGSFIELD_API_KEY
+  if (!higgsKey) return c.json({ error: 'Higgsfield API key not configured' }, 503)
+
+  const body: any = await c.req.json().catch(() => ({}))
+  const {
+    model       = 'seedance-v2.0-t2v',
+    prompt      = '',
+    imageUrl,
+    duration    = 10,
+    aspectRatio = '16:9',
+    quality     = 'high',
+  } = body
+
+  if (!prompt && !imageUrl) return c.json({ error: 'prompt is required' }, 400)
+
+  const input: Record<string, unknown> = {
+    prompt,
+    aspect_ratio: aspectRatio,
+    duration: Number(duration),
+    quality,
+  }
+  if (imageUrl) input.image_url = imageUrl
+
+  const result = await callHiggsfield(higgsKey, model, input)
+  if (result.error) return c.json({ error: result.error }, 500)
+  if (result.status === 'complete') return c.json({ status: 'complete', videoUrl: result.videoUrl, model })
+  if (result.requestId) {
+    // Log activity
+    const redisUrl = c.env?.UPSTASH_REDIS_URL; const redisTok = c.env?.UPSTASH_REDIS_TOKEN
+    if (redisUrl && redisTok) {
+      redisPipeline(redisUrl, redisTok, [
+        ['LPUSH', `higgsfield_activity:${userEmail}`, JSON.stringify({ model, prompt: prompt.slice(0,80), ts: new Date().toISOString() })],
+        ['LTRIM', `higgsfield_activity:${userEmail}`, '0', '49'],
+        ['EXPIRE', `higgsfield_activity:${userEmail}`, 30 * 86400],
+      ]).catch(() => {})
+    }
+    return c.json({ status: 'queued', requestId: result.requestId, provider: 'higgsfield', model,
+      message: `Higgsfield ${model} generating — ${duration}s ${quality} quality` })
+  }
+  return c.json({ error: 'Unexpected Higgsfield response' }, 500)
+})
+
+// GET /api/higgsfield/poll/:requestId — poll generation status (web + desktop)
+app.get('/api/higgsfield/poll/:requestId', async (c) => {
+  // Accept either desktop token or session cookie
+  const token264 = get264Token(c)
+  let authed = false
+
+  if (token264) {
+    const auth = await verify264Token(c, token264)
+    authed = auth.valid
+  } else {
+    const cookieHeader = c.req.header('cookie') || ''
+    const match = cookieHeader.match(/fs_session=([^;]+)/)
+    if (match) {
+      try {
+        const session = decodeSession(decodeURIComponent(match[1]))
+        authed = !!session?.email
+      } catch { authed = false }
+    }
+  }
+
+  if (!authed) return c.json({ status: 'error', error: 'Not authenticated' }, 401)
+
+  const requestId = c.req.param('requestId')
+  const higgsKey  = c.env?.HIGGSFIELD_API_KEY
+  if (!higgsKey) return c.json({ status: 'error', error: 'Higgsfield not configured' })
+
+  try {
+    const res = await fetch(`https://api.higgsfield.ai/v1/video/generate/${requestId}`, {
+      headers: { 'Authorization': `Bearer ${higgsKey}` },
+    })
+    const data: any = await res.json()
+    if (data.status === 'completed' || data.status === 'succeeded') {
+      return c.json({ status: 'complete', videoUrl: data.output_url || data.video_url || data.url })
+    }
+    if (data.status === 'failed' || data.status === 'error') {
+      return c.json({ status: 'error', error: data.error || data.message || 'Generation failed' })
+    }
+    const pct = data.progress ?? (data.status === 'processing' ? 45 : 15)
+    return c.json({ status: 'processing', percent: pct, higgsStatus: data.status })
+  } catch (e: any) {
+    return c.json({ status: 'error', error: e.message })
+  }
+})
+
+// GET /api/higgsfield/models — list available models for the web UI
+app.get('/api/higgsfield/models', async (c) => {
+  // Public model list — no auth needed
+  return c.json({
+    models: [
+      { id: 'seedance-v2.0-t2v', name: 'Seedance 2.0', type: 't2v', maxDuration: 15, quality: ['standard','high'], description: 'ByteDance flagship — cinematic, native audio, multi-shot' },
+      { id: 'seedance-v2.0-i2v', name: 'Seedance 2.0 I2V', type: 'i2v', maxDuration: 15, quality: ['standard','high'], description: 'Animate a still image with Seedance 2.0' },
+      { id: 'seedance-v2.0-t2v-fx', name: 'Seedance FX', type: 't2v', maxDuration: 10, quality: ['standard','high'], description: 'Particle effects, fire, explosions, physics simulation' },
+      { id: 'wan2.6-t2v', name: 'Wan 2.6', type: 't2v', maxDuration: 15, quality: ['standard','high','1080p'], description: 'High motion fidelity, 1080p support' },
+      { id: 'wan2.6-i2v', name: 'Wan 2.6 I2V', type: 'i2v', maxDuration: 15, quality: ['standard','high'], description: 'Smooth animated transitions from reference' },
+      { id: 'kling-v3.0-pro-t2v', name: 'Kling v3 Pro', type: 't2v', maxDuration: 10, quality: ['standard','high','1080p'], description: 'Pro cinematic quality — 1080p up to 10s' },
+    ],
+    proRequired: true,
+    upgradeUrl: 'https://flowst8.cc/#pricing',
+  })
+})
+
 // GET /api/264pro/user — return current user info for the linked token
 app.get('/api/264pro/user', async (c) => {
   const token = get264Token(c)
@@ -3409,6 +3565,13 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .gen-sidebar-section{padding-top:10px;border-top:1px solid var(--border)}
 .gen-sidebar-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:6px}
 .gen-sidebar-row{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--text-s);padding:3px 0}
+/* ── Higgsfield AI cards ── */
+.higgs-model-card{background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.15);border-radius:12px;padding:12px 14px;cursor:pointer;transition:.18s;position:relative}
+.higgs-model-card:hover{background:rgba(0,212,255,.09);border-color:rgba(0,212,255,.35);transform:translateY(-1px)}
+.higgs-model-card.active{background:rgba(0,212,255,.12);border-color:#00d4ff;box-shadow:0 0 14px rgba(0,212,255,.2)}
+.higgs-model-badge{font-size:9px;font-weight:800;letter-spacing:.8px;color:#00d4ff;text-transform:uppercase;margin-bottom:5px;opacity:.8}
+.higgs-model-name{font-size:13px;font-weight:800;color:#e8e8e8;margin-bottom:3px}
+.higgs-model-desc{font-size:11px;color:rgba(255,255,255,.45);line-height:1.4}
 /* ── File tool grid ── */
 .file-tool-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;margin-top:4px}
 .file-tool-card{background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:8px;transition:.2s}
@@ -3875,6 +4038,7 @@ em{color:var(--accent);font-style:italic}
     <button class="gen-subtab-btn"        id="gsub-music"     onclick="switchGenSub('music')"><i class="fas fa-music"></i> AI Music</button>
     <button class="gen-subtab-btn"        id="gsub-tts"       onclick="switchGenSub('tts')"><i class="fas fa-microphone"></i> Text to Speech</button>
     <button class="gen-subtab-btn"        id="gsub-filetools" onclick="switchGenSub('filetools')"><i class="fas fa-folder-open"></i> File Tools</button>
+    <button class="gen-subtab-btn"        id="gsub-higgsfield" onclick="switchGenSub('higgsfield')" style="background:linear-gradient(135deg,rgba(0,212,255,.12),rgba(0,255,163,.10));border-color:rgba(0,212,255,.3);color:#00d4ff"><i class="fas fa-film"></i> ✦ Higgsfield AI</button>
   </div>
 
   <!-- ── Body: generator area + sidebar ──────────────────── -->
@@ -4288,6 +4452,145 @@ em{color:var(--accent);font-style:italic}
           <div class="gen-sidebar-row"><i class="fas fa-exchange-alt" style="color:#10b981"></i> Format Convert</div>
           <div class="gen-sidebar-row"><i class="fas fa-compress-alt" style="color:var(--pink)"></i> Compress</div>
           <div class="gen-sidebar-row"><i class="fas fa-code" style="color:var(--accent)"></i> Base64 Tools</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════ HIGGSFIELD AI ═══════════════════════════════ -->
+    <div class="gen-sub-pane" id="gen-pane-higgsfield">
+      <div class="gen-main-area" style="overflow-y:auto">
+
+        <!-- Pro gate banner -->
+        <div id="higgs-gate-banner" style="display:none;background:linear-gradient(135deg,rgba(0,212,255,.08),rgba(168,85,247,.08));border:1px solid rgba(0,212,255,.2);border-radius:14px;padding:22px 20px;margin-bottom:16px;text-align:center">
+          <div style="font-size:28px;margin-bottom:8px">✦</div>
+          <div style="font-size:16px;font-weight:900;color:#00d4ff;margin-bottom:6px">Higgsfield AI — Pro Members Only</div>
+          <div style="font-size:13px;color:rgba(255,255,255,.6);margin-bottom:16px;line-height:1.6">Higgsfield gives you access to 100+ cinematic AI video models including Seedance 2.0 — with native audio, multi-shot storytelling, and frame-level control. Upgrade to Pro to unlock.</div>
+          <button onclick="document.getElementById('tab-pricing')?.click()" style="background:linear-gradient(135deg,#00d4ff,#00ffa3);color:#000;border:none;border-radius:10px;padding:10px 22px;font-size:13px;font-weight:800;cursor:pointer">Upgrade to Pro →</button>
+        </div>
+
+        <!-- Hero header -->
+        <div style="background:linear-gradient(135deg,rgba(0,212,255,.07),rgba(0,255,163,.05));border:1px solid rgba(0,212,255,.18);border-radius:14px;padding:18px 20px;margin-bottom:16px;display:flex;align-items:center;gap:14px">
+          <div style="width:46px;height:46px;border-radius:12px;background:linear-gradient(135deg,#00d4ff,#00ffa3);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="fas fa-film" style="color:#000;font-size:20px"></i>
+          </div>
+          <div>
+            <div style="font-size:16px;font-weight:900;color:#00d4ff;margin-bottom:3px">Higgsfield AI Studio</div>
+            <div style="font-size:12px;color:rgba(255,255,255,.55);line-height:1.5">100+ cinematic models · Seedance 2.0 · Native audio · Multi-shot storytelling · Pro members only</div>
+          </div>
+          <div style="margin-left:auto;background:linear-gradient(135deg,#00d4ff22,#00ffa322);border:1px solid #00d4ff44;border-radius:8px;padding:4px 10px;font-size:10px;font-weight:800;color:#00d4ff">PRO</div>
+        </div>
+
+        <!-- Model picker -->
+        <div class="gen-panel" style="margin-bottom:14px">
+          <div style="font-size:11px;font-weight:700;color:rgba(0,212,255,.7);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">Model</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px" id="higgs-model-grid">
+            <div class="higgs-model-card active" onclick="selectHiggsModel('seedance-v2.0-t2v','Seedance 2.0 T2V','Text to Video',15)" data-model="seedance-v2.0-t2v">
+              <div class="higgs-model-badge">TEXT → VIDEO</div>
+              <div class="higgs-model-name">Seedance 2.0</div>
+              <div class="higgs-model-desc">Cinematic quality · native audio · 15s max</div>
+            </div>
+            <div class="higgs-model-card" onclick="selectHiggsModel('seedance-v2.0-i2v','Seedance 2.0 I2V','Image to Video',15)" data-model="seedance-v2.0-i2v">
+              <div class="higgs-model-badge">IMAGE → VIDEO</div>
+              <div class="higgs-model-name">Seedance 2.0</div>
+              <div class="higgs-model-desc">Animate a still frame · character consistent</div>
+            </div>
+            <div class="higgs-model-card" onclick="selectHiggsModel('seedance-v2.0-t2v-fx','Seedance 2.0 FX','Special Effects',10)" data-model="seedance-v2.0-t2v-fx">
+              <div class="higgs-model-badge">EFFECTS</div>
+              <div class="higgs-model-name">Seedance FX</div>
+              <div class="higgs-model-desc">Physics · explosions · particles · fire</div>
+            </div>
+            <div class="higgs-model-card" onclick="selectHiggsModel('wan2.6-t2v','Wan 2.6 T2V','Text to Video',15)" data-model="wan2.6-t2v">
+              <div class="higgs-model-badge">TEXT → VIDEO</div>
+              <div class="higgs-model-name">Wan 2.6</div>
+              <div class="higgs-model-desc">High motion fidelity · 1080p · 15s</div>
+            </div>
+            <div class="higgs-model-card" onclick="selectHiggsModel('wan2.6-i2v','Wan 2.6 I2V','Image to Video',15)" data-model="wan2.6-i2v">
+              <div class="higgs-model-badge">IMAGE → VIDEO</div>
+              <div class="higgs-model-name">Wan 2.6</div>
+              <div class="higgs-model-desc">Smooth animation from reference image</div>
+            </div>
+            <div class="higgs-model-card" onclick="selectHiggsModel('kling-v3.0-pro-t2v','Kling v3 Pro T2V','Text to Video',10)" data-model="kling-v3.0-pro-t2v">
+              <div class="higgs-model-badge">TEXT → VIDEO</div>
+              <div class="higgs-model-name">Kling v3 Pro</div>
+              <div class="higgs-model-desc">Pro-grade cinematic · 1080p · 10s max</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Prompt -->
+        <div class="gen-panel" style="margin-bottom:14px">
+          <div style="font-size:11px;font-weight:700;color:rgba(0,212,255,.7);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Prompt</div>
+          <textarea id="higgs-prompt" rows="4" placeholder="Describe your scene in detail. Include camera movement, lighting, mood, subject action&#8230; e.g. 'A lone astronaut walks across a red desert at sunset, dolly zoom slowly pulling back, dramatic lens flare, cinematic 4K'" style="width:100%;background:rgba(0,212,255,.05);border:1px solid rgba(0,212,255,.15);border-radius:10px;padding:12px;color:#e8e8e8;font-size:13px;font-family:inherit;resize:vertical;outline:none;box-sizing:border-box"></textarea>
+
+          <!-- I2V image URL input -->
+          <div id="higgs-img-row" style="display:none;margin-top:10px">
+            <div style="font-size:11px;font-weight:700;color:rgba(0,212,255,.7);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Reference Image URL</div>
+            <input id="higgs-img-url" type="url" placeholder="https://… paste image URL for image-to-video" style="width:100%;background:rgba(0,212,255,.05);border:1px solid rgba(0,212,255,.15);border-radius:8px;padding:9px 12px;color:#e8e8e8;font-size:12px;outline:none;box-sizing:border-box">
+          </div>
+        </div>
+
+        <!-- Controls row -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px">
+          <div class="gen-panel">
+            <div style="font-size:10px;font-weight:700;color:rgba(0,212,255,.6);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Duration</div>
+            <select id="higgs-duration" style="width:100%;background:rgba(0,0,0,.4);border:1px solid rgba(0,212,255,.2);border-radius:7px;padding:7px 9px;color:#e8e8e8;font-size:12px">
+              <option value="5">5 seconds</option>
+              <option value="8">8 seconds</option>
+              <option value="10" selected>10 seconds</option>
+              <option value="15">15 seconds</option>
+            </select>
+          </div>
+          <div class="gen-panel">
+            <div style="font-size:10px;font-weight:700;color:rgba(0,212,255,.6);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Aspect Ratio</div>
+            <select id="higgs-aspect" style="width:100%;background:rgba(0,0,0,.4);border:1px solid rgba(0,212,255,.2);border-radius:7px;padding:7px 9px;color:#e8e8e8;font-size:12px">
+              <option value="16:9" selected>16:9 Landscape</option>
+              <option value="9:16">9:16 Portrait</option>
+              <option value="4:3">4:3 Classic</option>
+              <option value="1:1">1:1 Square</option>
+            </select>
+          </div>
+          <div class="gen-panel">
+            <div style="font-size:10px;font-weight:700;color:rgba(0,212,255,.6);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Quality</div>
+            <select id="higgs-quality" style="width:100%;background:rgba(0,0,0,.4);border:1px solid rgba(0,212,255,.2);border-radius:7px;padding:7px 9px;color:#e8e8e8;font-size:12px">
+              <option value="standard">Standard</option>
+              <option value="high" selected>High</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Generate button -->
+        <button id="btn-higgs-gen" onclick="runHiggsfield()" style="width:100%;padding:14px;background:linear-gradient(135deg,#00d4ff,#00ffa3);border:none;border-radius:12px;color:#000;font-size:14px;font-weight:900;cursor:pointer;letter-spacing:.3px;transition:.2s;margin-bottom:14px">
+          <i class="fas fa-film"></i>&nbsp; Generate with Higgsfield
+        </button>
+
+        <!-- Progress / result -->
+        <div id="higgs-progress" style="display:none;background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.15);border-radius:12px;padding:16px;margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <div style="width:10px;height:10px;border-radius:50%;background:#00d4ff;animation:pulse 1.2s infinite"></div>
+            <span id="higgs-progress-msg" style="font-size:13px;color:#00d4ff;font-weight:600">Queued…</span>
+          </div>
+          <div style="background:rgba(0,0,0,.3);border-radius:6px;height:5px;overflow:hidden">
+            <div id="higgs-progress-bar" style="height:100%;background:linear-gradient(90deg,#00d4ff,#00ffa3);width:5%;transition:width .5s"></div>
+          </div>
+        </div>
+
+        <div id="higgs-result" style="display:none"></div>
+
+        <!-- Tips -->
+        <div style="background:rgba(0,0,0,.2);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:12px 14px;font-size:11px;color:rgba(255,255,255,.4);line-height:1.7">
+          <strong style="color:rgba(0,212,255,.6)">✦ Higgsfield Tips:</strong> Be specific about camera movement (dolly zoom, tracking shot, crane lift). Describe lighting and atmosphere. For I2V, paste a clean image URL. Generations run on Higgsfield's infrastructure — typically 1-3 minutes.
+        </div>
+
+      </div>
+
+      <!-- Sidebar -->
+      <div class="gen-sidebar" style="border-left-color:rgba(0,212,255,.15)">
+        <div class="gen-sidebar-hd" style="color:#00d4ff"><i class="fas fa-bolt"></i> Live Queue</div>
+        <div class="gen-sidebar-empty" id="gsb-higgsfield-empty" style="color:rgba(0,212,255,.4)"><i class="fas fa-film" style="font-size:22px;opacity:.25;margin-bottom:8px;display:block"></i>Your generations will appear here</div>
+        <div id="gsb-higgsfield-log" class="gen-sidebar-log"></div>
+        <div class="gen-sidebar-section" style="border-color:rgba(0,212,255,.1)">
+          <div class="gen-sidebar-label" style="color:rgba(0,212,255,.5)">Model Info</div>
+          <div id="higgs-model-info" style="font-size:11px;color:rgba(255,255,255,.45);line-height:1.6">Select a model to see details.</div>
         </div>
       </div>
     </div>
