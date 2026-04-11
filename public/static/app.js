@@ -2855,7 +2855,60 @@ function updateFocusDur(m) {
   notify(`Focus duration: ${m} min`,'success');
 }
 
-function connectSlack() { window.open('/api/auth/slack','_blank','width=480,height=600'); }
+function connectSlack() {
+  window.open('/api/auth/slack', '_blank', 'width=480,height=600,noopener=no');
+}
+
+// Listen for postMessage from Slack OAuth popup on success
+window.addEventListener('message', function(e) {
+  if (e.origin !== 'https://flowst8.cc') return;
+  if (e.data && e.data.type === 'slack_connected') {
+    // Update FS_SLACK in memory so UI reflects connected state immediately
+    window.FS_SLACK = { team: e.data.team, connected: true };
+    notify('✓ Slack connected — ' + (e.data.team || 'workspace synced'), 'success');
+    // Refresh integration buttons wherever they appear
+    _refreshSlackUI();
+  }
+  if (e.data && e.data.type === 'notion_connected') {
+    window.FS_NOTION = { workspace: e.data.workspace, connected: true };
+    notify('✓ Notion connected — ' + (e.data.workspace || 'workspace synced'), 'success');
+    _refreshNotionUI();
+  }
+});
+
+function _refreshSlackUI() {
+  // Update any "Connect Slack" buttons to "✓ Connected"
+  document.querySelectorAll('[onclick="connectSlack()"]').forEach(btn => {
+    btn.textContent = '✓ Connected';
+    btn.classList.add('connected');
+  });
+  // Update settings modal if open
+  const settingsSlackBtn = document.querySelector('.integ-row .btn-connect[onclick="connectSlack()"]');
+  if (settingsSlackBtn) { settingsSlackBtn.textContent = '✓ Connected'; settingsSlackBtn.className = 'btn-connect connected'; }
+  // Update Claw permissions panel if open
+  const slackLbl = document.getElementById('claw-slack-label');
+  if (slackLbl) slackLbl.textContent = 'Slack: ' + (window.FS_SLACK?.team || 'connected');
+  const slackStatus = document.getElementById('claw-slack-status');
+  if (slackStatus) slackStatus.style.borderColor = 'rgba(34,197,94,.4)';
+  const slackConnBtn = document.getElementById('claw-slack-connect-btn');
+  if (slackConnBtn) slackConnBtn.style.display = 'none';
+  // Reload claw permission toggles to unlock Slack section
+  if (_clawPermPanelOpen) loadClawPermissions();
+}
+
+function _refreshNotionUI() {
+  document.querySelectorAll('[onclick="connectNotion()"]').forEach(btn => {
+    btn.textContent = '✓ Connected';
+    btn.classList.add('connected');
+  });
+  const notionLbl = document.getElementById('claw-notion-label');
+  if (notionLbl) notionLbl.textContent = 'Notion: ' + (window.FS_NOTION?.workspace || 'connected');
+  const notionStatus = document.getElementById('claw-notion-status');
+  if (notionStatus) notionStatus.style.borderColor = 'rgba(34,197,94,.4)';
+  const notionConnBtn = document.getElementById('claw-notion-connect-btn');
+  if (notionConnBtn) notionConnBtn.style.display = 'none';
+  if (_clawPermPanelOpen) loadClawPermissions();
+}
 
 function signOut() {
   fetch('/api/auth/logout',{method:'POST'}).then(()=>window.location.href='/').catch(()=>window.location.href='/');

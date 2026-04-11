@@ -3491,10 +3491,36 @@ function authSuccessPage(name: string, picture: string): string {
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Signed in — FlowState</title>${AUTH_PAGE_STYLE}${AUTH_REDIRECT_SCRIPT}</head><body><div class="card">${avatar}<h1>Welcome back, ${name}!</h1><p style="color:#10b981;font-size:15px;font-weight:600">You're signed in to FlowState.</p><p>Google Calendar is synced.</p><button class="btn">Back to FlowState ✓</button><div class="sub">This window will close automatically.</div></div></body></html>`
 }
 function notionSuccessPage(workspace: string): string {
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Notion Connected — FlowState</title>${AUTH_PAGE_STYLE}${AUTH_REDIRECT_SCRIPT}</head><body><div class="card"><div style="font-size:56px;margin-bottom:16px">📝</div><h1>Notion Connected!</h1><p>Workspace <strong>${workspace || 'Your workspace'}</strong> is synced. Returning you to FlowState…</p><button class="btn" onclick="window.opener?window.close():window.location.href='/'">Open Board Tab</button><div class="sub">This window will close automatically.</div></div></body></html>`
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Notion Connected — FlowState</title>${AUTH_PAGE_STYLE}
+<script>
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage({ type: 'notion_connected', workspace: ${JSON.stringify(workspace || '')} }, 'https://flowst8.cc');
+    }
+  } catch(e) {}
+  setTimeout(function() {
+    if (window.opener && !window.opener.closed) { window.close(); }
+    else { window.location.href = '/'; }
+  }, 1800);
+</script>
+</head><body><div class="card"><div style="font-size:56px;margin-bottom:16px">📝</div><h1 style="color:#22c55e">Notion Connected!</h1><p>Workspace <strong>${workspace || 'Your workspace'}</strong> is synced. You can close this window.</p><div class="sub">Returning to FlowState…</div></div></body></html>`
 }
 function slackSuccessPage(team: string): string {
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Slack Connected — FlowState</title>${AUTH_PAGE_STYLE}${AUTH_REDIRECT_SCRIPT}</head><body><div class="card"><div style="font-size:56px;margin-bottom:16px">💬</div><h1>Slack Connected!</h1><p>Team <strong>${team || 'Your workspace'}</strong> is synced. Returning you to FlowState…</p><button class="btn" onclick="window.opener?window.close():window.location.href='/'">Return to FlowState</button><div class="sub">This window will close automatically.</div></div></body></html>`
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Slack Connected — FlowState</title>${AUTH_PAGE_STYLE}
+<script>
+  // Notify parent window so it can update FS_SLACK without a full reload
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage({ type: 'slack_connected', team: ${JSON.stringify(team || '')} }, 'https://flowst8.cc');
+    }
+  } catch(e) {}
+  // Auto-close popup after short delay
+  setTimeout(function() {
+    if (window.opener && !window.opener.closed) { window.close(); }
+    else { window.location.href = '/'; }
+  }, 1800);
+</script>
+</head><body><div class="card"><div style="font-size:56px;margin-bottom:16px">💬</div><h1 style="color:#22c55e">Slack Connected!</h1><p>Team <strong>${team || 'Your workspace'}</strong> is synced. You can close this window.</p><div class="sub">Returning to FlowState…</div></div></body></html>`
 }
 function authErrorPage(message: string): string {
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Auth Error</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#0f0f1a;color:#f0f0f0;display:flex;align-items:center;justify-content:center;min-height:100vh}.card{background:#1a1a2e;border:1px solid rgba(239,68,68,.3);border-radius:20px;padding:40px;text-align:center;max-width:380px}h1{font-size:22px;font-weight:800;margin-bottom:8px;color:#ef4444}p{color:#888;font-size:14px;margin-bottom:24px}.btn{display:inline-block;background:#1a1a2e;border:1px solid #ef4444;color:#ef4444;text-decoration:none;padding:12px 28px;border-radius:12px;font-weight:700;font-size:14px}</style></head><body><div class="card"><div style="font-size:48px;margin-bottom:16px">⚠️</div><h1>Auth Error</h1><p>' + message + '</p><a class="btn" href="/">Back to FlowState</a></div></body></html>'
