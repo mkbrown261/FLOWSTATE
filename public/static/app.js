@@ -1730,6 +1730,8 @@ function dropOnCol(e, toCol) {
 
 // ── Notion Kanban ──────────────────────────────────────────────────────────
 function connectNotion() {
+  // If already connected, show status rather than re-authenticating
+  if (window.FS_NOTION) { notify('Notion is already connected — ' + (window.FS_NOTION.workspace || 'workspace'), 'success'); return; }
   const popup = window.open('/api/auth/notion', '_blank', 'width=480,height=600,noopener=no');
   const timer = setInterval(function() {
     if (popup && popup.closed) {
@@ -2885,8 +2887,8 @@ function openSettingsModal() {
       <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">INTEGRATIONS</div>
       <div style="display:flex;flex-direction:column;gap:7px">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><span>📅 Google Calendar</span>${FS_USER ? '<span style="color:var(--green)">✓ Synced · '+escHtml(FS_USER.email||FS_USER.name||'')+'</span>' : '<button class="btn-sm" onclick="window.location.href=\'/api/auth/google\'" style="font-size:11px">Connect Google</button>'}</div>
-        <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><span>📝 Notion</span><button class="btn-sm" onclick="connectNotion()">${FS_NOTION?'Reconnect':'Connect'}</button></div>
-        <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><span>💬 Slack</span><button class="btn-sm" onclick="connectSlack()">${FS_SLACK?'Reconnect':'Connect'}</button></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><span>📝 Notion</span><button class="btn-sm ${FS_NOTION?'connected':''}" onclick="connectNotion()" style="${FS_NOTION?'color:var(--green);border-color:var(--green)':''}"> ${FS_NOTION?'✓ Connected':'Connect'}</button></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><span>💬 Slack</span><button class="btn-sm ${FS_SLACK?'connected':''}" onclick="connectSlack()" style="${FS_SLACK?'color:var(--green);border-color:var(--green)'  :''}"> ${FS_SLACK?'✓ Connected':'Connect'}</button></div>
       </div>
     </div>
     ${isSigned ? '<button class="btn-sm" style="color:var(--danger);border-color:var(--danger);width:100%;margin-top:8px" onclick="signOut()">Sign Out</button>' : ''}`);
@@ -2901,8 +2903,8 @@ function updateFocusDur(m) {
 }
 
 function connectSlack() {
-  // If already connected, don't re-auth — just confirm
-  if (window.FS_SLACK) { notify('Slack is already connected — ' + (window.FS_SLACK.team || 'workspace'), 'success'); return; }
+  // If already connected, open the send modal instead of re-authenticating
+  if (window.FS_SLACK) { openSlackModal(); return; }
   const popup = window.open('/api/auth/slack', '_blank', 'width=480,height=600,noopener=no');
   const timer = setInterval(function() {
     if (popup && popup.closed) {
@@ -2959,6 +2961,8 @@ function _refreshSlackUI() {
   document.querySelectorAll('[onclick="connectSlack()"]').forEach(btn => {
     btn.textContent = '✓ Connected';
     btn.classList.add('connected');
+    btn.style.color = 'var(--green)';
+    btn.style.borderColor = 'var(--green)';
   });
   // Update settings modal if open
   const settingsSlackBtn = document.querySelector('.integ-row .btn-connect[onclick="connectSlack()"]');
@@ -2978,6 +2982,8 @@ function _refreshNotionUI() {
   document.querySelectorAll('[onclick="connectNotion()"]').forEach(btn => {
     btn.textContent = '✓ Connected';
     btn.classList.add('connected');
+    btn.style.color = 'var(--green)';
+    btn.style.borderColor = 'var(--green)';
   });
   const notionLbl = document.getElementById('claw-notion-label');
   if (notionLbl) notionLbl.textContent = 'Notion: ' + (window.FS_NOTION?.workspace || 'connected');
