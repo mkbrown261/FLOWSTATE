@@ -1973,9 +1973,11 @@ app.post('/api/264pro/ai-chat', async (c) => {
 
   const body: any = await c.req.json().catch(() => ({}))
   const messages: Array<{role: string; content: string}> = body.messages || []
-  const projectContext  = body.projectContext  || {}  // live project state from editor
-  const sessionMemory   = body.sessionMemory   || {}  // in-session data (clips edited, tools used, issues)
-  const diagnostics     = body.diagnostics     || []  // real-time detected issues array
+  const projectContext        = body.projectContext        || {}  // live project state from editor
+  const sessionMemory         = body.sessionMemory         || {}  // in-session data (clips edited, tools used, issues)
+  const diagnostics           = body.diagnostics           || []  // real-time detected issues array
+  // connectedIntegrations: client sends ['slack','notion'] based on what's connected
+  // We also check server-side cookies as ground truth
 
   const redisUrl = c.env?.UPSTASH_REDIS_URL
   const redisTok = c.env?.UPSTASH_REDIS_TOKEN
@@ -2074,6 +2076,18 @@ You can suggest specific actions and the user can execute them. When relevant, s
 - **Video Generation**: seedance_t2v (Seedance 2.0), higgsfield_t2v, nano_banana_2k, nano_banana_4k
 - **Workflow pipelines**: e.g. "FINISH TRACK" → balance → master chain → normalize → export
 - **Fix patterns**: for clipping → reduce gain; for masking → EQ carve; for imbalance → rebalance
+- **Slack**: post project updates, milestone announcements, team check-ins to their workspace
+- **Notion**: create tasks, log project notes, update page status from your workflow
+
+## CONNECTED INTEGRATIONS
+${(body.connectedIntegrations || []).length > 0
+  ? `User has connected: ${(body.connectedIntegrations || []).join(', ')}`
+  : 'No integrations connected yet — suggest connecting Slack or Notion if relevant to their workflow'}
+
+## PERMISSION AWARENESS
+Only suggest Slack or Notion actions if the user has those integrations connected (see above).
+When suggesting an external action, be natural — say "I can post that to your team" not "I will call the Slack API".
+Never mention permissions, OAuth, or technical integration details to the user.
 
 ## RESPONSE STYLE
 - Be concise and direct — max 3-4 sentences unless explaining a multi-step process
@@ -2086,9 +2100,15 @@ You can suggest specific actions and the user can execute them. When relevant, s
 ## ACTIONS FORMAT
 When suggesting executable actions, format them as JSON at the END of your response:
 \`\`\`actions
-[{"action": "tool", "tool": "video_denoise", "reason": "reduce noise on clip"}, {"action": "generate_video", "model": "seedance_t2v", "prompt": "suggested prompt"}]
+[
+  {"action": "tool", "tool": "video_denoise", "reason": "reduce noise on clip"},
+  {"action": "generate_video", "model": "seedance_t2v", "prompt": "suggested prompt"},
+  {"action": "slack_post", "channel": "#general", "text": "message text", "reason": "notify team"},
+  {"action": "notion_create_task", "title": "Task name", "status": "To Do", "reason": "log this milestone"}
+]
 \`\`\`
-Only include actions block if you're specifically recommending the user run something.`
+Only include actions block if you're specifically recommending the user run something.
+For Slack/Notion actions, only suggest them if those integrations are connected (check CONNECTED INTEGRATIONS above).`
 
   try {
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -2153,6 +2173,253 @@ Only include actions block if you're specifically recommending the user run some
     return c.json({ reply: 'Network error — please try again.' })
   }
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLAW PERMISSIONS + ACTION EXECUTION ENGINE
+// Security model:
+//   - Layer 1 (read/observe): no permission needed — project state, memory
+//   - Layer 2 (suggest):      no permission needed — Claw proposes, user confirms
+//   - Layer 3 (act):          explicit user grant required per integration
+//   - All Layer 3 actions logged to claw_actions:{email} in Redis
+//   - Credentials NEVER held by Claw — hub performs actions via stored OAuth tokens
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Claw permission types — one per external integration action class
+type ClawPermission =
+  | 'slack_read'          // read channels list
+  | 'slack_post'          // post messages to Slack
+  | 'slack_standup'       // post automated standups
+  | 'notion_read'         // read databases/pages
+  | 'notion_write'        // create/update Notion pages and tasks
+  | 'notion_tasks'        // create tasks automatically
+  | 'calendar_read'       // read calendar events
+  | 'memory_learn'        // allow Claw to update user memory automatically
+  | 'autopilot'           // execute pre-approved actions without confirmation
+
+const PERMISSION_LABELS: Record<ClawPermission, { label: string; desc: string; icon: string; risk: 'low' | 'medium' | 'high' }> = {
+  slack_read:     { label: 'See your Slack channels',     desc: 'Claw can list channels to suggest where to post updates', icon: '💬', risk: 'low'    },
+  slack_post:     { label: 'Post to Slack',               desc: 'Claw can send messages — you confirm before each post',   icon: '💬', risk: 'medium' },
+  slack_standup:  { label: 'Automated standups',          desc: 'Claw posts daily standups to your chosen channel',        icon: '📢', risk: 'medium' },
+  notion_read:    { label: 'Read your Notion workspace',  desc: 'Claw can see your databases and pages',                   icon: '📝', risk: 'low'    },
+  notion_write:   { label: 'Update Notion pages',         desc: 'Claw can edit pages — you confirm before each change',    icon: '📝', risk: 'medium' },
+  notion_tasks:   { label: 'Create Notion tasks',         desc: 'Claw creates tasks automatically from your workflow',     icon: '✅', risk: 'medium' },
+  calendar_read:  { label: 'Read your calendar',          desc: 'Claw can see events to suggest focus blocks',             icon: '📅', risk: 'low'    },
+  memory_learn:   { label: 'Learn your preferences',      desc: 'Claw improves over time by remembering your style',       icon: '🧠', risk: 'low'    },
+  autopilot:      { label: 'Autopilot mode',              desc: 'Claw executes approved actions without asking each time', icon: '⚡', risk: 'high'   },
+}
+
+// GET /api/claw/permissions — load current permission grants for user
+app.get('/api/claw/permissions', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ permissions: {}, labels: PERMISSION_LABELS })
+  const raw = await fetch(`${url}/get/claw_permissions:${encodeURIComponent(session.email)}`, {
+    headers: { Authorization: `Bearer ${tok}` }
+  })
+  const data: any = await raw.json().catch(() => ({}))
+  const permissions = data?.result ? JSON.parse(data.result) : {}
+  return c.json({ permissions, labels: PERMISSION_LABELS })
+})
+
+// POST /api/claw/permissions — save permission grants
+app.post('/api/claw/permissions', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const body: any = await c.req.json().catch(() => ({}))
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ ok: false, error: 'Redis not configured' })
+
+  // Merge with existing — never silently remove grants (must be explicit revoke)
+  const existing = await fetch(`${url}/get/claw_permissions:${encodeURIComponent(session.email)}`, {
+    headers: { Authorization: `Bearer ${tok}` }
+  }).then(r => r.json()).then((d: any) => d?.result ? JSON.parse(d.result) : {}).catch(() => ({}))
+
+  const updated = { ...existing, ...body.permissions, updatedAt: new Date().toISOString() }
+  await redisPipeline(url, tok, [
+    ['SET',    `claw_permissions:${session.email}`, JSON.stringify(updated)],
+    ['EXPIRE', `claw_permissions:${session.email}`, 365 * 86400],
+  ])
+  return c.json({ ok: true, permissions: updated })
+})
+
+// POST /api/claw/execute-action — execute a Claw-suggested action with permission gate
+app.post('/api/claw/execute-action', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+
+  const body: any = await c.req.json().catch(() => ({}))
+  const { action, params = {}, confirmed = false } = body
+  // action types: 'slack_post' | 'notion_create_task' | 'notion_update_page' | 'slack_standup'
+
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+
+  // ── Load permissions ───────────────────────────────────────────────────────
+  const permsRaw = url && tok
+    ? await fetch(`${url}/get/claw_permissions:${encodeURIComponent(session.email)}`, {
+        headers: { Authorization: `Bearer ${tok}` }
+      }).then(r => r.json()).then((d: any) => d?.result ? JSON.parse(d.result) : {}).catch(() => ({}))
+    : {}
+
+  // ── Permission → action mapping ────────────────────────────────────────────
+  const REQUIRED_PERMISSION: Record<string, ClawPermission> = {
+    slack_post:          'slack_post',
+    slack_standup:       'slack_standup',
+    notion_create_task:  'notion_tasks',
+    notion_update_page:  'notion_write',
+  }
+
+  const requiredPerm = REQUIRED_PERMISSION[action]
+
+  // ── Actions that need confirmation unless autopilot is on ──────────────────
+  const NEEDS_CONFIRM = ['slack_post', 'slack_standup', 'notion_create_task', 'notion_update_page']
+  const needsConfirm = NEEDS_CONFIRM.includes(action) && !permsRaw['autopilot'] && !confirmed
+
+  if (needsConfirm) {
+    // Return a confirmation request — frontend will show confirm card
+    return c.json({
+      ok: false,
+      needsConfirmation: true,
+      action,
+      params,
+      message: buildConfirmMessage(action, params),
+    })
+  }
+
+  // ── Check permission grant ─────────────────────────────────────────────────
+  if (requiredPerm && !permsRaw[requiredPerm]) {
+    // Check if integration itself is even connected
+    const slackSes  = decodeSession(getCookie(c, 'fs_slack')  || '')
+    const notionSes = decodeSession(getCookie(c, 'fs_notion') || '')
+    const needsConnect = (action.startsWith('slack') && !slackSes) ||
+                         (action.startsWith('notion') && !notionSes)
+
+    return c.json({
+      ok: false,
+      needsPermission: true,
+      needsConnect,
+      permission: requiredPerm,
+      label: PERMISSION_LABELS[requiredPerm]?.label,
+      connectUrl: action.startsWith('slack') ? '/api/auth/slack' : '/api/auth/notion',
+    })
+  }
+
+  // ── Execute action ─────────────────────────────────────────────────────────
+  let result: any = { ok: false, error: 'Unknown action' }
+
+  try {
+    if (action === 'slack_post' || action === 'slack_standup') {
+      const slackSes = decodeSession(getCookie(c, 'fs_slack') || '')
+      if (!slackSes?.access_token) {
+        return c.json({ ok: false, needsConnect: true, connectUrl: '/api/auth/slack' })
+      }
+      const channel = params.channel || slackSes.default_channel || '#general'
+      const text    = params.text || params.message || ''
+      const res: any = await fetch('https://slack.com/api/chat.postMessage', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${slackSes.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel, text }),
+      }).then(r => r.json())
+      result = res.ok ? { ok: true, ts: res.ts, channel: res.channel } : { ok: false, error: res.error }
+    }
+
+    else if (action === 'notion_create_task') {
+      const notionSes = decodeSession(getCookie(c, 'fs_notion') || '')
+      if (!notionSes?.access_token) {
+        return c.json({ ok: false, needsConnect: true, connectUrl: '/api/auth/notion' })
+      }
+      const { databaseId, title, status = 'To Do', priority = 'Medium' } = params
+      if (!databaseId || !title) return c.json({ ok: false, error: 'databaseId and title required' })
+      const res: any = await fetch('https://api.notion.com/v1/pages', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${notionSes.access_token}`,
+          'Content-Type': 'application/json',
+          'Notion-Version': '2022-06-28',
+        },
+        body: JSON.stringify({
+          parent: { database_id: databaseId },
+          properties: {
+            Name:     { title: [{ text: { content: title } }] },
+            Status:   { select: { name: status } },
+            Priority: { select: { name: priority } },
+          },
+        }),
+      }).then(r => r.json())
+      result = res.id ? { ok: true, pageId: res.id, url: res.url } : { ok: false, error: res.message }
+    }
+
+    else if (action === 'notion_update_page') {
+      const notionSes = decodeSession(getCookie(c, 'fs_notion') || '')
+      if (!notionSes?.access_token) {
+        return c.json({ ok: false, needsConnect: true, connectUrl: '/api/auth/notion' })
+      }
+      const { pageId, properties } = params
+      if (!pageId) return c.json({ ok: false, error: 'pageId required' })
+      const res: any = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${notionSes.access_token}`,
+          'Content-Type': 'application/json',
+          'Notion-Version': '2022-06-28',
+        },
+        body: JSON.stringify({ properties }),
+      }).then(r => r.json())
+      result = res.id ? { ok: true, pageId: res.id } : { ok: false, error: res.message }
+    }
+  } catch (e: any) {
+    result = { ok: false, error: e.message }
+  }
+
+  // ── Log every action attempt ───────────────────────────────────────────────
+  if (url && tok) {
+    const logEntry = JSON.stringify({
+      action,
+      params: { ...params, text: params.text?.slice(0, 100) }, // truncate long text
+      result: result.ok ? 'success' : result.error,
+      ts: new Date().toISOString(),
+    })
+    redisPipeline(url, tok, [
+      ['LPUSH', `claw_actions:${session.email}`, logEntry],
+      ['LTRIM', `claw_actions:${session.email}`, 0, 199], // keep last 200
+      ['EXPIRE', `claw_actions:${session.email}`, 90 * 86400],
+    ]).catch(() => {})
+  }
+
+  return c.json(result)
+})
+
+// GET /api/claw/action-log — return recent Claw actions for transparency
+app.get('/api/claw/action-log', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ actions: [] }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ actions: [] })
+  const results = await redisPipeline(url, tok, [
+    ['LRANGE', `claw_actions:${session.email}`, 0, 19],
+  ])
+  const actions = (results[0] as string[] || []).map((s: string) => {
+    try { return JSON.parse(s) } catch { return null }
+  }).filter(Boolean)
+  return c.json({ actions })
+})
+
+function buildConfirmMessage(action: string, params: any): string {
+  if (action === 'slack_post' || action === 'slack_standup') {
+    return `Post to ${params.channel || 'Slack'}: "${(params.text || params.message || '').slice(0, 120)}"`
+  }
+  if (action === 'notion_create_task') {
+    return `Create Notion task: "${params.title || 'Untitled'}" in your workspace`
+  }
+  if (action === 'notion_update_page') {
+    return `Update Notion page with new status/properties`
+  }
+  return `Execute: ${action}`
+}
 
 // POST /api/264pro/memory-save — save learned preferences from AI session
 app.post('/api/264pro/memory-save', async (c) => {
