@@ -2091,7 +2091,7 @@ function openSprintConfigModal() {
 function exportSprintReport() { notify('Sprint report exported (PDF coming soon)','info'); }
 function addMyStandup() { notify('Standup form opening soon','info'); }
 function shareStandupSlack() {
-  if (!FS_SLACK) { notify('Connect Slack in Settings first','info'); return; }
+  if (!FS_SLACK) { openSlackModal(); return; }
   notify('Standup shared to Slack!','success');
 }
 function addDeadline() {
@@ -2106,21 +2106,39 @@ function addDeadline() {
 
 // ── Slack Modal ─────────────────────────────────────────────────────────────
 function openSlackModal() {
-  if (!FS_SLACK) { notify('Connect Slack first (Settings → Integrations)','info'); return; }
+  // Show loading state immediately
+  openModal(`<h2>💬 Send Slack Message</h2><div style="padding:20px;text-align:center;color:var(--text-m)">Loading channels…</div>`);
+
   fetch('/api/slack/channels').then(r=>r.json()).then(d=>{
+    if (d.error === 'not_connected' || d.channels?.length === 0 && d.error) {
+      // Not connected — show connect prompt inside modal
+      openModal(`<h2>💬 Slack</h2>
+        <div style="text-align:center;padding:20px 10px">
+          <div style="font-size:40px;margin-bottom:12px">💬</div>
+          <p style="color:var(--text-m);font-size:14px;margin-bottom:18px">Connect Slack to post messages and standups directly from FlowState.</p>
+          <button class="btn-primary" style="width:100%" onclick="closeModal();connectSlack()">Connect Slack</button>
+        </div>`);
+      return;
+    }
     const channels = d.channels || [];
+    if (!channels.length) {
+      openModal(`<h2>💬 Slack</h2><div style="padding:20px;text-align:center;color:var(--text-m)">No channels found — make sure the bot has been added to at least one channel.</div>`);
+      return;
+    }
     openModal(`<h2>💬 Send Slack Message</h2>
       <div style="margin-top:14px">
         <label style="font-size:12px;color:var(--text-m)">Channel</label>
         <select class="fs-sel" id="sl-chan" style="width:100%;margin:6px 0 12px">${channels.map(c=>`<option value="${c.id}">#${c.name}</option>`).join('')}</select>
         <label style="font-size:12px;color:var(--text-m)">Message</label>
-        <textarea class="chat-in" id="sl-msg" style="width:100%;height:80px;margin-top:6px" placeholder="Type your message..."></textarea>
+        <textarea class="chat-in" id="sl-msg" style="width:100%;height:80px;margin-top:6px" placeholder="Type your message…"></textarea>
         <div style="margin-top:10px;display:flex;gap:8px">
           <button class="btn-primary" onclick="sendTestSlack()" style="flex:1">Send</button>
           <button class="btn-sm" onclick="closeModal()">Cancel</button>
         </div>
       </div>`);
-  }).catch(()=>notify('Could not load channels','error'));
+  }).catch(()=>{
+    openModal(`<h2>💬 Slack</h2><div style="padding:20px;text-align:center;color:#ef4444">Could not connect to Slack — check your connection and try again.</div>`);
+  });
 }
 
 function sendTestSlack() {
