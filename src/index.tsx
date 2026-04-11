@@ -3623,7 +3623,11 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0f0f1a;color:#f0
     </button>
   </div>
   <div class="magic-sent" id="magic-sent">
-    ✅ &nbsp;Check your inbox — we sent a sign-in link!
+    <div style="font-size:22px;margin-bottom:6px">✅</div>
+    <div style="font-size:15px;font-weight:700;margin-bottom:4px">Check your inbox</div>
+    <div id="magic-sent-email" style="font-size:13px;opacity:.85;margin-bottom:8px"></div>
+    <div style="font-size:12px;opacity:.65;line-height:1.5">The link expires in 15 minutes.<br>Don't see it? Check your spam or junk folder.</div>
+    <button onclick="document.getElementById('magic-sent').style.display='none';document.getElementById('magic-form').style.display='flex';document.getElementById('magic-email').focus()" style="margin-top:12px;background:none;border:1px solid rgba(16,185,129,.4);color:#10b981;border-radius:8px;padding:6px 16px;font-size:12px;cursor:pointer">Use a different email</button>
   </div>
 
   <div class="features">
@@ -3650,9 +3654,12 @@ async function sendMagicLink() {
       body: JSON.stringify({ email, app: ${JSON.stringify(appParam)}, state: ${JSON.stringify(appState)}, redirect: ${JSON.stringify(appRedirect)} })
     })
     const data = await res.json()
-    if (data.ok || data.sent) {
+    if (data.success || data.user) {
+      document.getElementById('magic-sent-email').textContent = 'We sent a link to ' + email
       document.getElementById('magic-form').style.display = 'none'
       document.getElementById('magic-sent').style.display = 'block'
+      // Auto-sign-in path (dev/no-Resend fallback) — user object means session is already set
+      if (data.user) { setTimeout(function(){ window.location.href = '/' }, 800) }
     } else {
       btn.disabled = false
       btn.innerHTML = '✉️ &nbsp;Send sign-in link'
