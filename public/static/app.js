@@ -4210,3 +4210,578 @@ async function saveClawOnboardingPerms() {
   `;
   document.head.appendChild(s);
 })();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── CLAW VIDEO PRODUCTION WIZARD ──────────────────────────────────────────
+// Entry points: openClawVideoWizard() from anywhere in the ecosystem.
+// Supports: audio context (from FS Audio export), manual prompt, 264 Pro hand-off.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Wizard state
+let _cvw = {
+  step: 0,           // 0=intent, 1=concept, 2=shotlist, 3=upload, 4=generate, 5=done
+  style: 'cinematic',
+  prompt: '',
+  audioContext: null, // { trackName, bpm, key, genre, duration }
+  concept: null,
+  shots: [],
+  imageUrls: [],     // user-uploaded reference URLs
+  selectedModel: 'seedance_t2v',
+  jobId: null,
+  provider: null,
+  pollTimer: null,
+  fromAudio: false,
+};
+
+const CVW_STYLES = [
+  { id: 'cinematic',    icon: '🎬', label: 'Cinematic',    desc: 'Epic wide shots, dramatic lighting' },
+  { id: 'music_video',  icon: '🎵', label: 'Music Video',  desc: 'High energy, beat-synced cuts' },
+  { id: 'documentary',  icon: '📽', label: 'Documentary',  desc: 'Authentic, natural moments' },
+  { id: 'short_film',   icon: '🎞', label: 'Short Film',   desc: 'Narrative arc, story-driven' },
+  { id: 'social',       icon: '📱', label: 'Social / Reels', desc: 'Vertical, fast, scroll-stopping' },
+];
+
+const CVW_MODELS = [
+  { id: 'seedance_t2v',   label: 'Seedance 2.0',  badge: 'Best',   desc: 'ByteDance flagship — multi-shot, 15s, audio sync' },
+  { id: 'wan_t2v',        label: 'Wan 2.6',        badge: 'Fast',   desc: 'Alibaba — 1080p, great motion fidelity' },
+  { id: 'higgsfield_t2v', label: 'Higgsfield',     badge: 'Cinematic', desc: 'Cinematic film quality, dramatic composition' },
+];
+
+/**
+ * Main entry point — call from anywhere.
+ * @param {object} opts  Optional { prompt, audioContext, fromAudio }
+ */
+function openClawVideoWizard(opts) {
+  opts = opts || {};
+  // Reset state
+  _cvw = {
+    step: 0,
+    style: 'cinematic',
+    prompt: opts.prompt || '',
+    audioContext: opts.audioContext || null,
+    concept: null,
+    shots: [],
+    imageUrls: [],
+    selectedModel: 'seedance_t2v',
+    jobId: null,
+    provider: null,
+    pollTimer: null,
+    fromAudio: !!opts.audioContext,
+  };
+  if (_cvw.pollTimer) clearInterval(_cvw.pollTimer);
+  _cvwRender();
+}
+
+function _cvwRender() {
+  // Build the modal content for the current step
+  let content = '';
+  const steps = ['Idea', 'Concept', 'Shot List', 'References', 'Generate', 'Done'];
+  const stepDots = steps.map((s, i) => {
+    const active = i === _cvw.step;
+    const done   = i < _cvw.step;
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:3px;flex:1">
+      <div style="width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;
+        background:${done ? 'linear-gradient(135deg,#a855f7,#06b6d4)' : active ? 'rgba(168,85,247,.25)' : 'var(--border)'};
+        border:2px solid ${active ? '#a855f7' : done ? 'transparent' : 'var(--border)'};
+        color:${active||done ? '#fff' : 'var(--text-s)'}">
+        ${done ? '✓' : i + 1}
+      </div>
+      <span style="font-size:9px;color:${active ? '#a855f7' : 'var(--text-s)'};font-weight:${active?700:400}">${s}</span>
+    </div>`;
+  }).join('<div style="height:2px;background:var(--border);flex:1;margin-top:13px;align-self:flex-start"></div>');
+
+  const header = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+      <span style="font-size:22px">🎬</span>
+      <div>
+        <div style="font-size:16px;font-weight:800;background:linear-gradient(135deg,#a855f7,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent">CLAW Video</div>
+        <div style="font-size:11px;color:var(--text-s)">Production Director AI</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:flex-start;gap:0;margin-bottom:22px">${stepDots}</div>`;
+
+  if (_cvw.step === 0) content = _cvwStepIntent(header);
+  else if (_cvw.step === 1) content = _cvwStepGenerating(header);
+  else if (_cvw.step === 2) content = _cvwStepShotList(header);
+  else if (_cvw.step === 3) content = _cvwStepUpload(header);
+  else if (_cvw.step === 4) content = _cvwStepGenerate(header);
+  else if (_cvw.step === 5) content = _cvwStepDone(header);
+
+  openModal(content, true);
+}
+
+// ── Step 0: Intent capture ─────────────────────────────────────────────────
+function _cvwStepIntent(header) {
+  const audioHint = _cvw.audioContext
+    ? `<div style="background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.3);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#c084fc">
+        🎵 Audio project detected: <strong>${_cvw.audioContext.trackName || 'Untitled'}</strong>${_cvw.audioContext.bpm ? ` · ${_cvw.audioContext.bpm} BPM` : ''}${_cvw.audioContext.genre ? ` · ${_cvw.audioContext.genre}` : ''}
+        <br><span style="color:var(--text-s);font-size:11px;margin-top:3px;display:block">CLAW will align visuals to your track's mood and tempo</span>
+      </div>`
+    : '';
+
+  const styleChips = CVW_STYLES.map(s =>
+    `<button onclick="_cvwSelectStyle('${s.id}')" style="
+      display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 8px;
+      border-radius:10px;border:2px solid ${_cvw.style===s.id ? '#a855f7' : 'var(--border)'};
+      background:${_cvw.style===s.id ? 'rgba(168,85,247,.12)' : 'var(--surface)'};
+      cursor:pointer;flex:1;min-width:0;transition:.15s">
+      <span style="font-size:18px">${s.icon}</span>
+      <span style="font-size:11px;font-weight:700;color:${_cvw.style===s.id ? '#a855f7' : 'var(--text)'}">${s.label}</span>
+      <span style="font-size:9px;color:var(--text-s);text-align:center;line-height:1.3">${s.desc}</span>
+    </button>`
+  ).join('');
+
+  return `${header}
+    ${audioHint}
+    <div style="margin-bottom:14px">
+      <label style="font-size:12px;font-weight:700;color:var(--text-m);display:block;margin-bottom:6px">What's your video about?</label>
+      <textarea id="cvw-prompt" class="chat-in" style="width:100%;height:70px;resize:none;font-size:13px"
+        placeholder="Describe your vision — or leave blank and CLAW will create one from your audio context…"
+        oninput="_cvw.prompt=this.value">${_cvw.prompt}</textarea>
+    </div>
+    <div style="margin-bottom:18px">
+      <label style="font-size:12px;font-weight:700;color:var(--text-m);display:block;margin-bottom:8px">Visual Style</label>
+      <div style="display:flex;gap:6px">${styleChips}</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn-primary" style="flex:1;background:linear-gradient(135deg,#a855f7,#06b6d4)" onclick="_cvwGenerateConcept()">
+        ✨ Generate Concept
+      </button>
+      <button class="btn-sm" onclick="closeModal()">Cancel</button>
+    </div>
+    <div style="margin-top:10px;font-size:11px;color:var(--text-s);text-align:center">Free · No generation credits used until Step 5</div>`;
+}
+
+function _cvwSelectStyle(styleId) {
+  _cvw.style = styleId;
+  _cvwRender();
+}
+
+// ── Step 1: Generating concept (loading state) ─────────────────────────────
+function _cvwStepGenerating(header) {
+  return `${header}
+    <div style="text-align:center;padding:30px 0">
+      <div style="font-size:36px;margin-bottom:12px">🧠</div>
+      <div style="font-size:15px;font-weight:700;margin-bottom:6px">CLAW is building your concept…</div>
+      <div style="font-size:12px;color:var(--text-s);margin-bottom:20px">Generating theme, visual style, and ${_cvw.audioContext ? 'audio-synced ' : ''}shot list</div>
+      <div style="width:100%;height:4px;background:var(--border);border-radius:4px;overflow:hidden">
+        <div id="cvw-gen-bar" style="height:100%;width:15%;background:linear-gradient(90deg,#a855f7,#06b6d4);border-radius:4px;transition:width 0.4s"></div>
+      </div>
+    </div>`;
+}
+
+// ── Step 2: Shot list review ───────────────────────────────────────────────
+function _cvwStepShotList(header) {
+  const c = _cvw.concept;
+  const conceptBlock = c ? `
+    <div style="background:rgba(6,182,212,.08);border:1px solid rgba(6,182,212,.25);border-radius:10px;padding:12px 14px;margin-bottom:16px">
+      <div style="font-size:12px;font-weight:700;color:#06b6d4;margin-bottom:8px">✦ CLAW Concept</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;font-size:12px">
+        <div><span style="color:var(--text-s)">Theme</span><br><strong>${c.theme || '—'}</strong></div>
+        <div><span style="color:var(--text-s)">Mood</span><br><strong>${c.mood || '—'}</strong></div>
+        <div style="grid-column:span 2"><span style="color:var(--text-s)">Visual Style</span><br><strong>${c.visualStyle || '—'}</strong></div>
+        <div style="grid-column:span 2"><span style="color:var(--text-s)">Color Palette</span><br><strong>${c.colorPalette || '—'}</strong></div>
+      </div>
+    </div>` : '';
+
+  const shotItems = _cvw.shots.map((shot, i) =>
+    `<div id="cvw-shot-${i}" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
+        <div style="width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#06b6d4);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#fff;flex-shrink:0">${shot.id || i+1}</div>
+        <div style="flex:1">
+          <div style="font-size:12px;font-weight:700;margin-bottom:3px">${shot.scene || 'Scene description'}</div>
+          <div style="font-size:11px;color:var(--text-s)">${shot.camera || ''} · ${shot.duration || 4}s</div>
+        </div>
+        <span style="font-size:10px;color:var(--text-s);white-space:nowrap">${(shot.tags||[]).slice(0,2).join(', ')}</span>
+      </div>
+      <div style="font-size:11px;color:var(--text-m)">${shot.subject || ''}</div>
+    </div>`
+  ).join('');
+
+  return `${header}
+    ${conceptBlock}
+    <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">📋 Shot List (${_cvw.shots.length} shots)</div>
+    <div style="max-height:280px;overflow-y:auto;padding-right:4px">${shotItems || '<div style="color:var(--text-s);font-size:12px;padding:20px;text-align:center">No shots generated</div>'}</div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn-primary" style="flex:1;background:linear-gradient(135deg,#a855f7,#06b6d4)" onclick="_cvwStep(3)">
+        Looks good →
+      </button>
+      <button class="btn-sm" onclick="_cvwStep(0)">← Redo</button>
+    </div>`;
+}
+
+// ── Step 3: Reference image upload ────────────────────────────────────────
+function _cvwStepUpload(header) {
+  const uploadedPreviews = _cvw.imageUrls.length
+    ? _cvw.imageUrls.map((u, i) =>
+        `<div style="position:relative;display:inline-block">
+          <img src="${u}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;border:2px solid rgba(168,85,247,.4)">
+          <button onclick="_cvwRemoveImage(${i})" style="position:absolute;top:-4px;right:-4px;width:18px;height:18px;border-radius:50%;background:#ef4444;border:none;color:#fff;font-size:10px;cursor:pointer;line-height:1">✕</button>
+        </div>`
+      ).join('')
+    : '';
+
+  return `${header}
+    <div style="text-align:center;margin-bottom:18px">
+      <div style="font-size:13px;font-weight:700;margin-bottom:4px">Add Reference Images <span style="color:var(--text-s);font-weight:400">(optional)</span></div>
+      <div style="font-size:12px;color:var(--text-s)">Upload photos of yourself, locations, or visual references — CLAW will incorporate them into the generation</div>
+    </div>
+    <div id="cvw-dropzone" style="border:2px dashed rgba(168,85,247,.4);border-radius:12px;padding:28px;text-align:center;cursor:pointer;margin-bottom:14px;transition:.2s"
+      onclick="document.getElementById('cvw-file-in').click()"
+      ondragover="event.preventDefault();this.style.borderColor='#a855f7'"
+      ondragleave="this.style.borderColor='rgba(168,85,247,.4)'"
+      ondrop="_cvwHandleDrop(event)">
+      <div style="font-size:28px;margin-bottom:6px">📸</div>
+      <div style="font-size:13px;font-weight:600;color:var(--text-m)">Drop images here or click to browse</div>
+      <div style="font-size:11px;color:var(--text-s);margin-top:4px">JPG, PNG, WebP · Max 5MB each</div>
+    </div>
+    <input type="file" id="cvw-file-in" accept="image/*" multiple style="display:none" onchange="_cvwHandleFiles(this.files)">
+    ${_cvw.imageUrls.length ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${uploadedPreviews}</div>` : ''}
+    <div style="display:flex;gap:8px">
+      <button class="btn-primary" style="flex:1;background:linear-gradient(135deg,#a855f7,#06b6d4)" onclick="_cvwStep(4)">
+        ${_cvw.imageUrls.length ? `Use ${_cvw.imageUrls.length} image${_cvw.imageUrls.length>1?'s':''} →` : 'Skip — text only →'}
+      </button>
+      <button class="btn-sm" onclick="_cvwStep(2)">← Back</button>
+    </div>`;
+}
+
+function _cvwRemoveImage(i) {
+  _cvw.imageUrls.splice(i, 1);
+  _cvwRender();
+}
+
+function _cvwHandleDrop(e) {
+  e.preventDefault();
+  document.getElementById('cvw-dropzone').style.borderColor = 'rgba(168,85,247,.4)';
+  _cvwHandleFiles(e.dataTransfer.files);
+}
+
+function _cvwHandleFiles(files) {
+  if (!files || !files.length) return;
+  Array.from(files).forEach(file => {
+    if (!file.type.startsWith('image/')) return;
+    if (file.size > 5 * 1024 * 1024) { notify('Image too large (max 5MB)', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = e => {
+      _cvw.imageUrls.push(e.target.result);
+      _cvwRender();
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// ── Step 4: Model select + generate ───────────────────────────────────────
+function _cvwStepGenerate(header) {
+  const isPro = ['personal_pro','team_starter','team_growth','enterprise','clawflow'].includes(FS_USER?.tier || 'free');
+
+  const modelCards = CVW_MODELS.map(m =>
+    `<div onclick="${isPro ? `_cvwSelectModel('${m.id}')` : 'openPricingModal()'}" style="
+      padding:10px 12px;border-radius:10px;cursor:pointer;
+      border:2px solid ${_cvw.selectedModel===m.id ? '#a855f7' : 'var(--border)'};
+      background:${_cvw.selectedModel===m.id ? 'rgba(168,85,247,.1)' : 'var(--surface)'};
+      transition:.15s;opacity:${isPro?1:0.6}">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:13px;font-weight:700;color:${_cvw.selectedModel===m.id?'#a855f7':'var(--text)'}">${m.label}</span>
+        <span style="font-size:9px;padding:2px 7px;border-radius:20px;background:rgba(168,85,247,.15);color:#a855f7;font-weight:700">${m.badge}</span>
+        ${!isPro ? '<span style="font-size:9px;padding:2px 7px;border-radius:20px;background:rgba(245,158,11,.15);color:#f59e0b;font-weight:700">Pro</span>' : ''}
+      </div>
+      <div style="font-size:11px;color:var(--text-s);margin-top:3px">${m.desc}</div>
+    </div>`
+  ).join('');
+
+  const summaryShots = _cvw.shots.slice(0, 3).map((s, i) =>
+    `<div style="font-size:11px;color:var(--text-s);padding:4px 0;border-bottom:1px solid var(--border)">
+      <strong style="color:var(--text)">Shot ${i+1}:</strong> ${(s.scene||'').slice(0,65)}${(s.scene||'').length>65?'…':''}
+    </div>`
+  ).join('');
+
+  return `${header}
+    <div style="display:flex;gap:14px;margin-bottom:16px">
+      <div style="flex:1">
+        <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">AI Model</div>
+        <div style="display:flex;flex-direction:column;gap:6px">${modelCards}</div>
+        ${!isPro ? `<div style="margin-top:10px;font-size:11px;color:#f59e0b;text-align:center">
+          <a onclick="openPricingModal();return false" href="#" style="color:#f59e0b">Upgrade to Pro</a> to generate videos
+        </div>` : ''}
+      </div>
+      <div style="flex:1">
+        <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">Summary</div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px">
+          <div style="font-size:11px;color:var(--text-s);margin-bottom:6px">Style: <strong style="color:var(--text)">${_cvw.style}</strong></div>
+          <div style="font-size:11px;color:var(--text-s);margin-bottom:8px">Shots: <strong style="color:var(--text)">${_cvw.shots.length}</strong>${_cvw.imageUrls.length ? ` · <strong style="color:var(--text)">${_cvw.imageUrls.length} ref image${_cvw.imageUrls.length>1?'s':''}</strong>` : ''}</div>
+          ${summaryShots}
+          ${_cvw.shots.length > 3 ? `<div style="font-size:10px;color:var(--text-s);margin-top:4px">+${_cvw.shots.length-3} more shots</div>` : ''}
+        </div>
+      </div>
+    </div>
+    <div id="cvw-gen-status" style="display:none;background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:12px;margin-bottom:12px;text-align:center">
+      <div id="cvw-gen-msg" style="font-size:13px;color:#c084fc;margin-bottom:8px">Sending to ${_cvw.selectedModel}…</div>
+      <div style="width:100%;height:4px;background:var(--border);border-radius:4px;overflow:hidden">
+        <div id="cvw-gen-prog" style="height:100%;width:8%;background:linear-gradient(90deg,#a855f7,#06b6d4);border-radius:4px;transition:width 1s"></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button id="cvw-gen-btn" class="btn-primary" style="flex:1;background:${isPro?'linear-gradient(135deg,#a855f7,#06b6d4)':'var(--surface)'};${!isPro?'color:var(--text-s);cursor:not-allowed':''}" onclick="${isPro ? '_cvwStartGeneration()' : 'openPricingModal()'}">
+        ${isPro ? '🎬 Generate Video' : '🔒 Pro Required'}
+      </button>
+      <button class="btn-sm" onclick="_cvwStep(3)">← Back</button>
+    </div>`;
+}
+
+function _cvwSelectModel(id) {
+  _cvw.selectedModel = id;
+  _cvwRender();
+}
+
+// ── Step 5: Done / result ──────────────────────────────────────────────────
+function _cvwStepDone(header) {
+  const videoUrl = _cvw.videoUrl;
+  return `${header}
+    <div style="text-align:center;padding:10px 0 20px">
+      ${videoUrl
+        ? `<video src="${videoUrl}" controls style="width:100%;border-radius:12px;margin-bottom:14px;max-height:260px"></video>
+           <div style="font-size:14px;font-weight:700;color:var(--green);margin-bottom:8px">✅ Your video is ready!</div>
+           <div style="display:flex;gap:8px;justify-content:center">
+             <a href="${videoUrl}" download="claw-video.mp4" class="btn-primary" style="background:linear-gradient(135deg,#a855f7,#06b6d4);text-decoration:none;padding:8px 20px;border-radius:8px;font-size:13px;color:#fff;font-weight:700">⬇ Download</a>
+             <button class="btn-sm" onclick="openClawVideoWizard()">+ New Video</button>
+           </div>`
+        : `<div style="font-size:36px;margin-bottom:12px">⏳</div>
+           <div style="font-size:14px;font-weight:700;margin-bottom:6px">Video is rendering</div>
+           <div style="font-size:12px;color:var(--text-s);margin-bottom:16px">This usually takes 1–4 minutes. You'll see the result here when it's ready.</div>
+           <div id="cvw-done-status" style="font-size:12px;color:#a855f7;margin-bottom:14px">Checking status…</div>
+           <div style="width:100%;height:4px;background:var(--border);border-radius:4px;overflow:hidden;margin-bottom:16px">
+             <div id="cvw-done-prog" style="height:100%;width:20%;background:linear-gradient(90deg,#a855f7,#06b6d4);border-radius:4px;transition:width 2s"></div>
+           </div>
+           <button class="btn-sm" onclick="closeModal();notify('Video is rendering in background — check Clawbot tab for updates','info')">Dismiss & continue</button>`
+      }
+    </div>`;
+}
+
+// ── Core flow functions ────────────────────────────────────────────────────
+
+function _cvwStep(n) {
+  _cvw.step = n;
+  _cvwRender();
+}
+
+async function _cvwGenerateConcept() {
+  // Capture latest prompt value
+  const el = document.getElementById('cvw-prompt');
+  if (el) _cvw.prompt = el.value.trim();
+
+  _cvw.step = 1;
+  _cvwRender();
+
+  // Animate progress bar while waiting
+  let pct = 15;
+  const barTimer = setInterval(() => {
+    pct = Math.min(pct + 7, 88);
+    const bar = document.getElementById('cvw-gen-bar');
+    if (bar) bar.style.width = pct + '%';
+  }, 400);
+
+  try {
+    const r = await fetch('/api/claw/video-concept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: _cvw.prompt || (_cvw.audioContext?.trackName || ''),
+        style: _cvw.style,
+        audioContext: _cvw.audioContext,
+        numShots: 6,
+      }),
+    });
+    const d = await r.json();
+    clearInterval(barTimer);
+
+    if (d.error) {
+      notify('CLAW concept error: ' + d.error, 'error');
+      _cvw.step = 0;
+      _cvwRender();
+      return;
+    }
+
+    _cvw.concept = d.concept || {};
+    _cvw.shots   = Array.isArray(d.shots) ? d.shots : [];
+    _cvw.step    = 2;
+    _cvwRender();
+  } catch(e) {
+    clearInterval(barTimer);
+    notify('Network error generating concept — please try again', 'error');
+    _cvw.step = 0;
+    _cvwRender();
+  }
+}
+
+async function _cvwStartGeneration() {
+  const btn    = document.getElementById('cvw-gen-btn');
+  const status = document.getElementById('cvw-gen-status');
+  const msg    = document.getElementById('cvw-gen-msg');
+  const prog   = document.getElementById('cvw-gen-prog');
+  if (btn)    { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>&nbsp; Sending…'; }
+  if (status) status.style.display = 'block';
+
+  // Build a unified prompt from all shots
+  const shotPrompts = _cvw.shots.map((s, i) =>
+    `Shot ${i+1}: ${s.scene}. ${s.camera}. ${s.subject}. Tags: ${(s.tags||[]).join(', ')}.`
+  ).join('\n');
+  const fullPrompt = _cvw.concept
+    ? `${_cvw.concept.theme}. Visual style: ${_cvw.concept.visualStyle}. Mood: ${_cvw.concept.mood}.\n\n${shotPrompts}`
+    : shotPrompts || _cvw.prompt;
+
+  const isI2V = _cvw.imageUrls.length > 0;
+  const model = isI2V
+    ? _cvw.selectedModel.replace('_t2v', '_i2v')  // switch to image-to-video variant
+    : _cvw.selectedModel;
+
+  const body = {
+    model,
+    prompt: fullPrompt,
+    duration: 10,
+    resolution: '720p',
+    aspectRatio: '16:9',
+    quality: 'high',
+    ...(isI2V ? { imageUrl: _cvw.imageUrls[0] } : {}),
+  };
+
+  if (msg) msg.textContent = `Sending to ${model}…`;
+  if (prog) prog.style.width = '12%';
+
+  try {
+    const r = await fetch('/api/264pro/video-gen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+
+    if (d.error) {
+      // May need Pro upgrade
+      if (d.upgradeUrl || d.error?.includes('Pro')) {
+        if (status) status.style.display = 'none';
+        if (btn)    { btn.disabled = false; btn.innerHTML = '🎬 Generate Video'; }
+        openPricingModal();
+        return;
+      }
+      notify('Generation error: ' + d.error, 'error');
+      if (status) status.style.display = 'none';
+      if (btn) { btn.disabled = false; btn.innerHTML = '🎬 Generate Video'; }
+      return;
+    }
+
+    // Queued — start polling
+    _cvw.jobId    = d.requestId || d.jobId;
+    _cvw.provider = d.provider || 'fal';
+    _cvw.step     = 5;
+    _cvwRender();
+
+    if (_cvw.jobId) {
+      _cvwPollStatus();
+    }
+  } catch(e) {
+    notify('Network error — please try again', 'error');
+    if (status) status.style.display = 'none';
+    if (btn) { btn.disabled = false; btn.innerHTML = '🎬 Generate Video'; }
+  }
+}
+
+function _cvwPollStatus() {
+  if (_cvw.pollTimer) clearInterval(_cvw.pollTimer);
+  let attempts = 0;
+  let progPct  = 20;
+
+  _cvw.pollTimer = setInterval(async () => {
+    attempts++;
+    if (attempts > 90) { // 90 × 4s = 6 min timeout
+      clearInterval(_cvw.pollTimer);
+      const statusEl = document.getElementById('cvw-done-status');
+      if (statusEl) statusEl.textContent = 'Generation timed out — check back later or try again.';
+      return;
+    }
+
+    try {
+      const r = await fetch(`/api/264pro/video-gen/poll/${_cvw.jobId}?provider=${_cvw.provider}`);
+      const d = await r.json();
+
+      progPct = Math.min(progPct + 3, 92);
+      const progEl = document.getElementById('cvw-done-prog');
+      if (progEl) progEl.style.width = progPct + '%';
+
+      const statusEl = document.getElementById('cvw-done-status');
+
+      if (d.status === 'complete' && d.videoUrl) {
+        clearInterval(_cvw.pollTimer);
+        _cvw.videoUrl = d.videoUrl;
+        if (progEl) progEl.style.width = '100%';
+        _cvwRender(); // re-render step 5 with video player
+        notify('🎬 Your CLAW video is ready!', 'success');
+      } else if (d.status === 'error') {
+        clearInterval(_cvw.pollTimer);
+        if (statusEl) statusEl.textContent = '❌ Generation failed: ' + (d.error || 'Unknown error');
+      } else {
+        if (statusEl) statusEl.textContent = d.message || 'Rendering… ' + progPct + '% complete';
+      }
+    } catch { /* network hiccup — keep polling */ }
+  }, 4000);
+}
+
+// ── Public helper: trigger from FS Audio export ────────────────────────────
+/**
+ * Called by FS Audio's ExportModal when export completes.
+ * Shows a dismissible banner suggesting video creation.
+ * @param {object} audioCtx  { trackName, bpm, key, genre, duration }
+ */
+function clawVideoPostExportBanner(audioCtx) {
+  // Don't show if user already dismissed this session
+  if (sessionStorage.getItem('cvw_export_dismissed')) return;
+  // Remove any existing banner
+  document.getElementById('cvw-export-banner')?.remove();
+
+  const banner = document.createElement('div');
+  banner.id = 'cvw-export-banner';
+  banner.style.cssText = `
+    position:fixed; bottom:80px; right:20px; z-index:9000;
+    background:linear-gradient(135deg,rgba(168,85,247,.15),rgba(6,182,212,.15));
+    border:1px solid rgba(168,85,247,.4); border-radius:14px;
+    padding:14px 16px; max-width:300px; box-shadow:0 8px 32px rgba(0,0,0,.4);
+    animation:slideInRight .3s ease;
+  `;
+  banner.innerHTML = `
+    <div style="display:flex;align-items:flex-start;gap:10px">
+      <span style="font-size:22px;flex-shrink:0">🎬</span>
+      <div style="flex:1">
+        <div style="font-size:13px;font-weight:700;margin-bottom:3px">Turn this into a video?</div>
+        <div style="font-size:11px;color:var(--text-s);margin-bottom:10px">
+          CLAW can generate a music video for <strong>${(audioCtx && audioCtx.trackName) || 'your track'}</strong>${audioCtx && audioCtx.bpm ? ` · ${audioCtx.bpm} BPM` : ''} right now.
+        </div>
+        <div style="display:flex;gap:6px">
+          <button onclick="document.getElementById('cvw-export-banner').remove();openClawVideoWizard({audioContext:${JSON.stringify(audioCtx||{})}});return false"
+            style="padding:6px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,#a855f7,#06b6d4);color:#fff;font-size:12px;font-weight:700;cursor:pointer">
+            Yes, create video
+          </button>
+          <button onclick="sessionStorage.setItem('cvw_export_dismissed','1');document.getElementById('cvw-export-banner').remove()"
+            style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text-s);font-size:12px;cursor:pointer">
+            Not now
+          </button>
+        </div>
+      </div>
+      <button onclick="sessionStorage.setItem('cvw_export_dismissed','1');document.getElementById('cvw-export-banner').remove()"
+        style="background:none;border:none;color:var(--text-s);cursor:pointer;font-size:14px;padding:0;flex-shrink:0">✕</button>
+    </div>
+  `;
+  document.body.appendChild(banner);
+
+  // Add animation keyframe if not already present
+  if (!document.getElementById('cvw-banner-css')) {
+    const style = document.createElement('style');
+    style.id = 'cvw-banner-css';
+    style.textContent = `@keyframes slideInRight { from { transform:translateX(120%); opacity:0; } to { transform:translateX(0); opacity:1; } }`;
+    document.head.appendChild(style);
+  }
+
+  // Auto-dismiss after 12s
+  setTimeout(() => {
+    const el = document.getElementById('cvw-export-banner');
+    if (el) { el.style.animation = 'none'; el.style.opacity='0'; el.style.transition='opacity .4s'; setTimeout(()=>el.remove(),400); }
+  }, 12000);
+}

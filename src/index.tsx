@@ -2408,6 +2408,146 @@ app.get('/api/claw/action-log', async (c) => {
   return c.json({ actions })
 })
 
+// ─── CLAW Video Concept Generator ────────────────────────────────────────────
+// Free for all users — concept/shot-list is planning only.
+// Actual video generation still requires Pro tier.
+// Uses cheap model (haiku) to keep cost near zero.
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/api/claw/video-concept', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+
+  const body: any = await c.req.json().catch(() => ({}))
+  const {
+    prompt,          // user's raw idea or song title
+    style,           // 'cinematic' | 'music_video' | 'documentary' | 'short_film' | 'social'
+    audioContext,    // optional: { bpm, key, genre, trackName, duration }
+    numShots = 6,    // how many shots to generate
+  } = body
+
+  if (!prompt && !audioContext?.trackName) {
+    return c.json({ error: 'prompt or audioContext.trackName required' }, 400)
+  }
+
+  const orKey = c.env?.OPENROUTER_API_KEY
+  if (!orKey) {
+    // Graceful fallback — return a demo concept so the UI never feels broken
+    return c.json({
+      concept: {
+        theme: 'Cinematic journey',
+        visualStyle: 'Moody, high-contrast lighting with slow dolly shots',
+        mood: 'Atmospheric and immersive',
+        narrative: 'A lone figure moves through shifting urban and natural landscapes',
+        colorPalette: 'Deep blues, warm ambers, desaturated midtones',
+      },
+      shots: [
+        { id: 1, scene: 'Wide aerial establishing shot over neon-lit city at dusk', camera: 'Slow descending drone', subject: 'City skyline fading to street level', duration: 4, tags: ['aerial', 'establishing', 'night'] },
+        { id: 2, scene: 'Close-up of artist face, soft rim lighting', camera: 'Static close-up with shallow depth', subject: 'Emotional expression, eyes closed', duration: 3, tags: ['portrait', 'intimate'] },
+        { id: 3, scene: 'Corridor with flickering lights, long shadow', camera: 'Slow push-in on steadicam', subject: 'Figure walking away from camera', duration: 4, tags: ['tension', 'movement'] },
+        { id: 4, scene: 'Time-lapse of clouds moving over a rooftop', camera: 'Locked-off wide', subject: 'Sky transformation, light changing', duration: 3, tags: ['time-lapse', 'atmosphere'] },
+        { id: 5, scene: 'Extreme close-up of hands on a surface', camera: 'Macro, rack focus', subject: 'Texture and detail reveal', duration: 2, tags: ['detail', 'macro'] },
+        { id: 6, scene: 'Final wide shot, figure silhouetted against gradient sky', camera: 'Slow zoom out', subject: 'Isolation and scale contrast', duration: 5, tags: ['closing', 'cinematic'] },
+      ],
+      model: 'fallback',
+      coinsUsed: 0,
+    })
+  }
+
+  const styleGuides: Record<string, string> = {
+    cinematic:    'Epic cinematic film quality. Wide establishing shots, dramatic lighting, bold compositions. Think Blade Runner 2049 or Dune.',
+    music_video:  'High-energy music video aesthetic. Quick cuts, performance shots, stylised visuals synced to beat. Think modern hip-hop/pop videos.',
+    documentary:  'Intimate documentary style. Natural lighting, observational framing, authentic moments. Handheld, verité feel.',
+    short_film:   'Narrative short film. Clear story arc, character-driven, strong visual metaphors. Each shot serves the story.',
+    social:       'Vertical-first social content. Bold hooks, fast pace, high contrast visuals. Optimised for TikTok/Reels/Shorts.',
+  }
+  const styleNote = styleGuides[style] || styleGuides['cinematic']
+
+  const audioNote = audioContext
+    ? `\nAudio context: Track "${audioContext.trackName || 'untitled'}", BPM ${audioContext.bpm || 'unknown'}, key ${audioContext.key || 'unknown'}, genre ${audioContext.genre || 'unknown'}, duration ${audioContext.duration ? Math.round(audioContext.duration) + 's' : 'unknown'}.`
+    : ''
+
+  const systemMsg = `You are CLAW, a Production Director AI inside the Flowstate ecosystem. Your job is to generate cinematic video concepts and shot lists that are production-ready and visually specific.
+
+Style directive: ${styleNote}${audioNote}
+
+Respond ONLY with valid JSON matching this exact schema — no markdown, no preamble:
+{
+  "concept": {
+    "theme": "one sentence",
+    "visualStyle": "one sentence describing look and feel",
+    "mood": "2-3 descriptive words",
+    "narrative": "one sentence story direction",
+    "colorPalette": "3-4 color descriptors"
+  },
+  "shots": [
+    {
+      "id": 1,
+      "scene": "vivid scene description",
+      "camera": "camera movement and lens choice",
+      "subject": "what is in the frame and what they are doing",
+      "duration": 4,
+      "tags": ["tag1", "tag2"]
+    }
+  ]
+}`
+
+  const userMsg = `Create a ${numShots}-shot video concept for: "${prompt || audioContext?.trackName}"${audioNote ? ' (audio project — align visuals to the mood and tempo)' : ''}`
+
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${orKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://flowst8.cc',
+        'X-Title': 'CLAW Video Concept',
+      },
+      body: JSON.stringify({
+        model: 'anthropic/claude-haiku-4-5',
+        messages: [
+          { role: 'system', content: systemMsg },
+          { role: 'user', content: userMsg },
+        ],
+        max_tokens: 1800,
+        temperature: 0.72,
+      }),
+    })
+    const data: any = await res.json()
+    const raw = data?.choices?.[0]?.message?.content || ''
+
+    // Strip any accidental markdown fences
+    const cleaned = raw.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim()
+    let parsed: any
+    try { parsed = JSON.parse(cleaned) }
+    catch {
+      return c.json({ error: 'concept_parse_error', raw }, 500)
+    }
+
+    // Log usage to Redis for coin tracking (fire-and-forget)
+    const url = c.env?.UPSTASH_REDIS_URL
+    const tok = c.env?.UPSTASH_REDIS_TOKEN
+    if (url && tok) {
+      const entry = JSON.stringify({
+        action: 'claw_video_concept',
+        prompt: (prompt || audioContext?.trackName || '').slice(0, 80),
+        style,
+        shots: parsed.shots?.length || 0,
+        ts: Date.now(),
+        status: 'generated',
+      })
+      redisPipeline(url, tok, [
+        ['LPUSH', `claw_actions:${session.email}`, entry],
+        ['LTRIM', `claw_actions:${session.email}`, 0, 199],
+        ['EXPIRE', `claw_actions:${session.email}`, 90 * 86400],
+      ]).catch(() => {})
+    }
+
+    return c.json({ ...parsed, model: 'claude-haiku-4-5', coinsUsed: 3 })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 function buildConfirmMessage(action: string, params: any): string {
   if (action === 'slack_post' || action === 'slack_standup') {
     return `Post to ${params.channel || 'Slack'}: "${(params.text || params.message || '').slice(0, 120)}"`
@@ -4468,6 +4608,17 @@ em{color:var(--accent);font-style:italic}
               <span class="gen-title" style="margin:0">Video Generation</span>
             </div>
           </div>
+          <!-- CLAW Video Wizard CTA -->
+          <div style="background:linear-gradient(135deg,rgba(168,85,247,.1),rgba(6,182,212,.1));border:1px solid rgba(168,85,247,.3);border-radius:12px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
+            <span style="font-size:26px;flex-shrink:0">🎬</span>
+            <div style="flex:1">
+              <div style="font-size:13px;font-weight:700;margin-bottom:2px">Create with CLAW</div>
+              <div style="font-size:11px;color:var(--text-s)">Let CLAW generate a concept, shot list, and full production pipeline — not just a single clip.</div>
+            </div>
+            <button onclick="openClawVideoWizard()" style="padding:7px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,#a855f7,#06b6d4);color:#fff;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0">
+              Open Wizard
+            </button>
+          </div>
           <div class="gen-picker-wrap" id="gs-vid-picker-wrap">
             <div class="gs-gen-picker" id="gs-vid-picker"></div>
             <div class="gen-model-desc" id="vid-model-desc">Select a model above to get started.</div>
@@ -5140,6 +5291,7 @@ em{color:var(--accent);font-style:italic}
       <button class="btn-send" id="clawbot-send" style="background:linear-gradient(135deg,#a855f7,#06b6d4);overflow:hidden;padding:4px"><img src="/static/clawbot-mascot.png" style="width:100%;height:100%;object-fit:contain"></button>
     </div>
     <div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
+      <button class="clawbot-quick-btn" onclick="openClawVideoWizard()" style="border-color:rgba(6,182,212,.5);color:#06b6d4;font-weight:700">&#x1F3AC; Create Video</button>
       <button class="clawbot-quick-btn" onclick="clawbotQuick('Generate a walkthrough for this app')">&#x1F4D6; Generate Walkthrough</button>
       <button class="clawbot-quick-btn" onclick="clawbotQuick('What workflows can you optimize for me?')">&#9889; Optimize Workflow</button>
       <button class="clawbot-quick-btn" onclick="clawbotQuick('Show me my coin usage and API stats')">&#x1F4B0; Coin Usage</button>
