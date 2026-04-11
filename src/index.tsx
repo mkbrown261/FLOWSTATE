@@ -31,6 +31,12 @@ import {
   MODEL_REGISTRY, IMAGE_MODEL_REGISTRY, VIDEO_MODEL_REGISTRY, CREDENTIAL_TABLE,
   type SessionIntent, type BehaviorData, type AudioAiTool,
 } from './intent-layer'
+import {
+  resolveAIExecution,
+  isTierPro,
+  applyOrchestrationHeaders,
+  type ExecutionPlan,
+} from './ai-orchestrator'
 
 type Bindings = {
   // ── AI Chat (single OpenRouter key covers ALL chat models) ──────────────────
@@ -455,11 +461,26 @@ async function checkAntiAbuse(c: any, userId: string): Promise<Response | null> 
 app.post('/api/chat/stream', async (c) => {
   const { message, model: preferredModel, messages: history = [], systemOverride } = await c.req.json()
 
-  // ── Anti-abuse: rate-limit by user session ──────────────────────────────────
+  // ── AI Orchestration: cost control + abuse prevention ──────────────────────
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   const userId  = session?.email || session?.id || c.req.header('CF-Connecting-IP') || 'anon'
-  const abuseBlock = await checkAntiAbuse(c, userId)
-  if (abuseBlock) return abuseBlock
+  const redisUrl = c.env?.UPSTASH_REDIS_URL
+  const redisTok = c.env?.UPSTASH_REDIS_TOKEN
+
+  if (redisUrl && redisTok) {
+    const plan = await resolveAIExecution({
+      userId,
+      tool: 'chat',
+      requestedModel: preferredModel || 'auto',
+      isPro: isTierPro(session?.tier),
+      redisUrl,
+      redisToken: redisTok,
+    })
+    if (plan.blocked && plan.blockResponse) {
+      return c.json(plan.blockResponse, plan.blockResponse.status as any)
+    }
+    applyOrchestrationHeaders(c, plan)
+  }
 
   const intent = declareModelRouting(message, preferredModel)
   const spec = MODEL_REGISTRY[intent.routedModel]
@@ -596,8 +617,34 @@ async function pollReplicate(predictionId: string, apiKey: string, maxWaitMs = 1
 
 // ─── Image Generation ─────────────────────────────────────────────────────────
 app.post('/api/generate/image', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
   const { prompt, model: modelId = 'flux_pro', size = '1024x1024', aspectRatio = '1:1' } = await c.req.json()
-  const spec = IMAGE_MODEL_REGISTRY[modelId as keyof typeof IMAGE_MODEL_REGISTRY]
+
+  // ── AI Orchestration ───────────────────────────────────────────────────────
+  const imgRedisUrl = c.env?.UPSTASH_REDIS_URL
+  const imgRedisTok = c.env?.UPSTASH_REDIS_TOKEN
+  let resolvedModelId = modelId
+  let extraQualityParams: Record<string, any> = {}
+
+  if (imgRedisUrl && imgRedisTok) {
+    const userId = session?.email || session?.id || c.req.header('CF-Connecting-IP') || 'anon'
+    const plan = await resolveAIExecution({
+      userId,
+      tool:           modelId,
+      requestedModel: modelId,
+      isPro:          isTierPro(session?.tier),
+      redisUrl:       imgRedisUrl,
+      redisToken:     imgRedisTok,
+    })
+    if (plan.blocked && plan.blockResponse) {
+      return c.json(plan.blockResponse, plan.blockResponse.status as any)
+    }
+    resolvedModelId  = plan.resolvedModel   // may be fallback for free heavy users
+    extraQualityParams = plan.qualityParams // quality overrides to merge into API call
+    applyOrchestrationHeaders(c, plan)
+  }
+
+  const spec = IMAGE_MODEL_REGISTRY[resolvedModelId as keyof typeof IMAGE_MODEL_REGISTRY]
   if (!spec) return c.json({ error: 'Unknown image model' }, 400)
   const apiKey = (c.env as any)?.[spec.envKey]
   if (!apiKey) return c.json({ error: spec.name + ' requires ' + spec.envKey, demo: true, imageUrl: 'https://placehold.co/1024x1024/1a1a2e/a855f7?text=' + encodeURIComponent(prompt.slice(0, 30)) })
@@ -626,7 +673,8 @@ app.post('/api/generate/image', async (c) => {
       seedream:    { prompt, aspect_ratio: aspectRatio },
       runway_img:  { prompt, ratio: aspectRatio, duration: 5 },
     }
-    const input = inputMap[modelId] || { prompt }
+    // Merge orchestrator quality overrides (may reduce steps/quality for free heavy users)
+    const input = { ...(inputMap[resolvedModelId] ?? inputMap[modelId] ?? { prompt }), ...extraQualityParams }
     const predRes: any = await (await fetch(spec.apiEndpoint, {
       method: 'POST',
       headers: { Authorization: 'Token ' + apiKey, 'Content-Type': 'application/json', 'Prefer': 'wait=60' },
@@ -1613,6 +1661,26 @@ app.post('/api/audio/generate', async (c) => {
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
 
   const { tool, prompt, style, bpm, key, durationSeconds = 30 } = await c.req.json()
+
+  // ── AI Orchestration ───────────────────────────────────────────────────────
+  const audioRedisUrl = c.env?.UPSTASH_REDIS_URL
+  const audioRedisTok = c.env?.UPSTASH_REDIS_TOKEN
+  if (audioRedisUrl && audioRedisTok) {
+    const userId = session?.email || session?.id || c.req.header('CF-Connecting-IP') || 'anon'
+    const plan = await resolveAIExecution({
+      userId,
+      tool,
+      requestedModel: tool,
+      isPro:          isTierPro(session?.tier),
+      redisUrl:       audioRedisUrl,
+      redisToken:     audioRedisTok,
+    })
+    if (plan.blocked && plan.blockResponse) {
+      return c.json(plan.blockResponse, plan.blockResponse.status as any)
+    }
+    applyOrchestrationHeaders(c, plan)
+  }
+
   const hasClawflow = !!c.env?.CLAWBOT_API_KEY
 
   const result = declareAudioGeneration({
@@ -2621,7 +2689,7 @@ app.post('/api/264pro/video-gen', async (c) => {
 
   // All video generation requires Pro tier
   const tier = auth.tier || 'free'
-  const hasPro = ['pro', 'personal_pro', 'team', 'team_starter', 'team_growth', 'enterprise'].includes(tier)
+  const hasPro = isTierPro(tier)
   if (!hasPro) return c.json({ error: 'Video generation requires a Pro plan.', upgradeUrl: 'https://flowst8.cc/pricing' }, 403)
 
   const body: any = await c.req.json().catch(() => ({}))
@@ -2640,6 +2708,26 @@ app.post('/api/264pro/video-gen', async (c) => {
 
   if (!model) return c.json({ error: 'model is required' }, 400)
   if (!prompt) return c.json({ error: 'prompt is required' }, 400)
+
+  // ── AI Orchestration — Pro users: full quality always, speed may queue ─────
+  const redisUrl264 = c.env?.UPSTASH_REDIS_URL
+  const redisTok264 = c.env?.UPSTASH_REDIS_TOKEN
+  if (redisUrl264 && redisTok264) {
+    const plan = await resolveAIExecution({
+      userId:         auth.email,
+      tool:           model,
+      requestedModel: model,
+      isPro:          hasPro,
+      redisUrl:       redisUrl264,
+      redisToken:     redisTok264,
+    })
+    if (plan.blocked && plan.blockResponse) {
+      return c.json(plan.blockResponse, plan.blockResponse.status as any)
+    }
+    applyOrchestrationHeaders(c, plan)
+    // Pro: plan.shouldQueue would add a delay, but video gen is async by nature
+    // The queued flag is informational here — fal.ai handles its own queue
+  }
 
   const falKey        = c.env?.FAL_AI_KEY
   const higgsKey      = c.env?.HIGGSFIELD_API_KEY
