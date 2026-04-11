@@ -266,7 +266,7 @@ const OB_GOALS = [
   { id:'learning', icon:'fa-graduation-cap', label:'Learning', desc:'Flashcards & spaced rep' },
   { id:'financial', icon:'fa-chart-line', label:'Financial', desc:'Goals & milestones' },
 ];
-const OB_STEPS = ['Welcome','Goals','Tools','Rhythm','Done'];
+const OB_STEPS = ['Welcome','Goals','Tools','Rhythm','Claw','Done'];
 
 function showOnboarding() {
   document.getElementById('ob-screen').style.display = 'flex';
@@ -302,11 +302,16 @@ function renderObStep() {
       <button class="ob-skip" onclick="obNext()">Skip for now</button>`;
   } else if (obStep === 3) {
     const rhythms=[{m:25,label:'Pomodoro',desc:'Classic 25/5 split'},{m:45,label:'Deep Work',desc:'45-min focus blocks'},{m:90,label:'Flow State',desc:'Ultra-deep 90-min sessions'}];
-    inner = `<div class="ob-step">Step 4 of 5 — Your Rhythm</div><div class="ob-progress">${progress}</div>
+    inner = `<div class="ob-step">Step 4 of 6 — Your Rhythm</div><div class="ob-progress">${progress}</div>
       <div class="ob-title">Choose your focus rhythm</div>
       <div class="ob-sub">You can change this any time in Settings.</div>
       <div class="rhythm-grid">${rhythms.map(r=>`<button class="rhythm-btn ${obRhythm===r.m?'sel':''}" onclick="selectRhythm(${r.m},this)"><span class="rhythm-min">${r.m}m</span><span>${r.label}</span><span class="rhythm-lbl">${r.desc}</span></button>`).join('')}</div>
-      <button class="ob-btn" onclick="obFinish()">Finish Setup →</button>`;
+      <button class="ob-btn" onclick="obNext()">Continue →</button>`;
+  } else if (obStep === 4) {
+    inner = `<div class="ob-step">Step 5 of 6 — Meet Claw</div><div class="ob-progress">${progress}</div>
+      ${renderClawOnboardingStep()}
+      <button class="ob-btn" onclick="obFinish()">Almost Done →</button>
+      <button class="ob-skip" onclick="obFinish()">Skip for now</button>`;
   } else {
     inner = `<div class="ob-logo">🎉</div><div class="ob-title">FlowState is ready!</div>
       <div class="ob-sub">Your workspace is configured. Start your first focus session and track your FlowScore.</div>
@@ -334,7 +339,8 @@ function obNext() { obStep++; renderObStep(); }
 function obFinish() {
   state.timer.focusMin = obRhythm;
   state.settings.focusMin = obRhythm;
-  obStep++;
+  if (obStep === 4) saveClawOnboardingPerms();
+  obStep = 5;
   renderObStep();
 }
 
@@ -3650,3 +3656,420 @@ function showHiggsError(msg) {
   </div>`;
   genSidebarLog('higgsfield', `✗ ${msg}`, 'error');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLAW PERMISSIONS SYSTEM — client-side
+// Mirrors the backend permission model:
+//   Layer 1 (read/observe): always on
+//   Layer 2 (suggest):      always on
+//   Layer 3 (act):          user must toggle on
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _clawPermsLoaded = false;
+let _clawPerms = {}; // { slack_post: true, notion_write: false, … }
+let _clawPermLabels = {}; // populated from server
+let _clawPermPanelOpen = false;
+
+// Toggle the permissions panel open/closed
+function toggleClawPermPanel() {
+  const panel = document.getElementById('claw-perm-panel');
+  if (!panel) return;
+  _clawPermPanelOpen = !_clawPermPanelOpen;
+  panel.style.display = _clawPermPanelOpen ? 'block' : 'none';
+  if (_clawPermPanelOpen && !_clawPermsLoaded) loadClawPermissions();
+}
+
+// Load permissions from server + render
+async function loadClawPermissions() {
+  // Update integration status rows
+  const slackLbl = document.getElementById('claw-slack-label');
+  const notionLbl = document.getElementById('claw-notion-label');
+  const slackConnBtn = document.getElementById('claw-slack-connect-btn');
+  const notionConnBtn = document.getElementById('claw-notion-connect-btn');
+  const slackStatus = document.getElementById('claw-slack-status');
+  const notionStatus = document.getElementById('claw-notion-status');
+
+  if (slackLbl) {
+    if (FS_SLACK) {
+      slackLbl.textContent = `Slack: ${FS_SLACK.team || 'connected'}`;
+      if (slackStatus) slackStatus.style.borderColor = 'rgba(34,197,94,.4)';
+    } else {
+      slackLbl.textContent = 'Slack: not connected';
+      if (slackConnBtn) slackConnBtn.style.display = 'inline-block';
+    }
+  }
+  if (notionLbl) {
+    if (FS_NOTION) {
+      notionLbl.textContent = `Notion: ${FS_NOTION.workspace || 'connected'}`;
+      if (notionStatus) notionStatus.style.borderColor = 'rgba(34,197,94,.4)';
+    } else {
+      notionLbl.textContent = 'Notion: not connected';
+      if (notionConnBtn) notionConnBtn.style.display = 'inline-block';
+    }
+  }
+
+  // Fetch current grants from server
+  try {
+    const r = await fetch('/api/claw/permissions');
+    if (!r.ok) { renderPermToggles({}); return; }
+    const data = await r.json();
+    _clawPerms = data.permissions || {};
+    _clawPermLabels = data.labels || {};
+    _clawPermsLoaded = true;
+    renderPermToggles(_clawPerms);
+  } catch {
+    renderPermToggles({});
+  }
+}
+
+// Render toggles grid
+function renderPermToggles(perms) {
+  const container = document.getElementById('claw-perm-toggles');
+  if (!container) return;
+
+  // Permission groups for clean presentation
+  const groups = [
+    { heading: '🧠 Learning', keys: ['memory_learn'] },
+    { heading: '💬 Slack', keys: ['slack_read', 'slack_post', 'slack_standup'], requires: 'slack' },
+    { heading: '📝 Notion', keys: ['notion_read', 'notion_write', 'notion_tasks'], requires: 'notion' },
+    { heading: '⚡ Advanced', keys: ['autopilot'] },
+  ];
+
+  let html = '';
+  for (const group of groups) {
+    const isConnected = !group.requires
+      || (group.requires === 'slack' && FS_SLACK)
+      || (group.requires === 'notion' && FS_NOTION);
+    const lockHtml = !isConnected
+      ? `<span style="font-size:10px;color:var(--text-s);margin-left:6px">Connect ${group.requires} first</span>`
+      : '';
+    html += `<div style="margin-bottom:4px"><div style="font-size:11px;font-weight:700;color:var(--text-m);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">${group.heading}${lockHtml}</div>`;
+    for (const key of group.keys) {
+      const meta = _clawPermLabels[key] || { label: key, desc: '', icon: '•', risk: 'low' };
+      const enabled = !!perms[key];
+      const disabled = !isConnected;
+      const riskColor = meta.risk === 'high' ? '#ef4444' : meta.risk === 'medium' ? '#f59e0b' : '#22c55e';
+      html += `
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;padding:8px 10px;background:var(--bg-panel);border-radius:8px;border:1px solid var(--border);${disabled ? 'opacity:.45;' : ''}">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;font-weight:600;margin-bottom:2px">${meta.icon} ${meta.label}
+              <span style="font-size:9px;padding:1px 5px;border-radius:4px;margin-left:4px;background:${riskColor}22;color:${riskColor};font-weight:700;text-transform:uppercase">${meta.risk}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-s);line-height:1.4">${meta.desc}</div>
+          </div>
+          <label class="claw-toggle" style="margin-left:10px;flex-shrink:0">
+            <input type="checkbox" ${enabled ? 'checked' : ''} ${disabled ? 'disabled' : ''} onchange="saveClawPermission('${key}', this.checked)">
+            <span class="claw-toggle-track"></span>
+          </label>
+        </div>`;
+    }
+    html += '</div>';
+  }
+  container.innerHTML = html;
+}
+
+// Save a single permission change to server
+async function saveClawPermission(key, value) {
+  _clawPerms[key] = value;
+  try {
+    await fetch('/api/claw/permissions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: value }),
+    });
+    notify(`Claw permission updated: ${value ? 'enabled' : 'disabled'}`, 'info');
+  } catch {
+    notify('Could not save permission — check your connection', 'error');
+  }
+}
+
+// Get list of connected integrations (used when sending messages)
+function getConnectedIntegrations() {
+  const connected = [];
+  if (FS_SLACK) connected.push('slack');
+  if (FS_NOTION) connected.push('notion');
+  return connected;
+}
+
+// ── Action Execution Engine ───────────────────────────────────────────────
+
+// Execute a Claw-suggested action after user confirmation
+async function executeClawAction(action, params) {
+  const reqPerm = {
+    slack_post: 'slack_post', slack_standup: 'slack_standup',
+    notion_create_task: 'notion_tasks', notion_update_page: 'notion_write',
+  }[action];
+
+  // Check if permission is granted (client-side fast path)
+  if (reqPerm && !_clawPerms[reqPerm] && _clawPermsLoaded) {
+    // Open permissions panel and prompt
+    if (!_clawPermPanelOpen) toggleClawPermPanel();
+    appendClawbotMsg('ai',
+      `I need the **${_clawPermLabels[reqPerm]?.label || reqPerm}** permission to do that. Toggle it on in the Claw Permissions panel below.`,
+      'Clawbot'
+    );
+    return;
+  }
+
+  // Check if integration is connected
+  if ((action.startsWith('slack') && !FS_SLACK) || (action.startsWith('notion') && !FS_NOTION)) {
+    const which = action.startsWith('slack') ? 'Slack' : 'Notion';
+    appendClawbotMsg('ai',
+      `I need ${which} connected to do that. [Connect ${which}](${which === 'Slack' ? '/api/auth/slack' : '/api/auth/notion'}) and I'll be ready.`,
+      'Clawbot'
+    );
+    return;
+  }
+
+  try {
+    const r = await fetch('/api/claw/execute-action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, params }),
+    });
+    const data = await r.json();
+
+    if (data.needsPermission) {
+      // Shouldn't happen after client check but handle gracefully
+      if (!_clawPermPanelOpen) toggleClawPermPanel();
+      appendClawbotMsg('ai', `I need permission to do that — check Claw Permissions below.`, 'Clawbot');
+      return;
+    }
+    if (data.needsIntegration) {
+      const which = data.integration;
+      appendClawbotMsg('ai',
+        `I need ${which} connected first. Open **Settings → Integrations** to connect.`,
+        'Clawbot'
+      );
+      return;
+    }
+    if (data.ok) {
+      const successMsg = data.message || `✓ Done: ${action}`;
+      appendClawbotMsg('ai', successMsg, 'Clawbot');
+    } else {
+      appendClawbotMsg('ai', `✗ Couldn't complete that action: ${data.error || 'unknown error'}`, 'Clawbot');
+    }
+  } catch {
+    appendClawbotMsg('ai', '✗ Network error executing action — please try again.', 'Clawbot');
+  }
+}
+
+// Render an inline action confirmation card inside a message bubble
+function renderActionCards(actions) {
+  if (!actions || !actions.length) return '';
+  const connected = getConnectedIntegrations();
+
+  return actions.map(a => {
+    const isExternal = a.action === 'slack_post' || a.action === 'slack_standup'
+      || a.action === 'notion_create_task' || a.action === 'notion_update_page';
+    const needsConnect = isExternal && (
+      (a.action.startsWith('slack') && !connected.includes('slack'))
+      || (a.action.startsWith('notion') && !connected.includes('notion'))
+    );
+
+    let label = '', icon = '';
+    if (a.action === 'slack_post' || a.action === 'slack_standup') {
+      icon = '💬'; label = `Post to ${a.channel || 'Slack'}`;
+    } else if (a.action === 'notion_create_task') {
+      icon = '✅'; label = `Create task: "${(a.title || 'Task').slice(0, 40)}"`;
+    } else if (a.action === 'notion_update_page') {
+      icon = '📝'; label = `Update Notion page`;
+    } else if (a.action === 'tool') {
+      icon = '⚙️'; label = `Run AI tool: ${a.tool}`;
+    } else if (a.action === 'generate_video') {
+      icon = '🎬'; label = `Generate video (${a.model || ''})`;
+    } else {
+      icon = '⚡'; label = a.action;
+    }
+
+    const safeParams = JSON.stringify(a).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+
+    if (needsConnect) {
+      const which = a.action.startsWith('slack') ? 'Slack' : 'Notion';
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;margin-top:6px;background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.2);border-radius:8px;font-size:12px">
+        <span>${icon} ${label}</span>
+        <button onclick="connectSlack()" style="font-size:11px;padding:3px 9px;border:none;background:rgba(168,85,247,.2);color:#a855f7;border-radius:6px;cursor:pointer;font-weight:600">Connect ${which}</button>
+      </div>`;
+    }
+
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;margin-top:6px;background:rgba(6,182,212,.06);border:1px solid rgba(6,182,212,.2);border-radius:8px;font-size:12px">
+      <span style="color:var(--text)">${icon} ${label}</span>
+      <div style="display:flex;gap:5px">
+        <button onclick="executeClawAction('${a.action}', JSON.parse(this.closest('[data-params]').dataset.params))" data-action="${a.action}" style="font-size:11px;padding:3px 9px;border:none;background:rgba(6,182,212,.2);color:#06b6d4;border-radius:6px;cursor:pointer;font-weight:600">Run</button>
+      </div>
+    </div><span data-params="${safeParams}" style="display:none"></span>`;
+  }).join('');
+}
+
+// ── Updated sendClawbotMessage — injects integrations + parses action cards ──
+// We override the previous version
+async function sendClawbotMessage() {
+  const inp = document.getElementById('clawbot-in');
+  const msg = inp ? inp.value.trim() : '';
+  if (!msg) return;
+  if (inp) { inp.value = ''; inp.style.height = '42px'; }
+  appendClawbotMsg('user', msg, '');
+  const tid = appendClawbotTyping();
+  const appCtx = _clawCtx || 'flowstate_hub';
+  const connectedIntegrations = getConnectedIntegrations();
+
+  try {
+    const res = await fetch('/api/clawbot/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: msg,
+        app: appCtx,
+        history: clawbotHistory.slice(-8),
+        connectedIntegrations,
+      }),
+    });
+    const data = await res.json();
+    removeTyping(tid);
+
+    if (data.error === 'clawflow_required') {
+      appendClawbotMsg('ai', '⚡ ClawFlow subscription required to continue. Upgrade below ↓', 'Clawbot');
+      document.getElementById('clawbot-active').style.display = 'none';
+      document.getElementById('clawbot-gate').style.display = 'block';
+      loadClawbotPromo();
+      return;
+    }
+
+    const reply = data.reply || 'No response.';
+    // Append message with optional action cards
+    appendClawbotMsgWithActions('ai', reply, `Clawbot · ${data.coinCost || 0} coins`, data.actions || []);
+    clawbotHistory.push({ role: 'user', content: msg }, { role: 'assistant', content: reply });
+
+    const badge = document.getElementById('clawbot-coins-badge');
+    if (badge && data.coinCost) {
+      const cur = parseInt(badge.textContent.replace(/[^0-9]/g, '')) || 500;
+      badge.textContent = `⚡ ${Math.max(0, cur - data.coinCost)} coins`;
+    }
+    if (/how|stuck|help|tutorial|walkthrough|can't|doesn't work|not working/i.test(msg) && Math.random() > 0.4) {
+      setTimeout(() => offerWalkthrough(msg, appCtx), 1200);
+    }
+  } catch (e) {
+    removeTyping(tid);
+    appendClawbotMsg('ai', 'Connection error — check your network.', 'Error');
+  }
+}
+
+// Append a message with optional action confirmation cards below the bubble
+function appendClawbotMsgWithActions(role, text, label, actions) {
+  const msgs = document.getElementById('clawbot-msgs');
+  if (!msgs) return;
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  const av = role === 'ai'
+    ? `<div class="msg-av" style="background:linear-gradient(135deg,#a855f7,#06b6d4);overflow:hidden;padding:0"><img src="/static/clawbot-mascot.png" style="width:100%;height:100%;object-fit:cover"></div>`
+    : `<div class="msg-av" style="background:var(--bg-card)">👤</div>`;
+  const meta = role === 'ai'
+    ? `<div class="msg-meta"><span class="m-tag" style="background:rgba(6,182,212,.15);color:#06b6d4">Clawbot</span><span style="font-size:11px;color:var(--text-m)">${label}</span></div>`
+    : '';
+  const actionCards = actions && actions.length ? renderActionCards(actions) : '';
+  div.innerHTML = `${av}<div style="flex:1">${meta}<div class="msg-bub">${formatMsg(text)}</div>${actionCards}</div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+// ── Show Claw Action Log Modal ────────────────────────────────────────────
+async function showClawActionLog() {
+  const modal = document.getElementById('claw-log-modal');
+  const entries = document.getElementById('claw-log-entries');
+  if (!modal || !entries) return;
+  modal.style.display = 'flex';
+  entries.innerHTML = '<div style="color:var(--text-s);text-align:center;padding:20px">Loading…</div>';
+
+  try {
+    const r = await fetch('/api/claw/action-log');
+    const data = await r.json();
+    const actions = data.actions || [];
+    if (!actions.length) {
+      entries.innerHTML = '<div style="color:var(--text-s);text-align:center;padding:20px">No actions logged yet.<br>Actions Claw executes on your behalf will appear here.</div>';
+      return;
+    }
+    entries.innerHTML = actions.map(a => {
+      const ts = a.timestamp ? new Date(a.timestamp).toLocaleString() : '';
+      const statusColor = a.status === 'success' ? '#22c55e' : a.status === 'denied' ? '#ef4444' : '#f59e0b';
+      return `<div style="padding:8px 10px;background:var(--bg-panel);border-radius:8px;border:1px solid var(--border)">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:12px;font-weight:600">${a.action || 'action'}</span>
+          <span style="font-size:11px;color:${statusColor};font-weight:700">${a.status || 'ok'}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-s);margin-top:2px">${ts}</div>
+        ${a.details ? `<div style="font-size:11px;color:var(--text-m);margin-top:3px">${a.details}</div>` : ''}
+      </div>`;
+    }).join('');
+  } catch {
+    entries.innerHTML = '<div style="color:#ef4444;text-align:center;padding:20px">Could not load action log.</div>';
+  }
+}
+
+// ── Claw Onboarding Step ──────────────────────────────────────────────────
+// Called from renderObStep when step === 4
+function renderClawOnboardingStep() {
+  return `
+    <div style="text-align:center;margin-bottom:18px">
+      <img src="/static/clawbot-mascot.png" style="width:56px;height:56px;object-fit:contain;margin-bottom:8px">
+      <h2 style="font-size:18px;font-weight:900;margin:0 0 6px">Meet Claw</h2>
+      <p style="font-size:13px;color:var(--text-m);margin:0 0 16px;line-height:1.6">Claw is your AI brain for the Flowstate ecosystem.<br>Choose what Claw is allowed to do on your behalf.</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:9px;margin-bottom:18px">
+      ${[
+        { icon: '🧠', label: 'Learn my preferences', desc: 'Claw improves over time by remembering your style', key: 'memory_learn', default: true },
+        { icon: '💬', label: 'Post to Slack', desc: 'With your confirmation — Claw suggests, you approve', key: 'slack_post', default: false, req: 'slack' },
+        { icon: '📝', label: 'Create Notion tasks', desc: 'Log milestones and tasks from your workflow', key: 'notion_tasks', default: false, req: 'notion' },
+        { icon: '⚡', label: 'Autopilot', desc: 'Claw acts on pre-approved actions without asking each time', key: 'autopilot', default: false },
+      ].map(p => `
+        <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;cursor:pointer">
+          <input type="checkbox" id="ob-claw-${p.key}" ${p.default ? 'checked' : ''} style="accent-color:#a855f7;width:16px;height:16px">
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:700">${p.icon} ${p.label}</div>
+            <div style="font-size:11px;color:var(--text-s)">${p.desc}${p.req ? ` · <em>Requires ${p.req} connected</em>` : ''}</div>
+          </div>
+        </label>`).join('')}
+    </div>
+    <p style="font-size:11px;color:var(--text-s);text-align:center">You can change these any time in <strong>Claw Permissions</strong> inside the Clawbot tab.</p>`;
+}
+
+// Save claw onboarding permissions and continue
+async function saveClawOnboardingPerms() {
+  const keys = ['memory_learn', 'slack_post', 'notion_tasks', 'autopilot'];
+  const grants = {};
+  keys.forEach(k => {
+    const el = document.getElementById(`ob-claw-${k}`);
+    if (el) grants[k] = el.checked;
+  });
+  try {
+    await fetch('/api/claw/permissions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(grants),
+    });
+    _clawPerms = { ..._clawPerms, ...grants };
+    _clawPermsLoaded = true;
+  } catch { /* non-blocking */ }
+}
+
+// Add CSS for permission toggles (injected once)
+(function injectClawStyles() {
+  if (document.getElementById('claw-perm-css')) return;
+  const s = document.createElement('style');
+  s.id = 'claw-perm-css';
+  s.textContent = `
+    .claw-toggle { position:relative; display:inline-block; width:38px; height:20px; }
+    .claw-toggle input { opacity:0; width:0; height:0; }
+    .claw-toggle-track {
+      position:absolute; inset:0; border-radius:20px;
+      background:var(--border); cursor:pointer; transition:.2s;
+    }
+    .claw-toggle-track::before {
+      content:''; position:absolute; width:14px; height:14px;
+      border-radius:50%; background:#fff; top:3px; left:3px; transition:.2s;
+    }
+    .claw-toggle input:checked + .claw-toggle-track { background:linear-gradient(135deg,#a855f7,#06b6d4); }
+    .claw-toggle input:checked + .claw-toggle-track::before { transform:translateX(18px); }
+    .claw-toggle input:disabled + .claw-toggle-track { opacity:.5; cursor:not-allowed; }
+  `;
+  document.head.appendChild(s);
+})();

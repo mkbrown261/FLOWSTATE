@@ -5111,6 +5111,52 @@ em{color:var(--accent);font-style:italic}
       <button class="clawbot-quick-btn" onclick="clawbotQuick('What workflows can you optimize for me?')">&#9889; Optimize Workflow</button>
       <button class="clawbot-quick-btn" onclick="clawbotQuick('Show me my coin usage and API stats')">&#x1F4B0; Coin Usage</button>
       <button class="clawbot-quick-btn" onclick="clawbotQuick('What are the most powerful features I am not using?')">&#x1F50D; Hidden Features</button>
+      <button class="clawbot-quick-btn" onclick="toggleClawPermPanel()" id="btn-claw-perms" style="border-color:rgba(168,85,247,.4);color:#a855f7">&#x1F512; Claw Permissions</button>
+    </div>
+
+    <!-- ── Claw Permissions Panel ──────────────────────────────────────── -->
+    <div id="claw-perm-panel" style="display:none;margin-top:12px;background:var(--bg-card);border:1px solid rgba(168,85,247,.25);border-radius:12px;padding:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <img src="/static/clawbot-mascot.png" style="width:22px;height:22px;object-fit:contain">
+          <span style="font-size:13px;font-weight:800">Claw Permissions</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-s)">Control what Claw can do on your behalf</div>
+      </div>
+
+      <!-- Integrations row -->
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap" id="claw-integration-status">
+        <div id="claw-slack-status" style="display:flex;align-items:center;gap:5px;padding:5px 10px;border-radius:8px;border:1px solid var(--border);font-size:12px">
+          <span>💬</span><span id="claw-slack-label">Slack: not connected</span>
+          <button id="claw-slack-connect-btn" onclick="connectSlack()" style="display:none;font-size:11px;padding:2px 8px;border:none;background:rgba(168,85,247,.15);color:#a855f7;border-radius:6px;cursor:pointer">Connect</button>
+        </div>
+        <div id="claw-notion-status" style="display:flex;align-items:center;gap:5px;padding:5px 10px;border-radius:8px;border:1px solid var(--border);font-size:12px">
+          <span>📝</span><span id="claw-notion-label">Notion: not connected</span>
+          <button id="claw-notion-connect-btn" onclick="connectNotion()" style="display:none;font-size:11px;padding:2px 8px;border:none;background:rgba(168,85,247,.15);color:#a855f7;border-radius:6px;cursor:pointer">Connect</button>
+        </div>
+      </div>
+
+      <!-- Permission toggles — rendered by JS -->
+      <div id="claw-perm-toggles" style="display:flex;flex-direction:column;gap:8px"></div>
+
+      <!-- Action log link -->
+      <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:11px;color:var(--text-s)">All Claw actions are logged for your review.</span>
+        <button class="btn-sm" onclick="showClawActionLog()" style="font-size:11px">View Log</button>
+      </div>
+    </div>
+
+    <!-- ── Claw Action Log Modal ─────────────────────────────────────── -->
+    <div id="claw-log-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:9999;align-items:center;justify-content:center">
+      <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:16px;padding:22px;width:min(480px,90vw);max-height:70vh;display:flex;flex-direction:column">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <span style="font-size:14px;font-weight:800">🔍 Claw Action Log</span>
+          <button class="btn-sm" onclick="document.getElementById('claw-log-modal').style.display='none'">✕</button>
+        </div>
+        <div id="claw-log-entries" style="overflow-y:auto;flex:1;font-size:12px;display:flex;flex-direction:column;gap:6px">
+          <div style="color:var(--text-s);text-align:center;padding:20px">Loading…</div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
