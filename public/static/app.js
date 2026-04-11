@@ -2110,35 +2110,54 @@ function openSlackModal() {
   openModal(`<h2>💬 Send Slack Message</h2><div style="padding:20px;text-align:center;color:var(--text-m)">Loading channels…</div>`);
 
   fetch('/api/slack/channels').then(r=>r.json()).then(d=>{
-    if (d.error === 'not_connected' || d.channels?.length === 0 && d.error) {
-      // Not connected — show connect prompt inside modal
+    if (d.error === 'not_connected') {
+      // Not connected — show connect prompt, and after connect auto-open the send modal
       openModal(`<h2>💬 Slack</h2>
         <div style="text-align:center;padding:20px 10px">
           <div style="font-size:40px;margin-bottom:12px">💬</div>
           <p style="color:var(--text-m);font-size:14px;margin-bottom:18px">Connect Slack to post messages and standups directly from FlowState.</p>
-          <button class="btn-primary" style="width:100%" onclick="closeModal();connectSlack()">Connect Slack</button>
+          <button class="btn-primary" style="width:100%" onclick="closeModal();_connectSlackThenOpen()">Connect Slack</button>
         </div>`);
       return;
     }
     const channels = d.channels || [];
     if (!channels.length) {
-      openModal(`<h2>💬 Slack</h2><div style="padding:20px;text-align:center;color:var(--text-m)">No channels found — make sure the bot has been added to at least one channel.</div>`);
+      openModal(`<h2>💬 Slack</h2><div style="padding:20px;text-align:center;color:var(--text-m)">No channels found in your workspace yet.</div>`);
       return;
     }
-    openModal(`<h2>💬 Send Slack Message</h2>
-      <div style="margin-top:14px">
-        <label style="font-size:12px;color:var(--text-m)">Channel</label>
-        <select class="fs-sel" id="sl-chan" style="width:100%;margin:6px 0 12px">${channels.map(c=>`<option value="${c.id}">#${c.name}</option>`).join('')}</select>
-        <label style="font-size:12px;color:var(--text-m)">Message</label>
-        <textarea class="chat-in" id="sl-msg" style="width:100%;height:80px;margin-top:6px" placeholder="Type your message…"></textarea>
-        <div style="margin-top:10px;display:flex;gap:8px">
-          <button class="btn-primary" onclick="sendTestSlack()" style="flex:1">Send</button>
-          <button class="btn-sm" onclick="closeModal()">Cancel</button>
-        </div>
-      </div>`);
+    _renderSlackSendModal(channels);
   }).catch(()=>{
-    openModal(`<h2>💬 Slack</h2><div style="padding:20px;text-align:center;color:#ef4444">Could not connect to Slack — check your connection and try again.</div>`);
+    openModal(`<h2>💬 Slack</h2><div style="padding:20px;text-align:center;color:#ef4444">Could not reach Slack — check your connection and try again.</div>`);
   });
+}
+
+// Connect Slack and automatically open the send modal when done
+function _connectSlackThenOpen() {
+  const popup = window.open('/api/auth/slack', '_blank', 'width=480,height=600,noopener=no');
+  const timer = setInterval(function() {
+    if (popup && popup.closed) {
+      clearInterval(timer);
+      setTimeout(function() {
+        _verifySlackStatus().then(function() {
+          if (window.FS_SLACK) openSlackModal(); // auto-open send modal
+        });
+      }, 800);
+    }
+  }, 1000);
+}
+
+function _renderSlackSendModal(channels) {
+  openModal(`<h2>💬 Send Slack Message</h2>
+    <div style="margin-top:14px">
+      <label style="font-size:12px;color:var(--text-m)">Channel</label>
+      <select class="fs-sel" id="sl-chan" style="width:100%;margin:6px 0 12px">${channels.map(c=>`<option value="${c.id}">#${c.name}</option>`).join('')}</select>
+      <label style="font-size:12px;color:var(--text-m)">Message</label>
+      <textarea class="chat-in" id="sl-msg" style="width:100%;height:80px;margin-top:6px" placeholder="Type your message…"></textarea>
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn-primary" onclick="sendTestSlack()" style="flex:1">Send</button>
+        <button class="btn-sm" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>`);
 }
 
 function sendTestSlack() {
@@ -2882,12 +2901,12 @@ function updateFocusDur(m) {
 }
 
 function connectSlack() {
+  // If already connected, don't re-auth — just confirm
+  if (window.FS_SLACK) { notify('Slack is already connected — ' + (window.FS_SLACK.team || 'workspace'), 'success'); return; }
   const popup = window.open('/api/auth/slack', '_blank', 'width=480,height=600,noopener=no');
-  // Poll every second to detect when popup closed, then verify with server
   const timer = setInterval(function() {
     if (popup && popup.closed) {
       clearInterval(timer);
-      // Give the cookie a moment to propagate then check server status
       setTimeout(_verifySlackStatus, 800);
     }
   }, 1000);
@@ -2897,10 +2916,13 @@ async function _verifySlackStatus() {
   try {
     const r = await fetch('/api/auth/slack-status');
     const d = await r.json();
-    if (d.connected) {
+    if (d.connected && !window.FS_SLACK) {
+      // Only notify if this is a fresh connect, not a redundant check
       window.FS_SLACK = { team: d.team, connected: true };
       notify('✓ Slack connected — ' + (d.team || 'workspace synced'), 'success');
       _refreshSlackUI();
+    } else if (d.connected) {
+      window.FS_SLACK = { team: d.team, connected: true };
     }
   } catch(e) {}
 }
