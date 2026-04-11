@@ -2641,6 +2641,357 @@ app.post('/api/264pro/diagnostics', async (c) => {
   return c.json({ ok: true, issues, count: issues.length, analyzedAt: new Date().toISOString() })
 })
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLAWFLOW RELEASE SYSTEM — Post-production marketing automation
+// ───────────────────────────────────────────────────────────────────────────────
+// Security model:
+//   • All routes require a valid fs_session cookie.
+//   • Distribution actions (DistroKid / UnitedMasters) require:
+//       1. ClawFlow subscription (clawflow_required check)
+//       2. Explicit per-song PERMISSION (stored in claw_permissions:{email})
+//       3. API keys stored as Cloudflare secrets — NEVER sent to frontend
+//   • Cover art generation is FREE (no subscription required).
+//   • Pitch email generation is FREE (AI drafts only — user must confirm before send).
+//   • We NEVER auto-publish without user confirmation.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── POST /api/claw/release/cover-art ────────────────────────────────────────
+// Generate album/single cover art via AI.
+// FREE for all authenticated users — no ClawFlow required.
+// Uses fal.ai flux model to keep cost low (≈ $0.003 per image).
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/api/claw/release/cover-art', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+
+  const body: any = await c.req.json().catch(() => ({}))
+  const { songName, genre, mood, style, artistName } = body
+
+  if (!songName) return c.json({ error: 'songName required' }, 400)
+
+  const FAL_KEY = c.env.FAL_AI_KEY
+  if (!FAL_KEY) {
+    // Return a deterministic placeholder — never fail silently
+    return c.json({
+      ok: false,
+      error: 'Image generation unavailable',
+      placeholder: true,
+      message: 'Cover art generation is temporarily unavailable. Please try again later.',
+    })
+  }
+
+  // Build a high-quality cover art prompt
+  const styleMap: Record<string, string> = {
+    minimal: 'minimalist album cover, clean geometric shapes, bold typography, dark background',
+    vibrant: 'vibrant colorful album art, bold saturated colors, energetic composition',
+    cinematic: 'cinematic album cover, dramatic lighting, film still aesthetic, moody',
+    abstract: 'abstract artistic album cover, textural, experimental, gallery quality',
+    vintage: 'vintage vinyl record cover aesthetic, retro design, warm tones, grain',
+    futuristic: 'futuristic album art, neon accents, digital glitch, cyberpunk aesthetic',
+  }
+  const stylePrompt = styleMap[style ?? 'minimal'] ?? styleMap['minimal']
+  const moodDesc = mood ? `, ${mood} mood` : ''
+  const genreDesc = genre ? `, ${genre} music` : ''
+
+  const prompt = `Professional single cover art for "${songName}"${artistName ? ` by ${artistName}` : ''}${genreDesc}${moodDesc}. ${stylePrompt}. Square format, 1:1 ratio, professional music industry quality. No text, no watermarks, no borders.`
+
+  try {
+    // Queue the fal.ai request
+    const submitRes = await fetch('https://queue.fal.run/fal-ai/flux/schnell', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Key ${FAL_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        prompt,
+        image_size: 'square_hd',
+        num_inference_steps: 4,
+        num_images: 1,
+      }),
+    })
+    if (!submitRes.ok) throw new Error(`fal.ai error: ${submitRes.status}`)
+    const submitted: any = await submitRes.json()
+    const requestId = submitted.request_id
+
+    return c.json({
+      ok: true,
+      requestId,
+      pollUrl: `/api/claw/release/cover-art/poll/${requestId}`,
+      message: 'Cover art generating — poll for result.',
+      prompt,
+    })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'Cover art generation failed' }, 500)
+  }
+})
+
+// ─── GET /api/claw/release/cover-art/poll/:requestId ─────────────────────────
+app.get('/api/claw/release/cover-art/poll/:requestId', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+
+  const requestId = c.req.param('requestId')
+  const FAL_KEY = c.env.FAL_AI_KEY
+  if (!FAL_KEY) return c.json({ status: 'error', error: 'Service unavailable' }, 503)
+
+  try {
+    const statusRes = await fetch(`https://queue.fal.run/fal-ai/flux/schnell/requests/${requestId}/status`, {
+      headers: { 'Authorization': `Key ${FAL_KEY}` },
+    })
+    if (!statusRes.ok) return c.json({ status: 'error', error: `Poll failed: ${statusRes.status}` })
+    const statusData: any = await statusRes.json()
+
+    if (statusData.status === 'COMPLETED') {
+      const resultRes = await fetch(`https://queue.fal.run/fal-ai/flux/schnell/requests/${requestId}`, {
+        headers: { 'Authorization': `Key ${FAL_KEY}` },
+      })
+      const result: any = await resultRes.json()
+      const imageUrl = result?.images?.[0]?.url ?? result?.image?.url
+      return c.json({ status: 'complete', imageUrl })
+    }
+
+    if (statusData.status === 'FAILED') {
+      return c.json({ status: 'error', error: 'Generation failed' })
+    }
+
+    return c.json({ status: 'pending', queuePosition: statusData.queue_position ?? null })
+  } catch (err: any) {
+    return c.json({ status: 'error', error: err?.message ?? 'Poll failed' }, 500)
+  }
+})
+
+// ─── POST /api/claw/release/pitch-draft ──────────────────────────────────────
+// AI drafts a playlist pitch / editorial email.
+// FREE for authenticated users. User must copy/review before sending.
+// No emails are auto-sent by this endpoint — it only returns the draft text.
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/api/claw/release/pitch-draft', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+
+  const body: any = await c.req.json().catch(() => ({}))
+  const { songName, artistName, genre, mood, bpm, releaseDate, targetType, additionalContext } = body
+
+  if (!songName || !artistName) return c.json({ error: 'songName and artistName required' }, 400)
+
+  const validTargetTypes = ['spotify_editorial', 'playlist_curator', 'music_blog', 'pr_outlet', 'sync_license']
+  const target = validTargetTypes.includes(targetType) ? targetType : 'playlist_curator'
+
+  const targetDescriptions: Record<string, string> = {
+    spotify_editorial: 'Spotify Editorial playlist team (pitching via Spotify for Artists)',
+    playlist_curator: 'independent playlist curator on Spotify/Apple Music',
+    music_blog: 'music blog or online publication reviewer',
+    pr_outlet: 'music PR outlet or press release distributor',
+    sync_license: 'sync licensing agent for film/TV/advertising placement',
+  }
+
+  const systemPrompt = `You are a professional music PR specialist with 15 years of experience pitching independent artists to ${targetDescriptions[target]}. Write concise, authentic, compelling pitch emails that feel personal — not templated. Keep it under 200 words. No fluff, no excessive adjectives.`
+
+  const userMessage = `Write a pitch email for:
+Song: "${songName}"
+Artist: ${artistName}
+Genre: ${genre ?? 'not specified'}
+Mood/vibe: ${mood ?? 'not specified'}
+BPM: ${bpm ? `${bpm} BPM` : 'not specified'}
+Release date: ${releaseDate ?? 'upcoming'}
+Target: ${targetDescriptions[target]}
+${additionalContext ? `Additional context: ${additionalContext}` : ''}
+
+Write the full email including subject line. Be authentic and specific.`
+
+  const OPENROUTER_KEY = c.env.OPENROUTER_API_KEY
+  if (!OPENROUTER_KEY) {
+    return c.json({
+      ok: false,
+      error: 'AI service unavailable',
+      draft: `Subject: New ${genre ?? 'Independent'} Release — "${songName}" by ${artistName}\n\nHi,\n\nI'd love to share my latest single "${songName}" with you. [Add your personal pitch here]\n\nBest,\n${artistName}`,
+      isDemo: true,
+    })
+  }
+
+  try {
+    const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENROUTER_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://flowst8.cc',
+        'X-Title': 'FlowState Claw Release',
+      },
+      body: JSON.stringify({
+        model: 'anthropic/claude-haiku-4-5',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage },
+        ],
+        max_tokens: 600,
+        temperature: 0.75,
+      }),
+    })
+    if (!aiRes.ok) throw new Error(`OpenRouter error: ${aiRes.status}`)
+    const aiData: any = await aiRes.json()
+    const draft = aiData.choices?.[0]?.message?.content ?? ''
+
+    return c.json({ ok: true, draft, targetType: target, generatedAt: new Date().toISOString() })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'Draft generation failed' }, 500)
+  }
+})
+
+// ─── POST /api/claw/release/start ────────────────────────────────────────────
+// Initializes a release session and returns a structured checklist.
+// FREE for authenticated users.
+// Stores session in Redis: claw_release:{email}:{songId}
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/api/claw/release/start', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+
+  const body: any = await c.req.json().catch(() => ({}))
+  const { songName, bpm, genre, mood, artistName, releaseDate } = body
+
+  if (!songName) return c.json({ error: 'songName required' }, 400)
+
+  const email = session.email as string
+  const songId = `song_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
+  // Build release checklist
+  const checklist = [
+    { id: 'cover_art',      label: 'Generate Cover Art',          status: 'pending', free: true,  requiresClawflow: false },
+    { id: 'pitch_spotify',  label: 'Draft Spotify Editorial Pitch', status: 'pending', free: true,  requiresClawflow: false },
+    { id: 'pitch_curator',  label: 'Draft Curator Pitch Email',    status: 'pending', free: true,  requiresClawflow: false },
+    { id: 'distrokid',      label: 'Prepare DistroKid Release',   status: 'pending', free: false, requiresClawflow: true,  note: 'Requires DistroKid API key' },
+    { id: 'unitedmasters',  label: 'Prepare UnitedMasters Upload', status: 'pending', free: false, requiresClawflow: true,  note: 'Requires UnitedMasters authorization' },
+    { id: 'isrc',           label: 'Register ISRC Code',          status: 'pending', free: false, requiresClawflow: true,  note: 'Via USISRC or Sound Exchange' },
+    { id: 'metadata',       label: 'Verify Release Metadata',     status: 'pending', free: true,  requiresClawflow: false },
+    { id: 'blog_pitch',     label: 'Draft Music Blog Pitches',    status: 'pending', free: true,  requiresClawflow: false },
+  ]
+
+  const releaseSession = {
+    songId,
+    songName,
+    artistName: artistName ?? email.split('@')[0],
+    bpm: bpm ?? null,
+    genre: genre ?? null,
+    mood: mood ?? null,
+    releaseDate: releaseDate ?? null,
+    checklist,
+    createdAt: new Date().toISOString(),
+    email,
+  }
+
+  // Persist to Redis
+  try {
+    const REDIS_URL = c.env.UPSTASH_REDIS_URL
+    const REDIS_TOKEN = c.env.UPSTASH_REDIS_TOKEN
+    if (REDIS_URL && REDIS_TOKEN) {
+      await fetch(`${REDIS_URL}/set/claw_release_${email}_${songId}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ex: 604800, value: JSON.stringify(releaseSession) }),
+      })
+    }
+  } catch { /* Redis failure is non-fatal */ }
+
+  return c.json({
+    ok: true,
+    songId,
+    session: releaseSession,
+    message: `Release workflow started for "${songName}". Claw has your back.`,
+  })
+})
+
+// ─── GET /api/claw/release/status/:songId ────────────────────────────────────
+app.get('/api/claw/release/status/:songId', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+
+  const email = session.email as string
+  const songId = c.req.param('songId')
+
+  try {
+    const REDIS_URL = c.env.UPSTASH_REDIS_URL
+    const REDIS_TOKEN = c.env.UPSTASH_REDIS_TOKEN
+    if (!REDIS_URL || !REDIS_TOKEN) return c.json({ error: 'Storage unavailable' }, 503)
+
+    const redisRes = await fetch(`${REDIS_URL}/get/claw_release_${email}_${songId}`, {
+      headers: { 'Authorization': `Bearer ${REDIS_TOKEN}` },
+    })
+    const data: any = await redisRes.json()
+    if (!data?.result) return c.json({ error: 'Release session not found' }, 404)
+
+    const releaseSession = JSON.parse(data.result)
+    return c.json({ ok: true, session: releaseSession })
+  } catch {
+    return c.json({ error: 'Failed to retrieve session' }, 500)
+  }
+})
+
+// ─── POST /api/claw/release/metadata ─────────────────────────────────────────
+// Returns structured metadata for a release (ISRC info, required fields, etc.)
+// AI-assisted field completion.
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/api/claw/release/metadata', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+
+  const body: any = await c.req.json().catch(() => ({}))
+  const { songName, artistName, genre, releaseDate, bpm, mood } = body
+
+  if (!songName || !artistName) return c.json({ error: 'songName and artistName required' }, 400)
+
+  // Infer smart defaults
+  const inferredGenreTags = genre
+    ? [genre, genre.toLowerCase().replace(/\s+/g, '-')]
+    : ['independent', 'original']
+
+  const today = new Date()
+  const smartReleaseDate = releaseDate
+    ? releaseDate
+    : new Date(today.getTime() + 21 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+
+  // Build metadata object matching standard DSP requirements
+  const metadata = {
+    title: songName,
+    artist: artistName,
+    genre: genre ?? 'Independent',
+    subGenre: null,
+    mood: mood ?? null,
+    bpm: bpm ?? null,
+    language: 'en',
+    releaseDate: smartReleaseDate,
+    upc: null,          // Will be assigned by distributor
+    isrc: null,         // Needs registration — see /api/claw/release/start checklist
+    label: `${artistName} (Self-Released)`,
+    copyright: `${today.getFullYear()} ${artistName}`,
+    pLine: `${today.getFullYear()} ${artistName}`,
+    explicit: false,
+    tags: inferredGenreTags,
+    // Distribution channel requirements
+    spotifyRequirements: {
+      coverArtMinSize: '3000x3000',
+      coverArtFormat: 'JPEG or PNG',
+      audioFormat: 'WAV 16-bit or 24-bit, 44.1kHz',
+      metadataDeadlineBeforeRelease: '7 days',
+    },
+    appleMusicRequirements: {
+      coverArtMinSize: '3000x3000',
+      audioFormat: 'WAV or AIFF 24-bit, 44.1kHz or 48kHz',
+    },
+    // Checklist of what still needs to be completed
+    completionStatus: {
+      coverArt: false,
+      audioFile: true,        // User just bounced — audio is done
+      isrc: false,
+      metadata: !!(songName && artistName && genre),
+      releaseDate: !!releaseDate,
+    },
+  }
+
+  return c.json({ ok: true, metadata })
+})
+
 // POST /api/264pro/activity — log editor activity events to Redis
 app.post('/api/264pro/activity', async (c) => {
   const token = get264Token(c)
@@ -3089,13 +3440,22 @@ async function callHiggsfield(higgsKey: string, model: string, input: Record<str
 
 // POST /api/264pro/video-gen — AI video generation (Seedance, Higgsfield, Nano Banana)
 app.post('/api/264pro/video-gen', async (c) => {
-  const token = get264Token(c)
-  if (!token) return c.json({ error: 'Not authenticated' }, 401)
-  const auth = await verify264Token(c, token)
-  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+  // Dual auth: accept 264pro Electron token OR FlowState session cookie
+  // This allows the CLAW Video wizard (web) and 264 Pro (Electron) to share the same route
+  let tier = 'free'
+  const desktopToken = get264Token(c)
+  if (desktopToken) {
+    const auth = await verify264Token(c, desktopToken)
+    if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+    tier = auth.tier || 'free'
+  } else {
+    // Fall back to session cookie (web / CLAW wizard)
+    const session = decodeSession(getCookie(c, 'fs_session') || '')
+    if (!session) return c.json({ error: 'Not authenticated' }, 401)
+    tier = (session as any).tier || 'free'
+  }
 
   // All video generation requires Pro tier
-  const tier = auth.tier || 'free'
   const hasPro = isTierPro(tier)
   if (!hasPro) return c.json({ error: 'Video generation requires a Pro plan.', upgradeUrl: 'https://flowst8.cc/pricing' }, 403)
 
@@ -3303,10 +3663,15 @@ app.post('/api/264pro/video-gen', async (c) => {
 
 // GET /api/264pro/video-gen/poll/:requestId — poll AI video generation status
 app.get('/api/264pro/video-gen/poll/:requestId', async (c) => {
-  const token = get264Token(c)
-  if (!token) return c.json({ error: 'Not authenticated' }, 401)
-  const auth = await verify264Token(c, token)
-  if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+  // Dual auth: Electron token OR session cookie
+  const desktopToken = get264Token(c)
+  if (desktopToken) {
+    const auth = await verify264Token(c, desktopToken)
+    if (!auth.valid) return c.json({ error: 'Invalid token' }, 401)
+  } else {
+    const session = decodeSession(getCookie(c, 'fs_session') || '')
+    if (!session) return c.json({ error: 'Not authenticated' }, 401)
+  }
 
   const requestId = c.req.param('requestId')
   const provider  = c.req.query('provider') || 'fal'

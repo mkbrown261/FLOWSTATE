@@ -4785,3 +4785,579 @@ function clawVideoPostExportBanner(audioCtx) {
     if (el) { el.style.animation = 'none'; el.style.opacity='0'; el.style.transition='opacity .4s'; setTimeout(()=>el.remove(),400); }
   }, 12000);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLAWFLOW RELEASE WIZARD — Post-export marketing & distribution wizard
+// Triggered by: FS Audio ExportModal "Let Claw Handle It" button
+//               URL param ?claw=release
+//               Manual call: openClawReleaseWizard({ songName, bpm })
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _crw = {
+  open: false,
+  step: 0,   // 0=intro 1=metadata 2=cover 3=pitches 4=distribute 5=done
+  songId: null,
+  songName: '',
+  bpm: null,
+  genre: '',
+  mood: '',
+  artistName: '',
+  releaseDate: '',
+  coverUrl: null,
+  coverPollId: null,
+  coverPollTimer: null,
+  pitchDrafts: {},  // { spotify_editorial, playlist_curator, music_blog }
+  metadata: null,
+  loadingCover: false,
+  loadingPitch: null,
+};
+
+const _CRW_STEPS = ['Intro', 'Details', 'Cover Art', 'Pitch Emails', 'Distribute', 'Done'];
+
+/**
+ * Entry point — call from anywhere.
+ * opts: { songName?, bpm?, genre?, mood?, artistName? }
+ */
+function openClawReleaseWizard(opts) {
+  if (!FS_USER) {
+    notify('Sign in to use the Claw Release Wizard', 'info');
+    return;
+  }
+  opts = opts || {};
+  _crw.open    = true;
+  _crw.step    = 0;
+  _crw.songId  = null;
+  _crw.songName = opts.songName || '';
+  _crw.bpm     = opts.bpm || null;
+  _crw.genre   = opts.genre || '';
+  _crw.mood    = opts.mood || '';
+  _crw.artistName = opts.artistName || (FS_USER && (FS_USER.name || FS_USER.email?.split('@')[0])) || '';
+  _crw.releaseDate = '';
+  _crw.coverUrl = null;
+  _crw.coverPollId = null;
+  if (_crw.coverPollTimer) clearInterval(_crw.coverPollTimer);
+  _crw.pitchDrafts = {};
+  _crw.metadata = null;
+  _crw.loadingCover = false;
+  _crw.loadingPitch = null;
+  _crwRender();
+}
+
+function _crwClose() {
+  _crw.open = false;
+  if (_crw.coverPollTimer) clearInterval(_crw.coverPollTimer);
+  document.getElementById('crw-overlay')?.remove();
+}
+
+function _crwRender() {
+  document.getElementById('crw-overlay')?.remove();
+  if (!_crw.open) return;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'crw-overlay';
+  overlay.style.cssText = `
+    position:fixed; inset:0; z-index:9500;
+    background:rgba(0,0,0,0.82); backdrop-filter:blur(12px);
+    display:flex; align-items:center; justify-content:center; padding:16px;
+    animation:fadeIn .22s ease;
+  `;
+  overlay.addEventListener('click', e => { if (e.target === overlay) _crwClose(); });
+
+  // Step progress bar
+  const stepsHtml = _CRW_STEPS.map((s, i) => `
+    <div style="display:flex;align-items:center;gap:4px;font-size:10px;font-weight:${i===_crw.step?700:400};
+      color:${i<_crw.step?'var(--green)':i===_crw.step?'#c4b5fd':'rgba(255,255,255,0.3)'};
+      cursor:${i<_crw.step?'pointer':'default'}"
+      ${i < _crw.step ? `onclick="_crw.step=${i};_crwRender()"` : ''}>
+      <span style="width:16px;height:16px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:9px;
+        background:${i<_crw.step?'rgba(16,185,129,.3)':i===_crw.step?'rgba(168,85,247,.35)':'rgba(255,255,255,.06)'};
+        border:1px solid ${i<_crw.step?'rgba(16,185,129,.5)':i===_crw.step?'rgba(168,85,247,.6)':'rgba(255,255,255,.1)'}">
+        ${i < _crw.step ? '✓' : i+1}
+      </span>
+      <span style="display:${_crw.step===i?'inline':'none'}">${s}</span>
+    </div>
+    ${i < _CRW_STEPS.length-1 ? '<div style="width:14px;height:1px;background:rgba(255,255,255,.1);flex-shrink:0"></div>' : ''}
+  `).join('');
+
+  const header = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <img src="/static/clawbot-mascot.png" onerror="this.style.display='none'" width="36" height="36" style="border-radius:50%;filter:drop-shadow(0 0 8px rgba(168,85,247,.5))">
+        <div>
+          <div style="font-size:14px;font-weight:800;color:#e9d5ff">Claw Release Wizard</div>
+          <div style="font-size:10px;color:rgba(196,181,253,0.6)">${_crw.songName ? `"${_crw.songName}"` : 'New Release'}</div>
+        </div>
+      </div>
+      <button onclick="_crwClose()" style="background:none;border:none;color:rgba(255,255,255,.4);cursor:pointer;font-size:16px;padding:4px">✕</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:20px;padding:10px;background:rgba(255,255,255,.03);border-radius:10px;overflow-x:auto">
+      ${stepsHtml}
+    </div>
+  `;
+
+  let content = '';
+  if (_crw.step === 0) content = _crwStep0(header);
+  else if (_crw.step === 1) content = _crwStep1(header);
+  else if (_crw.step === 2) content = _crwStep2(header);
+  else if (_crw.step === 3) content = _crwStep3(header);
+  else if (_crw.step === 4) content = _crwStep4(header);
+  else content = _crwStep5(header);
+
+  overlay.innerHTML = `
+    <div style="background:linear-gradient(160deg,#12102a,#1a1040 50%,#0d0d1a);
+      border:1px solid rgba(168,85,247,.4);border-radius:20px;
+      max-width:520px;width:100%;padding:28px 24px 22px;
+      box-shadow:0 0 80px rgba(168,85,247,.2),0 24px 60px rgba(0,0,0,.6);
+      max-height:90vh;overflow-y:auto">
+      ${content}
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Inject CSS once
+  if (!document.getElementById('crw-css')) {
+    const s = document.createElement('style');
+    s.id = 'crw-css';
+    s.textContent = `
+      @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+      @keyframes crwSlideIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+      .crw-btn-primary { padding:11px 20px;border-radius:10px;border:none;
+        background:linear-gradient(135deg,#9333ea,#7c3aed 60%,#06b6d4);
+        color:#fff;font-size:13px;font-weight:700;cursor:pointer;width:100%;
+        box-shadow:0 4px 20px rgba(147,51,234,.35);transition:transform .15s,box-shadow .15s; }
+      .crw-btn-primary:hover { transform:translateY(-1px);box-shadow:0 6px 28px rgba(147,51,234,.5); }
+      .crw-btn-secondary { padding:9px 20px;border-radius:10px;
+        border:1px solid rgba(255,255,255,.1);background:transparent;
+        color:rgba(255,255,255,.5);font-size:12px;cursor:pointer;width:100%;
+        transition:color .15s,border-color .15s; }
+      .crw-btn-secondary:hover { color:rgba(255,255,255,.8);border-color:rgba(255,255,255,.25); }
+      .crw-input { width:100%;padding:9px 12px;border-radius:8px;
+        border:1px solid rgba(168,85,247,.25);background:rgba(255,255,255,.04);
+        color:#e9d5ff;font-size:12px;outline:none;box-sizing:border-box; }
+      .crw-input:focus { border-color:rgba(168,85,247,.6); }
+      .crw-label { font-size:10px;font-weight:700;color:rgba(196,181,253,.7);
+        text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px;display:block; }
+      .crw-field { margin-bottom:14px; }
+      .crw-pill { display:inline-block;padding:5px 10px;border-radius:20px;
+        font-size:11px;font-weight:600;cursor:pointer;border:1px solid rgba(168,85,247,.3);
+        background:rgba(168,85,247,.08);color:#c4b5fd;transition:background .15s,border-color .15s; }
+      .crw-pill.active { background:rgba(168,85,247,.3);border-color:rgba(168,85,247,.7);color:#fff; }
+      .crw-pill-row { display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px; }
+    `;
+    document.head.appendChild(s);
+  }
+}
+
+// ── Step 0: Intro / pitch ─────────────────────────────────────────────────────
+function _crwStep0(header) {
+  const features = [
+    { e:'🎨', t:'Cover Art',      d:'AI-generated, free' },
+    { e:'📧', t:'Pitch Emails',   d:'Spotify Editorial & curators' },
+    { e:'📝', t:'Release Metadata', d:'ISRC, PRO, DSP requirements' },
+    { e:'🚀', t:'Distribution',   d:'UnitedMasters & DistroKid' },
+    { e:'📣', t:'Media Outreach', d:'Blogs, press, sync licensing' },
+  ];
+  const featureHtml = features.map(f => `
+    <div style="display:flex;align-items:center;gap:8px;padding:9px 10px;
+      background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.18);border-radius:9px">
+      <span style="font-size:18px">${f.e}</span>
+      <div>
+        <div style="font-size:11px;font-weight:700;color:#e9d5ff">${f.t}</div>
+        <div style="font-size:10px;color:rgba(196,181,253,.6)">${f.d}</div>
+      </div>
+    </div>
+  `).join('');
+
+  return `${header}
+    <div style="text-align:center;margin-bottom:18px">
+      <div style="font-size:20px;font-weight:800;color:#fff;margin-bottom:8px">
+        🎉 Your song is finished.
+      </div>
+      <div style="font-size:13px;color:rgba(196,181,253,.85);line-height:1.55;max-width:380px;margin:0 auto">
+        <strong style="color:#e9d5ff">Claw can take
+          <span style="background:linear-gradient(90deg,#a855f7,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent">
+            ${_crw.songName ? `"${escHtml(_crw.songName)}"` : 'this record'}
+          </span>
+          to the next level</strong> — handling the entire post-production workflow so you can focus on what matters.
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:20px">
+      ${featureHtml}
+    </div>
+    <div style="font-size:10px;color:rgba(255,255,255,.2);text-align:center;margin-bottom:14px;line-height:1.4">
+      Cover art &amp; pitch drafts are free. Distribution requires ClawFlow.<br>
+      Claw will always ask before sending anything.
+    </div>
+    <button class="crw-btn-primary" onclick="_crw.step=1;_crwRender()">
+      ⚡ Let's Do This — Start Release Workflow
+    </button>
+    <button class="crw-btn-secondary" style="margin-top:8px" onclick="_crwClose()">
+      Not yet — I'll handle it myself
+    </button>
+  `;
+}
+
+// ── Step 1: Song Details ──────────────────────────────────────────────────────
+const _CRW_GENRES = ['Hip-Hop','R&B','Pop','Electronic','Indie','Rock','Country','Jazz','Classical','Lo-Fi','Drill','Afrobeats','Latin'];
+const _CRW_MOODS  = ['Uplifting','Dark','Chill','Energetic','Melancholic','Romantic','Aggressive','Spiritual'];
+
+function _crwStep1(header) {
+  return `${header}
+    <div style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#e9d5ff;margin-bottom:4px">Tell Claw about the track</div>
+      <div style="font-size:11px;color:rgba(196,181,253,.6)">This helps generate accurate pitches and metadata.</div>
+    </div>
+    <div class="crw-field">
+      <label class="crw-label">Song Title *</label>
+      <input class="crw-input" id="crw-title" value="${escHtml(_crw.songName)}" placeholder="Song name" oninput="_crw.songName=this.value">
+    </div>
+    <div class="crw-field">
+      <label class="crw-label">Artist Name *</label>
+      <input class="crw-input" id="crw-artist" value="${escHtml(_crw.artistName)}" placeholder="Your artist name" oninput="_crw.artistName=this.value">
+    </div>
+    <div class="crw-field" style="display:flex;gap:10px">
+      <div style="flex:1">
+        <label class="crw-label">BPM</label>
+        <input class="crw-input" type="number" id="crw-bpm" value="${_crw.bpm||''}" placeholder="e.g. 93" oninput="_crw.bpm=parseInt(this.value)||null">
+      </div>
+      <div style="flex:1">
+        <label class="crw-label">Release Date</label>
+        <input class="crw-input" type="date" id="crw-date" value="${_crw.releaseDate}" oninput="_crw.releaseDate=this.value">
+      </div>
+    </div>
+    <div class="crw-field">
+      <label class="crw-label">Genre</label>
+      <div class="crw-pill-row">
+        ${_CRW_GENRES.map(g => `<span class="crw-pill ${_crw.genre===g?'active':''}" onclick="_crw.genre='${g}';_crwRender()">${g}</span>`).join('')}
+      </div>
+    </div>
+    <div class="crw-field">
+      <label class="crw-label">Mood / Vibe</label>
+      <div class="crw-pill-row">
+        ${_CRW_MOODS.map(m => `<span class="crw-pill ${_crw.mood===m?'active':''}" onclick="_crw.mood='${m}';_crwRender()">${m}</span>`).join('')}
+      </div>
+    </div>
+    <button class="crw-btn-primary" onclick="_crwStep1Submit()">
+      Continue → Cover Art
+    </button>
+    <button class="crw-btn-secondary" style="margin-top:8px" onclick="_crw.step=0;_crwRender()">← Back</button>
+  `;
+}
+
+async function _crwStep1Submit() {
+  if (!_crw.songName.trim()) { notify('Enter a song title to continue', 'error'); return; }
+  if (!_crw.artistName.trim()) { notify('Enter your artist name to continue', 'error'); return; }
+
+  // Start release session on backend
+  try {
+    const res = await fetch('/api/claw/release/start', {
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        songName:_crw.songName, artistName:_crw.artistName,
+        bpm:_crw.bpm, genre:_crw.genre, mood:_crw.mood,
+        releaseDate:_crw.releaseDate || null,
+      }),
+    });
+    const d = await res.json();
+    if (d.ok) _crw.songId = d.songId;
+  } catch {}
+
+  _crw.step = 2;
+  _crwRender();
+  // Auto-start cover art generation
+  setTimeout(_crwGenerateCoverArt, 400);
+}
+
+// ── Step 2: Cover Art ─────────────────────────────────────────────────────────
+function _crwStep2(header) {
+  let coverContent = '';
+  if (_crw.loadingCover && !_crw.coverUrl) {
+    coverContent = `
+      <div style="text-align:center;padding:30px 0">
+        <div style="font-size:28px;margin-bottom:10px;animation:spin 1.5s linear infinite;display:inline-block">🎨</div>
+        <div style="font-size:12px;color:rgba(196,181,253,.7)">Generating your cover art…</div>
+        <div style="font-size:10px;color:rgba(196,181,253,.4);margin-top:4px">Usually takes 10–20 seconds</div>
+      </div>
+    `;
+  } else if (_crw.coverUrl) {
+    coverContent = `
+      <div style="text-align:center;margin-bottom:14px">
+        <img src="${escHtml(_crw.coverUrl)}" style="width:200px;height:200px;border-radius:12px;object-fit:cover;border:1px solid rgba(168,85,247,.3);box-shadow:0 8px 32px rgba(0,0,0,.5)" alt="Cover Art">
+        <div style="font-size:11px;color:rgba(196,181,253,.6);margin-top:8px">
+          ✓ Cover generated · <a href="${escHtml(_crw.coverUrl)}" target="_blank" style="color:#a855f7;text-decoration:none">Download</a>
+        </div>
+      </div>
+    `;
+  } else {
+    coverContent = `
+      <div style="text-align:center;padding:20px 0">
+        <div style="font-size:36px;margin-bottom:8px">🎨</div>
+        <div style="font-size:12px;color:rgba(196,181,253,.7);margin-bottom:12px">Generate AI cover art for free</div>
+        <button class="crw-btn-primary" onclick="_crwGenerateCoverArt()">Generate Cover Art</button>
+      </div>
+    `;
+  }
+
+  const coverStyles = ['minimal','vibrant','cinematic','abstract','vintage','futuristic'];
+
+  return `${header}
+    <div style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#e9d5ff;margin-bottom:3px">🎨 Cover Art</div>
+      <div style="font-size:11px;color:rgba(196,181,253,.5)">AI-generated in seconds. Free for all users.</div>
+    </div>
+    ${coverContent}
+    ${!_crw.loadingCover && !_crw.coverUrl ? '' : `
+      <div class="crw-field" style="margin-top:8px">
+        <label class="crw-label">Art Style</label>
+        <div class="crw-pill-row">
+          ${coverStyles.map(s => `<span class="crw-pill ${(window._crwCoverStyle||'minimal')===s?'active':''}"
+            onclick="window._crwCoverStyle='${s}';_crw.coverUrl=null;_crw.loadingCover=false;_crwRender()">${s}</span>`).join('')}
+        </div>
+        <button class="crw-btn-secondary" onclick="_crw.coverUrl=null;_crwGenerateCoverArt()">🔄 Regenerate</button>
+      </div>
+    `}
+    <div style="margin-top:16px;display:flex;gap:8px">
+      <button class="crw-btn-secondary" onclick="_crw.step=1;_crwRender()">← Back</button>
+      <button class="crw-btn-primary" onclick="_crw.step=3;_crwRender()">
+        ${_crw.coverUrl ? 'Use this cover →' : 'Skip for now →'}
+      </button>
+    </div>
+  `;
+}
+
+async function _crwGenerateCoverArt() {
+  _crw.loadingCover = true;
+  _crwRender();
+
+  const style = window._crwCoverStyle || 'minimal';
+  try {
+    const res = await fetch('/api/claw/release/cover-art', {
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ songName:_crw.songName, artistName:_crw.artistName, genre:_crw.genre, mood:_crw.mood, style }),
+    });
+    const d = await res.json();
+    if (!d.ok) { _crw.loadingCover = false; _crwRender(); notify(d.error||'Cover art failed','error'); return; }
+
+    // Poll for result
+    _crw.coverPollId = d.requestId;
+    _crwPollCoverArt(d.requestId);
+  } catch (e) {
+    _crw.loadingCover = false;
+    _crwRender();
+    notify('Cover art generation failed. Please try again.', 'error');
+  }
+}
+
+async function _crwPollCoverArt(requestId) {
+  let attempts = 0;
+  const poll = async () => {
+    if (attempts++ > 20) { _crw.loadingCover = false; _crwRender(); return; }
+    try {
+      const res = await fetch(`/api/claw/release/cover-art/poll/${requestId}`, { credentials:'include' });
+      const d = await res.json();
+      if (d.status === 'complete' && d.imageUrl) {
+        _crw.coverUrl = d.imageUrl;
+        _crw.loadingCover = false;
+        _crwRender();
+      } else if (d.status === 'error') {
+        _crw.loadingCover = false;
+        _crwRender();
+        notify('Cover art generation failed', 'error');
+      } else {
+        setTimeout(poll, 3000);
+      }
+    } catch { setTimeout(poll, 4000); }
+  };
+  poll();
+}
+
+// ── Step 3: Pitch Emails ──────────────────────────────────────────────────────
+function _crwStep3(header) {
+  const pitchTypes = [
+    { id:'spotify_editorial', label:'Spotify Editorial', icon:'🎵', desc:'Submit to Spotify\'s editorial playlist team' },
+    { id:'playlist_curator',  label:'Playlist Curators', icon:'📋', desc:'Independent Spotify/Apple Music curators' },
+    { id:'music_blog',        label:'Music Blog',        icon:'📰', desc:'Blog reviewers and online publications' },
+  ];
+
+  const pitchCards = pitchTypes.map(p => {
+    const draft = _crw.pitchDrafts[p.id];
+    return `
+      <div style="border:1px solid rgba(168,85,247,${draft?'.4':'.15'});border-radius:10px;padding:12px;margin-bottom:8px;
+        background:rgba(168,85,247,${draft?'.08':'.03'})">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <div style="font-size:12px;font-weight:700;color:#e9d5ff">${p.icon} ${p.label}</div>
+          ${draft
+            ? `<button onclick="_crw.pitchDrafts['${p.id}']=null;_crwRender()"
+                style="font-size:10px;color:rgba(255,255,255,.35);background:none;border:none;cursor:pointer">↺ Redo</button>`
+            : `<button onclick="_crwGeneratePitch('${p.id}')" id="crw-pitch-btn-${p.id}"
+                style="font-size:10px;padding:4px 10px;border-radius:6px;border:none;
+                background:linear-gradient(135deg,#7c3aed,#06b6d4);color:#fff;cursor:pointer;font-weight:600">
+                ${_crw.loadingPitch===p.id?'Drafting…':'Draft ✨'}</button>`
+          }
+        </div>
+        <div style="font-size:10px;color:rgba(196,181,253,.5);margin-bottom:8px">${p.desc}</div>
+        ${draft ? `
+          <textarea style="width:100%;min-height:120px;padding:8px;border-radius:6px;
+            border:1px solid rgba(168,85,247,.25);background:rgba(255,255,255,.03);
+            color:#e9d5ff;font-size:10px;line-height:1.5;resize:vertical;box-sizing:border-box"
+            onchange="_crw.pitchDrafts['${p.id}']=this.value">${escHtml(draft)}</textarea>
+          <div style="font-size:10px;color:rgba(196,181,253,.4);margin-top:4px">✏️ Edit as needed — Claw drafted this, you own it.</div>
+        ` : ''}
+      </div>
+    `;
+  }).join('');
+
+  return `${header}
+    <div style="margin-bottom:14px">
+      <div style="font-size:13px;font-weight:700;color:#e9d5ff;margin-bottom:3px">📧 Pitch Emails</div>
+      <div style="font-size:11px;color:rgba(196,181,253,.5)">Claw drafts them. You review, edit, and send.</div>
+    </div>
+    ${pitchCards}
+    <div style="margin-top:14px;display:flex;gap:8px">
+      <button class="crw-btn-secondary" onclick="_crw.step=2;_crwRender()">← Back</button>
+      <button class="crw-btn-primary" onclick="_crw.step=4;_crwRender()">
+        Continue → Distribution →
+      </button>
+    </div>
+  `;
+}
+
+async function _crwGeneratePitch(pitchType) {
+  _crw.loadingPitch = pitchType;
+  _crwRender();
+  try {
+    const res = await fetch('/api/claw/release/pitch-draft', {
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        songName:_crw.songName, artistName:_crw.artistName,
+        genre:_crw.genre, mood:_crw.mood, bpm:_crw.bpm,
+        releaseDate:_crw.releaseDate, targetType:pitchType,
+      }),
+    });
+    const d = await res.json();
+    _crw.pitchDrafts[pitchType] = d.draft || 'Draft unavailable — please try again.';
+    if (d.isDemo) notify('Using demo draft — AI service unavailable', 'info');
+  } catch {
+    _crw.pitchDrafts[pitchType] = `Could not generate draft. Please try again.`;
+    notify('Pitch draft failed', 'error');
+  }
+  _crw.loadingPitch = null;
+  _crwRender();
+}
+
+// ── Step 4: Distribution ──────────────────────────────────────────────────────
+function _crwStep4(header) {
+  const hasClawflow = FS_USER && (FS_USER.tier === 'clawflow' || FS_USER.subscription === 'clawflow');
+
+  return `${header}
+    <div style="margin-bottom:14px">
+      <div style="font-size:13px;font-weight:700;color:#e9d5ff;margin-bottom:3px">🚀 Distribution</div>
+      <div style="font-size:11px;color:rgba(196,181,253,.5)">Connect your distributor and Claw handles the upload.</div>
+    </div>
+
+    ${!hasClawflow ? `
+      <div style="border:1px solid rgba(168,85,247,.35);border-radius:12px;padding:16px;
+        background:rgba(168,85,247,.06);text-align:center;margin-bottom:14px">
+        <div style="font-size:28px;margin-bottom:8px">⚡</div>
+        <div style="font-size:13px;font-weight:700;color:#e9d5ff;margin-bottom:6px">ClawFlow Required</div>
+        <div style="font-size:11px;color:rgba(196,181,253,.7);line-height:1.5;margin-bottom:12px">
+          Distribution automation requires ClawFlow. Upgrade to let Claw handle your entire release pipeline — uploads, ISRC registration, and playlist pitching.
+        </div>
+        <button class="crw-btn-primary" onclick="openPricingModal()">
+          Upgrade to ClawFlow →
+        </button>
+      </div>
+    ` : `
+      <div style="margin-bottom:12px">
+        <!-- DistroKid -->
+        <div style="border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:12px;margin-bottom:8px;
+          background:rgba(168,85,247,.04)">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div style="font-size:12px;font-weight:700;color:#e9d5ff">🎵 DistroKid</div>
+              <div style="font-size:10px;color:rgba(196,181,253,.5);margin-top:2px">Single / Album upload via DistroKid API</div>
+            </div>
+            <button onclick="notify('DistroKid API integration coming in the next release. For now, Claw has prepared your metadata — upload at distrokid.com.','info')"
+              style="padding:6px 12px;border-radius:8px;border:none;background:linear-gradient(135deg,#7c3aed,#06b6d4);
+              color:#fff;font-size:11px;font-weight:700;cursor:pointer">
+              Prepare Upload
+            </button>
+          </div>
+        </div>
+        <!-- UnitedMasters -->
+        <div style="border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:12px;
+          background:rgba(168,85,247,.04)">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div style="font-size:12px;font-weight:700;color:#e9d5ff">🎤 UnitedMasters</div>
+              <div style="font-size:10px;color:rgba(196,181,253,.5);margin-top:2px">Direct distribution + brand partnerships</div>
+            </div>
+            <button onclick="notify('UnitedMasters integration coming soon. Claw has your metadata ready — upload at unitedmasters.com.','info')"
+              style="padding:6px 12px;border-radius:8px;border:none;background:linear-gradient(135deg,#0f766e,#0891b2);
+              color:#fff;font-size:11px;font-weight:700;cursor:pointer">
+              Prepare Upload
+            </button>
+          </div>
+        </div>
+      </div>
+    `}
+
+    <div style="padding:10px;background:rgba(255,255,255,.03);border-radius:8px;margin-bottom:14px">
+      <div style="font-size:10px;font-weight:700;color:rgba(196,181,253,.7);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">📋 Release Checklist</div>
+      <div style="font-size:11px;color:rgba(196,181,253,.7);line-height:1.8">
+        ${_crw.coverUrl ? '✅' : '⬜'} Cover Art<br>
+        ${Object.keys(_crw.pitchDrafts).length > 0 ? '✅' : '⬜'} Pitch Emails Drafted<br>
+        ⬜ ISRC Registration (after distribution)<br>
+        ⬜ Spotify for Artists — Submit for Editorial<br>
+        ⬜ Upload to Distributor<br>
+        ⬜ Social media announcement
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px">
+      <button class="crw-btn-secondary" onclick="_crw.step=3;_crwRender()">← Back</button>
+      <button class="crw-btn-primary" onclick="_crw.step=5;_crwRender()">Finish →</button>
+    </div>
+  `;
+}
+
+// ── Step 5: Done ──────────────────────────────────────────────────────────────
+function _crwStep5(header) {
+  const itemCount = (!!_crw.coverUrl ? 1:0) + Object.keys(_crw.pitchDrafts).length;
+  return `${header}
+    <div style="text-align:center;padding:16px 0 20px">
+      <div style="font-size:50px;margin-bottom:12px;filter:drop-shadow(0 0 16px rgba(168,85,247,.5))">⚡</div>
+      <div style="font-size:18px;font-weight:800;color:#fff;margin-bottom:8px">You're ready to release!</div>
+      <div style="font-size:12px;color:rgba(196,181,253,.8);line-height:1.6;max-width:340px;margin:0 auto 20px">
+        Claw completed ${itemCount} task${itemCount!==1?'s':''} for <strong>"${escHtml(_crw.songName)}"</strong>.
+        The post-workflow is done — now go tell the world.
+      </div>
+      <div style="background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.2);border-radius:10px;
+        padding:12px 16px;text-align:left;margin-bottom:16px;font-size:11px;color:rgba(196,181,253,.8);line-height:1.8">
+        ${_crw.coverUrl ? '✅ Cover art generated<br>' : ''}
+        ${Object.keys(_crw.pitchDrafts).map(k => `✅ ${k.replace(/_/g,' ')} pitch drafted<br>`).join('')}
+        ✅ Release metadata structured<br>
+        ✅ Distribution checklist ready
+      </div>
+      <button class="crw-btn-primary" onclick="_crwClose()">Close Wizard</button>
+      <div style="font-size:10px;color:rgba(255,255,255,.2);margin-top:12px;line-height:1.4">
+        Need help? Open the Clawbot tab and ask anything about your release.
+      </div>
+    </div>
+  `;
+}
+
+// ── URL param handler — ?claw=release ─────────────────────────────────────────
+(function _crwCheckUrlParam() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('claw') === 'release') {
+    window.history.replaceState({}, '', window.location.pathname);
+    setTimeout(() => openClawReleaseWizard({
+      songName: params.get('track') || '',
+      bpm: parseInt(params.get('bpm') || '0') || null,
+    }), 1000);
+  }
+})();
