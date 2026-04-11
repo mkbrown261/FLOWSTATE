@@ -221,7 +221,7 @@ app.get('/api/auth/notion/callback', async (c) => {
       body: JSON.stringify({ grant_type: 'authorization_code', code, redirect_uri: baseUrl + '/api/auth/notion/callback' }),
     })).json()
     if (!tokens.access_token) throw new Error(tokens.error || 'No access token')
-    setCookie(c, 'fs_notion', encodeSession({ access_token: tokens.access_token, workspace_id: tokens.workspace_id, workspace_name: tokens.workspace_name, workspace_icon: tokens.workspace_icon, bot_id: tokens.bot_id }), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 30*24*3600, path: '/' })
+    setCookie(c, 'fs_notion', encodeSession({ access_token: tokens.access_token, workspace_id: tokens.workspace_id, workspace_name: tokens.workspace_name, workspace_icon: tokens.workspace_icon, bot_id: tokens.bot_id }), { httpOnly: true, secure: true, sameSite: 'None', maxAge: 30*24*3600, path: '/' })
     return c.html(notionSuccessPage(tokens.workspace_name))
   } catch (err: any) { return c.html(authErrorPage('Notion authentication failed: ' + err.message)) }
 })
@@ -254,7 +254,7 @@ app.get('/api/auth/slack/callback', async (c) => {
       body: new URLSearchParams({ code, client_id: c.env?.SLACK_CLIENT_ID || '', client_secret: c.env?.SLACK_CLIENT_SECRET || '', redirect_uri: baseUrl + '/api/auth/slack/callback' }),
     })).json()
     if (!tokens.ok) throw new Error(tokens.error || 'Slack auth failed')
-    setCookie(c, 'fs_slack', encodeSession({ access_token: tokens.access_token, team_id: tokens.team?.id, team_name: tokens.team?.name, bot_token: tokens.access_token }), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 30*24*3600, path: '/' })
+    setCookie(c, 'fs_slack', encodeSession({ access_token: tokens.access_token, team_id: tokens.team?.id, team_name: tokens.team?.name, bot_token: tokens.access_token }), { httpOnly: true, secure: true, sameSite: 'None', maxAge: 30*24*3600, path: '/' })
     return c.html(slackSuccessPage(tokens.team?.name))
   } catch (err: any) { return c.html(authErrorPage('Slack authentication failed: ' + err.message)) }
 })

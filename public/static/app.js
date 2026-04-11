@@ -1729,7 +1729,15 @@ function dropOnCol(e, toCol) {
 }
 
 // ── Notion Kanban ──────────────────────────────────────────────────────────
-function connectNotion() { window.open('/api/auth/notion','_blank','width=480,height=600'); }
+function connectNotion() {
+  const popup = window.open('/api/auth/notion', '_blank', 'width=480,height=600,noopener=no');
+  const timer = setInterval(function() {
+    if (popup && popup.closed) {
+      clearInterval(timer);
+      setTimeout(_verifyNotionStatus, 800);
+    }
+  }, 1000);
+}
 
 function loadNotionDbs() {
   fetch('/api/notion/databases').then(r=>r.json()).then(d=>{
@@ -2856,17 +2864,47 @@ function updateFocusDur(m) {
 }
 
 function connectSlack() {
-  window.open('/api/auth/slack', '_blank', 'width=480,height=600,noopener=no');
+  const popup = window.open('/api/auth/slack', '_blank', 'width=480,height=600,noopener=no');
+  // Poll every second to detect when popup closed, then verify with server
+  const timer = setInterval(function() {
+    if (popup && popup.closed) {
+      clearInterval(timer);
+      // Give the cookie a moment to propagate then check server status
+      setTimeout(_verifySlackStatus, 800);
+    }
+  }, 1000);
 }
 
-// Listen for postMessage from Slack OAuth popup on success
+async function _verifySlackStatus() {
+  try {
+    const r = await fetch('/api/auth/slack-status');
+    const d = await r.json();
+    if (d.connected) {
+      window.FS_SLACK = { team: d.team, connected: true };
+      notify('✓ Slack connected — ' + (d.team || 'workspace synced'), 'success');
+      _refreshSlackUI();
+    }
+  } catch(e) {}
+}
+
+async function _verifyNotionStatus() {
+  try {
+    const r = await fetch('/api/auth/notion-status');
+    const d = await r.json();
+    if (d.connected) {
+      window.FS_NOTION = { workspace: d.workspace, connected: true };
+      notify('✓ Notion connected — ' + (d.workspace || 'workspace synced'), 'success');
+      _refreshNotionUI();
+    }
+  } catch(e) {}
+}
+
+// Listen for postMessage from OAuth popup on success (faster path than polling)
 window.addEventListener('message', function(e) {
   if (e.origin !== 'https://flowst8.cc') return;
   if (e.data && e.data.type === 'slack_connected') {
-    // Update FS_SLACK in memory so UI reflects connected state immediately
     window.FS_SLACK = { team: e.data.team, connected: true };
     notify('✓ Slack connected — ' + (e.data.team || 'workspace synced'), 'success');
-    // Refresh integration buttons wherever they appear
     _refreshSlackUI();
   }
   if (e.data && e.data.type === 'notion_connected') {
