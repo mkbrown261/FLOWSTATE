@@ -1,4 +1,36 @@
 
+// ══════════════════════════════════════════════════════════════════
+// THEME — Light / Dark mode
+// ══════════════════════════════════════════════════════════════════
+(function _initTheme() {
+  const saved = localStorage.getItem('fs_theme');
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const theme = saved || (prefersDark ? 'dark' : 'light');
+  if (theme === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  }
+})();
+
+function toggleTheme() {
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  const next = isLight ? 'dark' : 'light';
+  if (next === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  localStorage.setItem('fs_theme', next);
+  _updateThemeBtn();
+}
+
+function _updateThemeBtn() {
+  const btn = document.getElementById('btn-theme');
+  if (!btn) return;
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  btn.textContent = isLight ? '☀️' : '🌙';
+  btn.title = isLight ? 'Switch to dark mode' : 'Switch to light mode';
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
 
 // ── D1 session history cache (populated on boot for signed-in users) ──────────
@@ -286,6 +318,7 @@ function _npHide() {
 // ── Boot ───────────────────────────────────────────────────────────────────
 function boot() {
   loadLocalState();
+  _updateThemeBtn();
   if (FS_USER) {
     state.team.role = FS_USER.role || 'member';
     if (FS_ONBOARDED) { showMainApp(); }
@@ -1925,7 +1958,7 @@ function modelIconHtml(icon, size=18) {
   if (icon === 'mistral')  return `<span style="${s}background:#f86f00;color:#fff;font-weight:900;font-size:${size-7}px">▲</span>`;
   if (icon === 'deepseek') return `<span style="${s}background:linear-gradient(135deg,#4f8ef7,#0058f7);color:#fff;font-size:${size-6}px;font-weight:900">D</span>`;
   // emoji / smart
-  return `<span style="${s}background:#1a1a2e;color:#fff">${icon}</span>`;
+  return `<span style="${s}background:var(--bg-panel);color:var(--text-p)">${icon}</span>`;
 }
 
 // ── Genspark-style model pill + floating dropdown ──────────────────────────
@@ -5314,7 +5347,23 @@ function openSettingsModal() {
   const cur = state.timer.focusMin || 25;
   const presets = [25, 45, 90];
   const isCustom = !presets.includes(cur);
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
   openModal(`<h2>⚙️ Settings</h2>
+    <div style="margin:14px 0">
+      <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">APPEARANCE</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:10px 14px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:18px">${isLight ? '☀️' : '🌙'}</span>
+          <div>
+            <div style="font-size:13px;font-weight:700">${isLight ? 'Light Mode' : 'Dark Mode'}</div>
+            <div style="font-size:11px;color:var(--text-s)">${isLight ? 'Switch to the dark side' : 'Switch to the light side 😇'}</div>
+          </div>
+        </div>
+        <button onclick="toggleTheme();closeModal();setTimeout(openSettingsModal,50)" class="btn-sm" style="gap:6px;min-width:80px">
+          ${isLight ? '🌙 Dark' : '☀️ Light'}
+        </button>
+      </div>
+    </div>
     <div style="margin:14px 0">
       <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">FOCUS DURATION</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
