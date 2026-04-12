@@ -1471,35 +1471,38 @@ function renderCalGrid() {
   const { year, month } = state.cal;
   const now = new Date();
   if (label) label.textContent = new Date(year, month).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  // Debug: log all events we have
+  console.log('[CAL] renderCalGrid: total events in state =', state.cal.events.length, '| sample:', state.cal.events.slice(0,2).map(e => e.start + ' ' + e.summary));
+
   const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const first = new Date(year, month, 1).getDay();
   const total = new Date(year, month + 1, 0).getDate();
   const prevTotal = new Date(year, month, 0).getDate();
   let html = days.map(d => `<div class="cal-hd">${d}</div>`).join('');
-  // Filler from previous month
+
   for (let i = 0; i < first; i++) {
     html += `<div class="cal-day other"><span class="cal-day-num">${prevTotal - first + i + 1}</span></div>`;
   }
   for (let d = 1; d <= total; d++) {
     const isToday = year === now.getFullYear() && month === now.getMonth() && d === now.getDate();
     const dateStr = `${year}-${String(month + 1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    // Match events: start is an ISO string like "2026-04-12T09:00:00..." or "2026-04-12"
+
     const dayEvs = state.cal.events.filter(e => {
       const s = String(e.start || '');
-      return s.slice(0, 10) === dateStr;
+      // Handle both "2026-04-12" and "2026-04-12T09:00:00+00:00"
+      return s.startsWith(dateStr);
     });
-    // Build event chips — compact, colored
+
     const chipsHtml = dayEvs.slice(0, 3).map(e => {
-      const safeColor = (e.color && (e.color.startsWith('hsl') || e.color.startsWith('#') || e.color.startsWith('rgb'))) ? e.color : '#a855f7';
-      const timeStr = (!e.allDay && e.start && e.start.length > 10)
-        ? new Date(e.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+      const col = (e.color && !e.color.includes('var(')) ? e.color : '#a855f7';
+      const t = (!e.allDay && e.start && e.start.length > 10)
+        ? new Date(e.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) + ' '
         : '';
-      const chipText = escHtml((timeStr ? timeStr + ' ' : '') + (e.summary || '(no title)'));
-      return `<div class="cal-day-ev-chip" style="background:${safeColor}">${chipText}</div>`;
+      return `<div class="cal-day-ev-chip" style="background:${col}">${escHtml(t + (e.summary || ''))}</div>`;
     }).join('');
-    const moreHtml = dayEvs.length > 3
-      ? `<div class="cal-day-more">+${dayEvs.length - 3} more</div>`
-      : '';
+    const moreHtml = dayEvs.length > 3 ? `<div class="cal-day-more">+${dayEvs.length - 3} more</div>` : '';
+
     html += `<div class="cal-day${isToday ? ' today' : ''}" onclick="clickCalDay('${dateStr}')">
       <span class="cal-day-num">${d}</span>
       <div class="cal-day-events">${chipsHtml}${moreHtml}</div>
@@ -1592,69 +1595,56 @@ function clickCalDayAdd(dateStr) {
 
 function _calDebug(msg, data, isError) {
   const dbg = document.getElementById('cal-debug-panel');
+  const text = '[CAL] ' + msg + (data ? ' | ' + JSON.stringify(data) : '');
+  console.log(text);
   if (!dbg) return;
-  const text = '[CAL] ' + msg + (data ? '\n' + JSON.stringify(data, null, 2) : '');
   if (isError) {
     dbg.textContent = text;
     dbg.style.display = 'block';
   }
-  // Always log to console for debugging
-  console.log(text);
 }
 
 function loadCalEvents() {
-  _calDebug('loadCalEvents called. FS_USER=' + (FS_USER ? FS_USER.email : 'NULL') + ' year=' + state.cal.year + ' month=' + state.cal.month);
   if (!FS_USER) {
     document.getElementById('cal-auth-banner').style.display = 'block';
     renderCalGrid();
     return;
   }
   document.getElementById('cal-auth-banner').style.display = 'none';
-  // Hide debug panel on fresh load
   const dbgPanel = document.getElementById('cal-debug-panel');
-  if (dbgPanel) dbgPanel.style.display = 'none';
+  if (dbgPanel) { dbgPanel.textContent = 'Loading events...'; dbgPanel.style.display = 'block'; dbgPanel.style.color = '#888'; dbgPanel.style.borderColor = '#333'; }
   const { year, month } = state.cal;
-  _calDebug('Fetching /api/calendar/events?year=' + year + '&month=' + month);
   fetch(`/api/calendar/events?year=${year}&month=${month}`, { credentials: 'include' })
-    .then(r => {
-      _calDebug('HTTP status: ' + r.status);
-      return r.json();
-    })
+    .then(r => r.json())
     .then(d => {
-      _calDebug('Response received', { error: d.error || null, eventCount: d.events ? d.events.length : 'no events key', firstEvent: d.events && d.events[0] ? d.events[0] : null, keys: Object.keys(d) });
-      // Check for auth error FIRST — API always returns events:[] even on 401
-      if (d.error === 'not_authenticated') {
+      console.log('[CAL] response:', d);
+      // Auth errors
+      if (d.error === 'not_authenticated' || d.error === 'not_authenticated') {
+        if (dbgPanel) { dbgPanel.textContent = 'Auth error — click Re-sync to reconnect Google.'; dbgPanel.style.color = '#f59e0b'; dbgPanel.style.borderColor = '#f59e0b'; }
         _showCalReconnectBanner();
-        // Hide the "just enabled" yellow notice — this is a different error
-        const notice = document.getElementById('cal-resync-notice');
-        if (notice) notice.style.display = 'none';
         renderCalGrid();
         return;
       }
       if (d.error) {
-        const msg = 'Google Calendar error: ' + d.error +
-          (d.google_reason ? ' — ' + d.google_reason : '') +
-          (d.google_code   ? ' (code ' + d.google_code + ')' : '') +
-          '\n\nOpen /api/calendar/debug in a new tab for full details.';
-        _calDebug(msg, null, true);
+        const msg = 'Error: ' + d.error + (d.google_reason ? ' — ' + d.google_reason : '') + (d.google_code ? ' ('+d.google_code+')' : '');
+        if (dbgPanel) { dbgPanel.textContent = msg + '\nVisit flowst8.cc/api/auth/hard-reset to fix.'; dbgPanel.style.color = '#ef4444'; dbgPanel.style.borderColor = '#ef4444'; dbgPanel.style.display = 'block'; }
         renderCalGrid();
         return;
       }
-      // Success — hide all error UI
+      // Success
+      if (dbgPanel) dbgPanel.style.display = 'none';
       const rb = document.getElementById('cal-reconnect-banner');
       if (rb) rb.style.display = 'none';
-      const notice = document.getElementById('cal-resync-notice');
-      if (notice) notice.style.display = 'none';
-      if (dbgPanel) dbgPanel.style.display = 'none';
-      // d.events is a real array (may be empty if user has no events this month)
       if (Array.isArray(d.events)) {
         state.cal.events = d.events;
+        console.log('[CAL] Loaded', d.events.length, 'events. First:', d.events[0]);
         renderCalGrid();
-        renderEvents(d.events);
-        console.log('[CAL] Loaded', d.events.length, 'events for', year + '/' + (month+1));
       }
     })
-    .catch(err => { _calDebug('Network error fetching calendar: ' + (err && err.message ? err.message : String(err)), null, true); renderCalGrid(); });
+    .catch(err => {
+      if (dbgPanel) { dbgPanel.textContent = 'Network error: ' + err.message; dbgPanel.style.color = '#ef4444'; dbgPanel.style.display = 'block'; }
+      renderCalGrid();
+    });
 }
 
 function _showCalReconnectBanner() {

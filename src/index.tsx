@@ -5231,6 +5231,7 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .tab-btn.demo-tab{color:var(--warn);border-color:rgba(245,158,11,.3)}
 .tab-btn.demo-tab.active{color:var(--warn);background:rgba(245,158,11,.1);border-color:var(--warn)}
 .tab-pane{display:none;flex:1;overflow-y:auto;padding:18px}
+#tab-pane-calendar{overflow:visible}
 .tab-pane.active{display:flex;flex-direction:column}
 /* ── Genspark-style model picker ── */
 .model-bar{display:flex;align-items:center;gap:6px;padding:0;background:transparent;margin-bottom:0;position:relative}
