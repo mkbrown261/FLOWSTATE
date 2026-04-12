@@ -5784,11 +5784,24 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .stat-val{font-size:20px;font-weight:800;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
 .stat-lbl{font-size:10px;font-weight:600;color:var(--text-m);text-transform:uppercase;letter-spacing:1px}
 .amb-panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:14px;width:100%;max-width:460px;margin:0 auto}
-.amb-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:9px}
+.amb-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:9px;display:flex;align-items:center}
 .s-chips{display:flex;gap:7px;flex-wrap:wrap}
 .s-chip{padding:5px 12px;border-radius:18px;font-size:12px;font-weight:600;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;transition:.2s}
 .s-chip:hover{border-color:var(--border-h);color:var(--text-p)}
 .s-chip.active{background:rgba(168,85,247,.15);border-color:var(--accent);color:var(--accent)}
+.vol-row{display:flex;align-items:center;gap:10px;margin-top:11px;padding-top:10px;border-top:1px solid rgba(255,255,255,.06)}
+.vol-icon{width:22px;text-align:center;font-size:13px;color:var(--text-s);flex-shrink:0;transition:color .2s}
+.vol-icon.active{color:var(--accent)}
+.vol-track{flex:1;position:relative;height:4px;border-radius:99px;background:rgba(255,255,255,.08);cursor:pointer}
+.vol-fill{position:absolute;left:0;top:0;height:100%;border-radius:99px;background:linear-gradient(90deg,#a855f7,#ec4899);pointer-events:none;transition:width .05s}
+.vol-thumb{position:absolute;top:50%;transform:translate(-50%,-50%);width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#ec4899);box-shadow:0 0 8px rgba(168,85,247,.6);cursor:pointer;transition:transform .15s,box-shadow .15s;pointer-events:none}
+.vol-track:hover .vol-thumb{transform:translate(-50%,-50%) scale(1.25);box-shadow:0 0 14px rgba(168,85,247,.8)}
+.vol-label{font-size:10px;font-weight:700;color:var(--text-s);width:26px;text-align:right;flex-shrink:0;letter-spacing:.3px}
+.now-playing-pill{display:none;align-items:center;gap:6px;margin-top:8px;padding:5px 10px;background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.2);border-radius:20px;font-size:11px;color:var(--text-m);overflow:hidden}
+.now-playing-pill.visible{display:flex}
+.np-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0;animation:np-pulse 1.4s ease-in-out infinite}
+.np-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+@keyframes np-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.7)}}
 .intent-modal{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:5000;backdrop-filter:blur(10px)}
 .intent-card{background:var(--bg-panel);border:1px solid var(--border-h);border-radius:22px;padding:36px 32px;max-width:440px;width:90%;text-align:center}
 .intent-card h2{font-size:18px;font-weight:800;margin-bottom:6px}
@@ -6355,7 +6368,7 @@ em{color:var(--accent);font-style:italic}
       <div class="stat-item"><div class="stat-val" id="stat-streak">&#128293; 0</div><div class="stat-lbl">Streak</div></div>
     </div>
     <div class="amb-panel">
-      <div class="amb-title"><i class="fas fa-headphones"></i>&nbsp; Ambient Sounds <button class="btn-sm" style="margin-left:auto;font-size:10px" onclick="openMusicModal()"><i class="fab fa-youtube" style="color:#ef4444"></i><i class="fab fa-spotify" style="color:#1db954;margin-left:4px"></i> Music</button></div>
+      <div class="amb-title"><i class="fas fa-headphones"></i>&nbsp; Ambient &amp; Music <button class="btn-sm" style="margin-left:auto;font-size:10px" onclick="openMusicModal()"><i class="fab fa-youtube" style="color:#ef4444"></i><i class="fab fa-spotify" style="color:#1db954;margin-left:4px"></i> Playlist</button></div>
       <div class="s-chips" id="sound-chips">
         <button class="s-chip" data-sound="rain">&#127783;&#65039; Rain</button>
         <button class="s-chip" data-sound="forest">&#127794; Forest</button>
@@ -6364,6 +6377,21 @@ em{color:var(--accent);font-style:italic}
         <button class="s-chip" data-sound="fire">&#128293; Fire</button>
         <button class="s-chip" data-sound="space">&#127756; Space</button>
         <button class="s-chip" data-sound="off">&#128263; Off</button>
+      </div>
+      <!-- Volume slider -->
+      <div class="vol-row" id="vol-row">
+        <i class="fas fa-volume-xmark vol-icon" id="vol-icon" onclick="_volToggleMute()"></i>
+        <div class="vol-track" id="vol-track">
+          <div class="vol-fill" id="vol-fill" style="width:70%"></div>
+          <div class="vol-thumb" id="vol-thumb" style="left:70%"></div>
+        </div>
+        <span class="vol-label" id="vol-label">70</span>
+      </div>
+      <!-- Now-playing pill -->
+      <div class="now-playing-pill" id="now-playing-pill">
+        <div class="np-dot"></div>
+        <span class="np-title" id="np-title">Music playing</span>
+        <i class="fas fa-times" style="flex-shrink:0;cursor:pointer;color:var(--text-s);font-size:10px" onclick="stopPomodoroMusic();_npHide()" title="Stop music"></i>
       </div>
     </div>
     <div id="block-warn" class="block-warn" style="display:none">

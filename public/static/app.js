@@ -138,8 +138,149 @@ function setAmbient(type) {
   document.querySelectorAll('.s-chip').forEach(b => b.classList.toggle('active', b.dataset.sound===type));
   if (type === 'off') { stopAmbient(); return; }
   playAmbient(AMBIENT_SOUNDS[type]?.type || 'noise');
+  // Apply current volume to newly-started ambient audio
+  _applyAmbientVolume(_volCurrent / 100);
   if (state.timer.running) document.body.classList.add('amb-active');
   notify(`🎧 ${AMBIENT_SOUNDS[type]?.label || type} playing`,'info');
+}
+
+// ── Volume Control ─────────────────────────────────────────────────────────
+let _volCurrent = parseInt(localStorage.getItem('fs_vol') || '70');
+let _volBeforeMute = _volCurrent;
+let _volMuted = false;
+let _volDragging = false;
+
+function _volInit() {
+  const track = document.getElementById('vol-track');
+  if (!track) return;
+  _volSetUI(_volCurrent, false);
+
+  // Mouse drag
+  track.addEventListener('mousedown', _volStartDrag);
+  document.addEventListener('mousemove', _volOnDrag);
+  document.addEventListener('mouseup', _volEndDrag);
+  // Touch drag
+  track.addEventListener('touchstart', _volStartDrag, { passive: true });
+  document.addEventListener('touchmove', _volOnDrag, { passive: false });
+  document.addEventListener('touchend', _volEndDrag);
+  // Click on track
+  track.addEventListener('click', _volOnClick);
+}
+
+function _volStartDrag(e) {
+  _volDragging = true;
+  _volOnDrag(e);
+}
+function _volEndDrag() { _volDragging = false; }
+function _volOnDrag(e) {
+  if (!_volDragging) return;
+  if (e.cancelable) e.preventDefault();
+  _volFromEvent(e);
+}
+function _volOnClick(e) { _volFromEvent(e); }
+
+function _volFromEvent(e) {
+  const track = document.getElementById('vol-track');
+  if (!track) return;
+  const rect = track.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  const vol = Math.round(pct * 100);
+  _volMuted = false;
+  _volSetUI(vol, true);
+}
+
+function _volSetUI(vol, save) {
+  _volCurrent = Math.max(0, Math.min(100, vol));
+  if (save) { localStorage.setItem('fs_vol', String(_volCurrent)); _volBeforeMute = _volCurrent; }
+  const pct = _volCurrent + '%';
+  const fill  = document.getElementById('vol-fill');
+  const thumb = document.getElementById('vol-thumb');
+  const label = document.getElementById('vol-label');
+  const icon  = document.getElementById('vol-icon');
+  if (fill)  fill.style.width  = pct;
+  if (thumb) thumb.style.left  = pct;
+  if (label) label.textContent = _volCurrent;
+  if (icon) {
+    // Swap icon glyph and tint based on level
+    if (_volCurrent === 0 || _volMuted) {
+      icon.className = 'fas fa-volume-xmark vol-icon';
+      icon.style.color = 'rgba(255,255,255,.25)';
+    } else if (_volCurrent < 35) {
+      icon.className = 'fas fa-volume-off vol-icon active';
+      icon.style.color = '';
+    } else if (_volCurrent < 70) {
+      icon.className = 'fas fa-volume-low vol-icon active';
+      icon.style.color = '';
+    } else {
+      icon.className = 'fas fa-volume-high vol-icon active';
+      icon.style.color = '';
+    }
+    // Accent color when a sound is active
+    const anyActive = state.timer.soundType && state.timer.soundType !== 'off';
+    const musicActive = pomodoroMusicEl && pomodoroMusicEl.src && pomodoroMusicEl.src !== '';
+    if ((anyActive || musicActive) && _volCurrent > 0) icon.style.color = 'var(--accent)';
+  }
+  // Apply to audio engines
+  _applyAmbientVolume(_volCurrent / 100);
+  _applyMusicVolume(_volCurrent);
+}
+
+function _applyAmbientVolume(frac) {
+  if (ambientGain) {
+    // Scale within a comfortable range: 0 → 0, 1 → 0.22 (max comfortable level)
+    ambientGain.gain.setTargetAtTime(frac * 0.22, ambientCtx?.currentTime || 0, 0.05);
+  }
+}
+
+function _applyMusicVolume(vol) {
+  if (!pomodoroMusicEl || !pomodoroMusicEl.contentWindow) return;
+  // YouTube IFrame API postMessage: setVolume (0–100)
+  try {
+    pomodoroMusicEl.contentWindow.postMessage(
+      JSON.stringify({ event: 'command', func: 'setVolume', args: [vol] }), '*'
+    );
+  } catch(e) {}
+  // Spotify embed: uses its own postMessage protocol
+  try {
+    pomodoroMusicEl.contentWindow.postMessage(
+      JSON.stringify({ type: 'set_volume', value: vol / 100 }), '*'
+    );
+  } catch(e) {}
+}
+
+function _volToggleMute() {
+  if (_volMuted || _volCurrent === 0) {
+    _volMuted = false;
+    _volSetUI(_volBeforeMute || 70, true);
+  } else {
+    _volBeforeMute = _volCurrent;
+    _volMuted = true;
+    _volCurrent = 0;
+    _volSetUI(0, false);
+    _applyAmbientVolume(0);
+    _applyMusicVolume(0);
+    const icon = document.getElementById('vol-icon');
+    if (icon) { icon.className = 'fas fa-volume-xmark vol-icon'; icon.style.color = 'rgba(255,255,255,.25)'; }
+    const fill  = document.getElementById('vol-fill');
+    const thumb = document.getElementById('vol-thumb');
+    const label = document.getElementById('vol-label');
+    if (fill)  fill.style.width  = '0%';
+    if (thumb) thumb.style.left  = '0%';
+    if (label) label.textContent = '0';
+  }
+}
+
+// Now-playing pill helpers
+function _npShow(title) {
+  const pill = document.getElementById('now-playing-pill');
+  const titleEl = document.getElementById('np-title');
+  if (pill)  pill.classList.add('visible');
+  if (titleEl) titleEl.textContent = title || 'Music playing';
+}
+function _npHide() {
+  const pill = document.getElementById('now-playing-pill');
+  if (pill) pill.classList.remove('visible');
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
@@ -409,6 +550,7 @@ function showMainApp(isDemo=false) {
   setupKeyboard();
   setupTabListeners();
   setupAmbientChips();
+  _volInit();
   maybeShowTip();
   loadTokenBalance();
   initKeyboardShortcuts();
@@ -1494,11 +1636,12 @@ function startPomodoroMusic() {
         const startIdx = shuffle ? Math.floor(Math.random() * playlist.length) : 0;
         _ytPlaylistIdx = startIdx;
         const item = playlist[startIdx];
-        if (item.listId) startYouTubePlaylist(item.listId, item.videoId);
-        else if (item.videoId) startYouTubeMusic(item.videoId);
-        else if (item.url) startYouTubeMusic(''); // fallback
+        const label = item.title && item.title !== 'YouTube Video' && item.title !== 'Loading…' ? item.title : '▶ YouTube';
+        if (item.listId) startYouTubePlaylist(item.listId, item.videoId, label);
+        else if (item.videoId) startYouTubeMusic(item.videoId, label);
+        else if (item.url) startYouTubeMusic('', label);
       } else if (cfg.videoId) {
-        startYouTubeMusic(cfg.videoId);
+        startYouTubeMusic(cfg.videoId, '▶ YouTube');
       }
     } else if (cfg.type === 'spotify') {
       startSpotifyMusic(cfg.uri);
@@ -1511,16 +1654,33 @@ function stopPomodoroMusic() {
     pomodoroMusicEl.src = '';
     pomodoroMusicEl.style.display = 'none';
   }
+  _npHide();
+  // Reset vol icon when no music is active and ambient is also off
+  if (!state.timer.soundType || state.timer.soundType === 'off') {
+    const icon = document.getElementById('vol-icon');
+    if (icon && _volCurrent > 0) { icon.className = 'fas fa-volume-high vol-icon'; icon.style.color = ''; }
+  }
 }
 
-function startYouTubeMusic(videoId) {
+function _pomodoroMusicReady(label) {
+  // Called after iframe src is set — apply saved volume after a short delay
+  // (YouTube iframe needs ~1s before it accepts postMessage commands)
+  setTimeout(() => _applyMusicVolume(_volMuted ? 0 : _volCurrent), 1200);
+  _npShow(label || 'Music playing');
+  // Update vol icon to active
+  _volSetUI(_volMuted ? 0 : _volCurrent, false);
+}
+
+function startYouTubeMusic(videoId, label) {
   if (!pomodoroMusicEl) {
     pomodoroMusicEl = document.createElement('iframe');
     pomodoroMusicEl.style.cssText = 'position:fixed;bottom:-200px;left:0;width:1px;height:1px;opacity:0;pointer-events:none;';
     pomodoroMusicEl.allow = 'autoplay; encrypted-media';
     document.body.appendChild(pomodoroMusicEl);
   }
-  pomodoroMusicEl.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&controls=0&loop=1&playlist=${videoId}`;
+  // enablejsapi=1 is required for postMessage volume control
+  pomodoroMusicEl.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&controls=0&loop=1&playlist=${videoId}&enablejsapi=1`;
+  _pomodoroMusicReady(label || '▶ YouTube');
 }
 
 function startSpotifyMusic(uri) {
@@ -1531,6 +1691,7 @@ function startSpotifyMusic(uri) {
   }
   const embedUri = uri.replace('spotify:', '').replace(/:/g, '/');
   pomodoroMusicEl.src = `https://open.spotify.com/embed/${embedUri}?autoplay=1`;
+  _pomodoroMusicReady('▶ Spotify');
 }
 
 // ── T3: YouTube Playlist Manager ─────────────────────────────────────────────
@@ -1632,8 +1793,9 @@ function _ytPlayNow(idx) {
   const item = _ytPlaylist[idx];
   if (!item) return;
   _ytPlaylistIdx = idx;
-  if (item.listId) startYouTubePlaylist(item.listId, item.videoId);
-  else if (item.videoId) startYouTubeMusic(item.videoId);
+  const label = item.title && item.title !== 'YouTube Video' && item.title !== 'Loading…' ? item.title : '▶ YouTube';
+  if (item.listId) startYouTubePlaylist(item.listId, item.videoId, label);
+  else if (item.videoId) startYouTubeMusic(item.videoId, label);
   notify(`▶ Playing: ${item.title||'YouTube'}`, 'success');
 }
 
@@ -1655,7 +1817,7 @@ function _ytDrop(targetIdx) {
   _refreshYtList();
 }
 
-function startYouTubePlaylist(listId, firstVideoId) {
+function startYouTubePlaylist(listId, firstVideoId, label) {
   if (!pomodoroMusicEl) {
     pomodoroMusicEl = document.createElement('iframe');
     pomodoroMusicEl.style.cssText = 'position:fixed;bottom:-200px;left:0;width:1px;height:1px;opacity:0;pointer-events:none;';
@@ -1663,7 +1825,8 @@ function startYouTubePlaylist(listId, firstVideoId) {
     document.body.appendChild(pomodoroMusicEl);
   }
   const vid = firstVideoId ? `&video=${firstVideoId}` : '';
-  pomodoroMusicEl.src = `https://www.youtube.com/embed/?listType=playlist&list=${listId}&autoplay=1${vid}&loop=1`;
+  pomodoroMusicEl.src = `https://www.youtube.com/embed/?listType=playlist&list=${listId}&autoplay=1${vid}&loop=1&enablejsapi=1`;
+  _pomodoroMusicReady(label || '▶ YouTube Playlist');
 }
 
 function _getNextYtTrack() {
