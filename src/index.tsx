@@ -95,8 +95,12 @@ function decodeSession(token: string): any { try { return JSON.parse(atob(token)
 // Clears the old session first so Google can't reuse the cached denied token
 app.get('/api/auth/calendar-reconnect', (c) => {
   const baseUrl = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
-  // Preserve name/email/picture from old session so UI doesn't flash empty after redirect
+  // Read email BEFORE deleting session so we can pre-fill it on the consent screen
   const oldSession = decodeSession(getCookie(c, 'fs_session') || '')
+  const loginHint = oldSession?.email || ''
+  // CRITICAL: delete the old session cookie so Google cannot reuse the cached denied token
+  // Without this, Google sees the existing access_token and may skip issuing a new one
+  deleteCookie(c, 'fs_session', { path: '/' })
   const intent = declareGoogleOAuth(baseUrl)
   setCookie(c, 'oauth_state', intent.stateParam, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' })
   // Store a marker so callback knows this was a calendar reconnect (not a fresh login)
@@ -108,8 +112,8 @@ app.get('/api/auth/calendar-reconnect', (c) => {
     scope:         intent.scopes.join(' '),
     state:         intent.stateParam,
     access_type:   'offline',
-    prompt:        'consent',        // Force consent screen — issues a NEW token with calendar scope
-    login_hint:    oldSession?.email || '',  // Pre-fill email so user doesn't have to pick account
+    prompt:        'consent',        // Force new consent screen + new refresh token every time
+    login_hint:    loginHint,        // Pre-fill email so user doesn't have to pick account
   })
   return c.redirect('https://accounts.google.com/o/oauth2/v2/auth?' + params)
 })
