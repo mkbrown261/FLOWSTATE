@@ -5321,15 +5321,15 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .cal-panel-inner{width:260px;padding:0 0 0 12px}
 .cal-panel-card{background:var(--bg-panel);border:1px solid var(--border-h);border-radius:12px;padding:16px}
 .cal-hd{text-align:center;font-size:11px;font-weight:700;color:#aaa;padding:8px 4px;text-transform:uppercase;letter-spacing:.5px;background:rgba(255,255,255,.03);border-bottom:1px solid rgba(255,255,255,.08)}
-.cal-day{min-height:90px;display:flex;flex-direction:column;align-items:flex-start;padding:6px 5px 4px;cursor:pointer;transition:background .12s;border-right:1px solid rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.05);overflow:hidden}
+.cal-day{min-height:110px;display:flex;flex-direction:column;align-items:flex-start;padding:6px 5px 4px;cursor:pointer;transition:background .12s;border-right:1px solid rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.05)}
 .cal-day:nth-child(7n){border-right:none}
 .cal-day:hover{background:rgba(168,85,247,.1)}
 .cal-day.today{background:rgba(168,85,247,.08)}
 .cal-day.selected{background:rgba(168,85,247,.2)}
 .cal-day.today .cal-day-num{background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800}
 .cal-day-num{font-size:12px;font-weight:600;color:#d0d0d0;line-height:1;margin-bottom:3px;flex-shrink:0}
-.cal-day-events{display:flex;flex-direction:column;gap:2px;width:100%}
-.cal-day-ev-chip{font-size:10px;font-weight:700;color:#fff;padding:2px 4px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;line-height:1.4}
+.cal-day-events{display:flex;flex-direction:column;gap:2px;width:100%;min-width:0;overflow:hidden}
+.cal-day-ev-chip{font-size:10px;font-weight:700;color:#fff;padding:2px 4px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:100%;line-height:1.4;display:block;box-sizing:border-box}
 .cal-day.other{opacity:.2;cursor:default;pointer-events:none}
 .cal-day-more{font-size:9px;color:#888;padding:1px 3px}
 .ev-list{display:flex;flex-direction:column;gap:7px;margin-top:8px}
