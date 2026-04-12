@@ -11,7 +11,7 @@ let state = {
   kanban:  { tasks:{ todo:[], inprogress:[], done:[] }, notionDb:null },
   learn:   { cards:[], idx:0 },
   restore: { scenes:[], idx:0, meditationTimer:null, meditationSeconds:0 },
-  team:    { members:[], role:'member', activeTab:'sprint' },
+  team:    { members:[], role:'member', activeTab:'leaderboard' },
   settings:{ focusMin:25, sound:null, isDemo:false },
   gen:     { imgModel:'flux_pro', vidModel:'kling16', i2vModel:'kling16', imgPickerOpen:false, vidPickerOpen:false, i2vPickerOpen:false }
 };
@@ -2186,8 +2186,11 @@ function saveFocusSession() {
       })
     }).then(r => r.json()).then(d => {
       if (d.ok) {
+        markSessionToday(); // P1A: mark for streak reminder
         if (outputType) notify(`✅ ${durationMin}m session saved${outputType ? ' · ' + outputType : ''}`, 'success');
         else notify(`✅ ${durationMin}m session saved`, 'success');
+        // P1B: show share prompt after a moment
+        setTimeout(() => _showPostSessionShareNudge(durationMin, outputType), 800);
       }
     }).catch(() => {}).finally(() => {
       if (btn) { btn.disabled = false; btn.textContent = 'Save Session →'; }
@@ -2198,9 +2201,38 @@ function saveFocusSession() {
     const history = JSON.parse(localStorage.getItem('fs_session_history') || '[]');
     history.unshift({ date: new Date().toISOString().slice(0,10), durationMins: durationMin, outputType, outputNote: note });
     localStorage.setItem('fs_session_history', JSON.stringify(history.slice(0, 100)));
+    markSessionToday(); // P1A: mark for streak reminder
     if (outputType) notify(`✅ ${durationMin}m logged locally · ${outputType}`, 'info');
+    // P1B: share nudge for guests too
+    setTimeout(() => _showPostSessionShareNudge(durationMin, outputType), 800);
     closeFocusPrompt();
   }
+}
+
+// P1B: Show a small non-intrusive share nudge after saving
+function _showPostSessionShareNudge(durationMin, outputType) {
+  // Only show occasionally — not every single session
+  const key = 'fs_last_share_nudge';
+  const last = parseInt(localStorage.getItem(key) || '0');
+  const now = Date.now();
+  if (now - last < 3 * 24 * 3600 * 1000) return; // Max once every 3 days
+  localStorage.setItem(key, String(now));
+
+  // Show as a subtle toast-style notification, not a modal
+  const existing = document.getElementById('share-nudge-bar');
+  if (existing) existing.remove();
+  const bar = document.createElement('div');
+  bar.id = 'share-nudge-bar';
+  bar.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1a0533;border:1px solid rgba(168,85,247,.4);border-radius:12px;padding:12px 16px;display:flex;align-items:center;gap:10px;z-index:2000;box-shadow:0 8px 30px rgba(0,0,0,.5);animation:slideR .3s ease;max-width:320px;width:90%';
+  bar.innerHTML = `
+    <span style="font-size:20px">🚀</span>
+    <div style="flex:1;font-size:12px">
+      <strong>Nice work!</strong> Share your ${durationMin}m session?
+    </div>
+    <button onclick="shareFlowSession(${durationMin})" style="background:var(--grad);border:none;color:#fff;border-radius:8px;padding:6px 12px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">Share</button>
+    <button onclick="document.getElementById('share-nudge-bar').remove()" style="background:none;border:none;color:#555;font-size:16px;cursor:pointer;padding:0 4px">✕</button>`;
+  document.body.appendChild(bar);
+  setTimeout(() => bar?.remove(), 10000); // Auto-dismiss after 10s
 }
 
 function _addSessionToCalendar(durationMin, startISO) {
@@ -2374,13 +2406,261 @@ async function sendWeeklyDigest(btn) {
 
 function requestNotificationPermission() {
   if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
+    Notification.requestPermission().then(p => {
+      if (p === 'granted') scheduleStreakReminder();
+    });
+  } else if ('Notification' in window && Notification.permission === 'granted') {
+    scheduleStreakReminder();
   }
 }
 
 function sendNotification(title, body, icon) {
   if ('Notification' in window && Notification.permission === 'granted') {
     new Notification(title, { body, icon: icon || '/static/favicon.svg' });
+  }
+}
+
+// ── P1A: Daily Streak Reminder ────────────────────────────────────────────────
+// Schedules a local notification for 9am tomorrow if user has a streak
+function scheduleStreakReminder() {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const streak = state.timer.streak || 0;
+  if (streak === 0) return; // Only remind if they have an active streak
+
+  // Calculate ms until 9am tomorrow
+  const now = new Date();
+  const tomorrow9am = new Date(now);
+  tomorrow9am.setDate(tomorrow9am.getDate() + 1);
+  tomorrow9am.setHours(9, 0, 0, 0);
+  const msUntil = tomorrow9am - now;
+
+  // Clear any existing reminder timer
+  if (window._streakReminderTimer) clearTimeout(window._streakReminderTimer);
+
+  window._streakReminderTimer = setTimeout(() => {
+    const currentStreak = state.timer.streak || 0;
+    const todayKey = `fs_session_today_${new Date().toISOString().slice(0,10)}`;
+    const hasSessionToday = localStorage.getItem(todayKey);
+    if (!hasSessionToday && currentStreak > 0) {
+      sendNotification(
+        `⚡ Keep your ${currentStreak}-day streak alive!`,
+        `You haven't focused yet today. Open FlowState and lock in. 🔥`,
+        '/static/icon-192.png'
+      );
+    }
+    // Reschedule for next day
+    scheduleStreakReminder();
+  }, msUntil);
+
+  // Persist the reminder intent so SW can fire it if tab is closed
+  localStorage.setItem('fs_streak_reminder', JSON.stringify({
+    streak,
+    scheduledFor: tomorrow9am.toISOString(),
+  }));
+}
+
+// Mark today as having a session (called after saveFocusSession)
+function markSessionToday() {
+  const todayKey = `fs_session_today_${new Date().toISOString().slice(0,10)}`;
+  localStorage.setItem(todayKey, '1');
+}
+
+// ── P1B: Session Share Card ───────────────────────────────────────────────────
+function shareFlowSession(durationMin, flowScore, outputType) {
+  const score = flowScore || state.timer._lastFlowScore || 0;
+  const output = outputType || _fcpSession?.outputType || '';
+  const streak = state.timer.streak || 0;
+  const name   = FS_USER?.name?.split(' ')[0] || 'Someone';
+  const scoreColor = score >= 70 ? '#10b981' : score >= 40 ? '#a855f7' : '#f59e0b';
+
+  const tweetText = `Just locked in a ${durationMin}m deep work session on @flowst8cc 🔥\n\nFlowScore: ${score}/100${output ? '\nOutput: ' + output : ''}${streak >= 3 ? '\n' + streak + '-day streak 🔥' : ''}\n\nBuild in flow 👇\nhttps://flowst8.cc`;
+
+  const shareOptions = [
+    { icon:'fa-twitter', label:'Share on X', color:'#1DA1F2',
+      fn: () => window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetText)}`, '_blank') },
+    { icon:'fa-linkedin', label:'LinkedIn', color:'#0077B5',
+      fn: () => window.open(`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent('https://flowst8.cc')}&summary=${encodeURIComponent(tweetText)}`, '_blank') },
+    { icon:'fa-copy', label:'Copy Text', color:'var(--accent)',
+      fn: () => navigator.clipboard.writeText(tweetText).then(() => notify('📋 Copied to clipboard!', 'success')) },
+  ];
+
+  // If user has a public profile, add profile link option
+  const profileSlug = localStorage.getItem('fs_profile_slug');
+  if (profileSlug) {
+    shareOptions.unshift({
+      icon: 'fa-globe', label: 'My Profile', color: '#10b981',
+      fn: () => window.open(`/u/${profileSlug}`, '_blank'),
+    });
+  }
+
+  openModal(`
+    <div style="text-align:center;padding:4px 0">
+      <!-- FlowScore card preview -->
+      <div style="background:linear-gradient(135deg,#12102a,#1a0533);border:1px solid rgba(168,85,247,.3);border-radius:16px;padding:20px;margin-bottom:16px">
+        <div style="font-size:11px;font-weight:800;color:#a855f7;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:12px">⚡ FLOWSTATE</div>
+        <div style="display:flex;justify-content:center;gap:16px;margin-bottom:14px">
+          <div style="text-align:center">
+            <div style="font-size:36px;font-weight:900;color:${scoreColor};line-height:1">${score}</div>
+            <div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.8px;margin-top:2px">FlowScore</div>
+          </div>
+          <div style="width:1px;background:rgba(255,255,255,.08)"></div>
+          <div style="text-align:center">
+            <div style="font-size:36px;font-weight:900;color:#ec4899;line-height:1">${durationMin}m</div>
+            <div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.8px;margin-top:2px">Focus Time</div>
+          </div>
+          ${streak >= 2 ? `<div style="width:1px;background:rgba(255,255,255,.08)"></div>
+          <div style="text-align:center">
+            <div style="font-size:36px;font-weight:900;color:#f59e0b;line-height:1">${streak}🔥</div>
+            <div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.8px;margin-top:2px">Day Streak</div>
+          </div>` : ''}
+        </div>
+        ${output ? `<div style="font-size:12px;color:#888;border-top:1px solid rgba(255,255,255,.06);padding-top:10px">Shipped: <strong style="color:#c084fc">${output}</strong></div>` : ''}
+        <div style="font-size:10px;color:#444;margin-top:8px">flowst8.cc</div>
+      </div>
+      <h3 style="margin:0 0 6px;font-size:16px">Share your session 🚀</h3>
+      <p style="color:var(--text-s);font-size:12px;margin-bottom:14px">Let people know you're building in flow</p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${shareOptions.map(o => `<button class="btn-sm" onclick="(${o.fn.toString()})()" style="justify-content:center;gap:8px;color:${o.color};border-color:${o.color}20;background:${o.color}10;padding:10px"><i class="fab ${o.icon}"></i> ${o.label}</button>`).join('')}
+      </div>
+    </div>`);
+}
+
+// ── P2A: 80% Token Upgrade Modal ──────────────────────────────────────────────
+let _upgradeModal80Shown = false;
+function checkTokenUpgradeTrigger(used, limit) {
+  if (_upgradeModal80Shown) return;
+  const pct = used / limit;
+  if (pct >= 0.8 && pct < 1.0) {
+    _upgradeModal80Shown = true;
+    const left = limit - used;
+    // Show after a 2s delay so it doesn't interrupt what they're doing
+    setTimeout(() => {
+      openModal(`
+        <div style="text-align:center;padding:8px 0">
+          <div style="font-size:42px;margin-bottom:10px">🔥</div>
+          <h2 style="margin:0 0 6px;font-size:18px">You're on a roll!</h2>
+          <p style="color:var(--text-s);font-size:13px;margin-bottom:16px">
+            You've used <strong style="color:#f59e0b">${used.toLocaleString()} / ${limit.toLocaleString()} tokens</strong> today.<br>
+            Only <strong style="color:#ef4444">${left.toLocaleString()} left</strong> — don't let momentum stop.
+          </p>
+          <div style="background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:12px;padding:14px;margin-bottom:16px;text-align:left">
+            <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">PRO unlocks</div>
+            <div style="display:flex;flex-direction:column;gap:7px;font-size:13px">
+              <div>⚡ <strong>100,000 tokens/day</strong> — 66× more</div>
+              <div>🤖 <strong>All AI models</strong> — GPT-4o, Claude, Gemini</div>
+              <div>📊 <strong>Full FlowScore history</strong> — unlimited sessions</div>
+              <div>🎵 <strong>AI Music + Video generation</strong> — unlimited</div>
+              <div>🎁 <strong>Priority support</strong> + early features</div>
+            </div>
+          </div>
+          <button class="btn-primary" onclick="closeModal();openPricingModal()" style="width:100%;padding:13px;font-size:15px;margin-bottom:8px">
+            🚀 Upgrade to Pro — $18/mo
+          </button>
+          <button class="btn-sm" onclick="closeModal()" style="width:100%;justify-content:center;color:#666">
+            Continue on free tier
+          </button>
+          <div style="font-size:10px;color:#444;margin-top:10px">Cancel anytime · Instant access · 7-day free trial</div>
+        </div>`);
+    }, 2000);
+  }
+}
+
+// ── P2B: Team FlowScore Leaderboard ──────────────────────────────────────────
+async function loadTeamLeaderboard(el) {
+  if (!FS_USER) {
+    el.innerHTML = `<div style="text-align:center;padding:24px;color:var(--text-s)">
+      <div style="font-size:32px;margin-bottom:10px">🏆</div>
+      <div style="font-weight:700;margin-bottom:6px">Team FlowScore Leaderboard</div>
+      <div style="font-size:12px;margin-bottom:14px">Sign in to see your team's focus rankings</div>
+      <button class="btn-primary" onclick="openAuthPopup('/api/auth/google')"><i class="fab fa-google"></i> Sign in</button>
+    </div>`;
+    return;
+  }
+  el.innerHTML = `<div style="text-align:center;padding:20px"><i class="fas fa-spinner fa-spin" style="color:var(--accent);font-size:20px"></i></div>`;
+  try {
+    const r = await fetch('/api/team/leaderboard', { credentials: 'include' });
+    const d = await r.json();
+    if (d.error || !d.members?.length) {
+      renderTeamLeaderboardEmpty(el);
+      return;
+    }
+    renderTeamLeaderboardFull(el, d.members, d.period);
+  } catch(_) {
+    renderTeamLeaderboardEmpty(el);
+  }
+}
+
+function renderTeamLeaderboardEmpty(el) {
+  el.innerHTML = `
+    <div style="background:var(--bg-panel);border:1px solid rgba(168,85,247,.2);border-radius:14px;padding:20px;margin-bottom:14px">
+      <div style="text-align:center;padding:12px 0">
+        <div style="font-size:36px;margin-bottom:10px">🏆</div>
+        <div style="font-size:15px;font-weight:700;margin-bottom:6px">Team FlowScore Board</div>
+        <div style="font-size:12px;color:var(--text-s);margin-bottom:16px">Invite your team to compete on focus streaks and FlowScore rankings</div>
+        <div style="display:flex;gap:8px;justify-content:center">
+          <button class="btn-primary" onclick="closeModal();openInviteModal()" style="gap:6px"><i class="fas fa-user-plus"></i> Invite Team</button>
+          <button class="btn-sm" onclick="openProfileModal()" style="gap:6px"><i class="fas fa-globe"></i> My Profile</button>
+        </div>
+      </div>
+      <!-- Preview leaderboard with demo data -->
+      <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px">
+        <div style="font-size:10px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px">Preview</div>
+        ${[
+          {rank:1, av:'👑', name:'You (invite to track)', score:87, streak:9, mins:240, medal:'🥇'},
+          {rank:2, av:'🔥', name:'Teammate A', score:74, streak:5, mins:180, medal:'🥈'},
+          {rank:3, av:'⚡', name:'Teammate B', score:61, streak:3, mins:120, medal:'🥉'},
+        ].map(m => renderLeaderboardRow(m, true)).join('')}
+      </div>
+    </div>`;
+}
+
+function renderTeamLeaderboardFull(el, members, period) {
+  const sorted = [...members].sort((a,b) => b.flowScore - a.flowScore);
+  const medals = ['🥇','🥈','🥉'];
+  el.innerHTML = `
+    <div style="background:var(--bg-panel);border:1px solid rgba(168,85,247,.2);border-radius:14px;overflow:hidden;margin-bottom:14px">
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+        <div style="font-size:14px;font-weight:800">🏆 FlowScore Board</div>
+        <div style="font-size:11px;color:#666">${period || 'This week'}</div>
+      </div>
+      <div style="padding:10px 0">
+        ${sorted.map((m,i) => renderLeaderboardRow({
+          rank: i+1, av: m.avatar || m.name[0].toUpperCase(),
+          name: m.name, score: m.flowScore, streak: m.streak,
+          mins: m.focusMin, medal: medals[i] || `#${i+1}`,
+          isMe: m.email === FS_USER?.email,
+        }, false)).join('')}
+      </div>
+      <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px">
+        <button class="btn-sm" onclick="openInviteModal()" style="gap:6px;flex:1;justify-content:center"><i class="fas fa-user-plus"></i> Invite more</button>
+        <button class="btn-sm" onclick="shareTeamLeaderboard()" style="gap:6px;flex:1;justify-content:center"><i class="fas fa-share"></i> Share board</button>
+      </div>
+    </div>`;
+}
+
+function renderLeaderboardRow(m, isPreview) {
+  const scoreColor = m.score >= 70 ? '#10b981' : m.score >= 40 ? '#a855f7' : '#f59e0b';
+  return `
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;${m.isMe ? 'background:rgba(168,85,247,.06);border-left:3px solid var(--accent)' : ''}${isPreview ? 'opacity:.6' : ''}">
+      <div style="font-size:16px;width:24px;text-align:center">${m.medal}</div>
+      <div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#ec4899);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex-shrink:0">${m.av}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.name}${m.isMe ? ' <span style="font-size:10px;color:var(--accent)">(you)</span>' : ''}</div>
+        <div style="font-size:11px;color:#666">${m.mins || 0}m focus · ${m.streak || 0}🔥 streak</div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <div style="font-size:18px;font-weight:900;color:${scoreColor}">${m.score}</div>
+        <div style="font-size:9px;color:#555;text-transform:uppercase;letter-spacing:.5px">FlowScore</div>
+      </div>
+    </div>`;
+}
+
+async function shareTeamLeaderboard() {
+  const text = `Our team's FlowScore board on FlowState 🏆\nWho's locking in the most focus time?\nhttps://flowst8.cc`;
+  if (navigator.share) {
+    await navigator.share({ title: 'FlowState Team Board', text, url: 'https://flowst8.cc' }).catch(()=>{});
+  } else {
+    navigator.clipboard.writeText(text).then(() => notify('📋 Copied!', 'success'));
   }
 }
 
@@ -2797,6 +3077,7 @@ function renderTeamTabs() {
   const hub = document.getElementById('team-hub-content');
   if (!hub) return;
   const tabs = [
+    {id:'leaderboard', label:'🏆 Leaderboard', icon:'fa-trophy'},
     {id:'sprint', label:'Sprint Health', icon:'fa-heart-pulse'},
     {id:'pulse', label:'Team Pulse', icon:'fa-users'},
     {id:'standups', label:'Standups', icon:'fa-microphone'},
@@ -2825,11 +3106,12 @@ function renderTeamTabs() {
 function switchTeamTab(tabId) {
   state.team.activeTab = tabId;
   document.querySelectorAll('.team-tab-btn').forEach(b=>{
-    b.classList.toggle('active', b.textContent.toLowerCase().includes(tabId==='sprint'?'sprint':tabId==='pulse'?'pulse':tabId==='standups'?'standup':tabId==='burnout'?'burnout':tabId==='deadlines'?'deadline':'velocity'));
+    b.classList.toggle('active', b.textContent.toLowerCase().includes(tabId==='leaderboard'?'leaderboard':tabId==='sprint'?'sprint':tabId==='pulse'?'pulse':tabId==='standups'?'standup':tabId==='burnout'?'burnout':tabId==='deadlines'?'deadline':'velocity'));
   });
   const content = document.getElementById('team-tab-content');
   if (!content) return;
-  if (tabId==='sprint') renderSprintHealth(content);
+  if (tabId==='leaderboard') loadTeamLeaderboard(content);
+  else if (tabId==='sprint') renderSprintHealth(content);
   else if (tabId==='pulse') renderTeamPulse(content);
   else if (tabId==='standups') renderStandups(content);
   else if (tabId==='burnout') renderBurnoutRisk(content);
@@ -4428,6 +4710,8 @@ async function loadTokenBalance() {
       if (label) label.textContent = `${used.toLocaleString()} / ${limit.toLocaleString()}`;
       if (bar)   { bar.style.width = pct + '%'; bar.style.background = pct > 80 ? 'linear-gradient(90deg,#f59e0b,#ef4444)' : 'linear-gradient(90deg,#a855f7,#ec4899)'; }
       if (sub)   sub.textContent = left > 0 ? `${left.toLocaleString()} tokens left today` : '⚠️ Daily limit reached';
+      // P2A: trigger upgrade modal at 80% usage for free tier
+      if (!isPro) checkTokenUpgradeTrigger(used, limit);
     } else if (meter && isPro) {
       meter.style.display = 'none';
     }

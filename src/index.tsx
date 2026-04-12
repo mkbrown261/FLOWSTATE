@@ -2055,6 +2055,58 @@ app.get('/api/team/members', async (c) => {
   })
 })
 
+// GET /api/team/leaderboard — FlowScore rankings for users who opted in to public profiles
+app.get('/api/team/leaderboard', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const db = c.env?.DB
+  if (!db) return c.json({ error: 'db_unavailable' }, 503)
+
+  try {
+    const since7  = new Date(Date.now() - 7  * 86400000).toISOString().slice(0, 10)
+    const since30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+
+    // Get all public profiles + their weekly stats
+    const { results: profiles } = await db.prepare(
+      `SELECT email, display_name, avatar_url, slug FROM public_profiles WHERE show_score=1 ORDER BY created_at DESC LIMIT 50`
+    ).all() as any
+
+    // Include current user even if no public profile
+    const emails = (profiles as any[]).map((p: any) => p.email)
+    if (!emails.includes(session.email)) {
+      (profiles as any[]).push({ email: session.email, display_name: session.name || 'You', avatar_url: session.picture || '', slug: null })
+      emails.push(session.email)
+    }
+
+    // Batch fetch weekly sessions for all users
+    const members = await Promise.all((profiles as any[]).map(async (p: any) => {
+      try {
+        const { results } = await db.prepare(
+          `SELECT duration_mins, focus_score, session_date FROM sessions WHERE email=? AND session_date>=? AND phase='focus' AND completed=1`
+        ).bind(p.email, since30).all() as any
+        const week = (results as any[]).filter((r: any) => r.session_date >= since7)
+        const focusMin = week.reduce((s: number, r: any) => s + (r.duration_mins || 0), 0)
+        const sessions7 = week.length
+        // Streak
+        const daySet = new Set((results as any[]).map((r: any) => r.session_date))
+        let streak = 0
+        const today = new Date()
+        for (let i = 0; i < 365; i++) { const d = new Date(today); d.setDate(d.getDate() - i); if (daySet.has(d.toISOString().slice(0, 10))) streak++; else if (i > 0) break; }
+        const flowScore = Math.min(100, Math.round((focusMin / 120) * 40 + (sessions7 / 5) * 30 + Math.min(streak, 7) * 4 + (sessions7 > 0 ? 15 : 0)))
+        return { email: p.email, name: p.display_name || p.email.split('@')[0], avatar: p.avatar_url?.[0] || '⚡', slug: p.slug, flowScore, focusMin, streak, sessions: sessions7 }
+      } catch (_) {
+        return { email: p.email, name: p.display_name || 'Unknown', avatar: '⚡', slug: null, flowScore: 0, focusMin: 0, streak: 0, sessions: 0 }
+      }
+    }))
+
+    const sorted = members.sort((a: any, b: any) => b.flowScore - a.flowScore)
+    const weekStr = `${new Date(Date.now()-7*86400000).toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'})}`
+    return c.json({ members: sorted, period: weekStr, total: sorted.length })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 app.post('/api/team/update-role', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
@@ -7416,7 +7468,10 @@ em{color:var(--accent);font-style:italic}
     </div>
   </div>
 
-  <button onclick="saveFocusSession()" id="fcp-save-btn" style="width:100%;padding:8px;border-radius:8px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;border:none;font-size:13px;font-weight:700;cursor:pointer;margin-top:2px">Save Session →</button>
+  <div style="display:flex;gap:7px;margin-top:2px">
+    <button onclick="saveFocusSession()" id="fcp-save-btn" style="flex:1;padding:8px;border-radius:8px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;border:none;font-size:13px;font-weight:700;cursor:pointer">Save →</button>
+    <button onclick="shareFlowSession(_fcpSession.durationMin)" title="Share your session" style="padding:8px 12px;border-radius:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#ccc;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:5px"><i class="fas fa-share-nodes"></i></button>
+  </div>
 </div>
 <!-- Keyboard shortcuts hint overlay -->
 <div id="kb-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:4000;align-items:center;justify-content:center;backdrop-filter:blur(8px)">
