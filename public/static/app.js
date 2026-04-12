@@ -375,6 +375,20 @@ function showMainApp(isDemo=false) {
 
 function checkBillingReturn() {
   const params = new URLSearchParams(window.location.search);
+
+  // Handle ?tab=calendar&cal_synced=1 — returned from calendar reconnect flow
+  // Switch to calendar tab immediately and load events with the fresh token
+  if (params.get('tab') === 'calendar') {
+    window.history.replaceState({}, '', window.location.pathname);
+    setTimeout(() => {
+      switchTab('calendar');
+      if (params.get('cal_synced') === '1') {
+        notify('✅ Google Calendar reconnected! Loading your events…', 'success');
+      }
+    }, 400);
+    return;
+  }
+
   const billing = params.get('billing');
   const topup   = params.get('topup');
 

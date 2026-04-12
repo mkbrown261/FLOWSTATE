@@ -91,12 +91,16 @@ function encodeSession(data: object): string { return btoa(JSON.stringify(data))
 function decodeSession(token: string): any { try { return JSON.parse(atob(token)) } catch { return null } }
 
 // ─── Google OAuth ─────────────────────────────────────────────────────────────
-// GET /api/auth/calendar-reconnect — force Google re-consent to get a fresh refresh_token
-// Use this when the user is signed in but calendar shows no data (lost refresh_token)
+// GET /api/auth/calendar-reconnect — force Google re-consent to get a fresh token
+// Clears the old session first so Google can't reuse the cached denied token
 app.get('/api/auth/calendar-reconnect', (c) => {
   const baseUrl = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
-  const intent  = declareGoogleOAuth(baseUrl)
+  // Preserve name/email/picture from old session so UI doesn't flash empty after redirect
+  const oldSession = decodeSession(getCookie(c, 'fs_session') || '')
+  const intent = declareGoogleOAuth(baseUrl)
   setCookie(c, 'oauth_state', intent.stateParam, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' })
+  // Store a marker so callback knows this was a calendar reconnect (not a fresh login)
+  setCookie(c, 'cal_reconnect', '1', { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' })
   const params = new URLSearchParams({
     client_id:     c.env?.GOOGLE_CLIENT_ID || '',
     redirect_uri:  intent.redirectPath,
@@ -104,7 +108,8 @@ app.get('/api/auth/calendar-reconnect', (c) => {
     scope:         intent.scopes.join(' '),
     state:         intent.stateParam,
     access_type:   'offline',
-    prompt:        'consent',   // Force consent screen so Google issues a new refresh_token
+    prompt:        'consent',        // Force consent screen — issues a NEW token with calendar scope
+    login_hint:    oldSession?.email || '',  // Pre-fill email so user doesn't have to pick account
   })
   return c.redirect('https://accounts.google.com/o/oauth2/v2/auth?' + params)
 })
@@ -142,8 +147,10 @@ app.get('/api/auth/google', async (c) => {
 
 app.get('/api/auth/google/callback', async (c) => {
   const { code, state, error } = c.req.query() as any
-  const storedState = getCookie(c, 'oauth_state')
-  deleteCookie(c, 'oauth_state', { path: '/' })
+  const storedState  = getCookie(c, 'oauth_state')
+  const isCalReconnect = getCookie(c, 'cal_reconnect') === '1'
+  deleteCookie(c, 'oauth_state',    { path: '/' })
+  deleteCookie(c, 'cal_reconnect',  { path: '/' })
   // Read & clear app-specific context (set by /api/auth/google when app= param was present)
   const appCtxRaw = getCookie(c, 'oauth_app_ctx') || ''
   deleteCookie(c, 'oauth_app_ctx', { path: '/' })
@@ -159,10 +166,16 @@ app.get('/api/auth/google/callback', async (c) => {
       body: new URLSearchParams({ code, client_id: c.env?.GOOGLE_CLIENT_ID || '', client_secret: c.env?.GOOGLE_CLIENT_SECRET || '', redirect_uri: baseUrl + '/api/auth/google/callback', grant_type: 'authorization_code' }),
     })
     const tokens: any = await tokenRes.json()
-    if (!tokens.access_token) throw new Error('No access token')
+    if (!tokens.access_token) throw new Error('No access token: ' + JSON.stringify(tokens))
     const profile: any = await (await fetch('https://www.googleapis.com/oauth2/v2/userinfo', { headers: { Authorization: 'Bearer ' + tokens.access_token } })).json()
-    const session = { access_token: tokens.access_token, refresh_token: tokens.refresh_token, expires_at: Date.now() + tokens.expires_in * 1000, name: profile.name, email: profile.email, picture: profile.picture, provider: 'google' }
-    setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'None', maxAge: 7*24*3600, path: '/' })
+    const session = {
+      access_token:  tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at:    Date.now() + (tokens.expires_in || 3600) * 1000,
+      name: profile.name, email: profile.email, picture: profile.picture, provider: 'google',
+    }
+    // Use Lax for same-site access; None only needed for cross-site (desktop app flows)
+    setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 7*24*3600, path: '/' })
 
     // If this auth was initiated from a desktop app, forward to that app's callback
     if (appCtx.app === 'fsaudio') {
@@ -174,7 +187,12 @@ app.get('/api/auth/google/callback', async (c) => {
       return c.redirect(cbUrl)
     }
 
-    // Regular web sign-in — show success page
+    // Calendar reconnect — skip success page, go straight back to app on the calendar tab
+    if (isCalReconnect) {
+      return c.redirect('/?tab=calendar&cal_synced=1')
+    }
+
+    // Regular web sign-in — show success page then redirect to /
     return c.html(authSuccessPage(profile.name, profile.picture))
   } catch (err: any) { return c.html(authErrorPage('Authentication failed: ' + err.message)) }
 })
