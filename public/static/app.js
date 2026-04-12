@@ -438,7 +438,12 @@ function setupTabListeners() {
   document.getElementById('cal-connect-btn')?.addEventListener('click', () => openAuthPopup('/api/auth/google'));
   document.getElementById('cal-prev')?.addEventListener('click', () => calNav(-1));
   document.getElementById('cal-next')?.addEventListener('click', () => calNav(1));
-  document.getElementById('cal-add-btn')?.addEventListener('click', () => { document.getElementById('add-ev-form').classList.toggle('show'); });
+  document.getElementById('cal-add-btn')?.addEventListener('click', () => {
+    // Show sidebar and toggle the add form
+    const sidebar = document.getElementById('cal-sidebar');
+    if (sidebar) sidebar.style.display = 'block';
+    document.getElementById('add-ev-form').classList.toggle('show');
+  });
   document.getElementById('cal-refresh')?.addEventListener('click', loadCalEvents);
   document.getElementById('ev-save-btn')?.addEventListener('click', saveCalEvent);
   document.getElementById('ev-cancel-btn')?.addEventListener('click', () => document.getElementById('add-ev-form').classList.remove('show'));
@@ -1462,97 +1467,115 @@ function calNav(dir) {
 
 function renderCalGrid() {
   const grid = document.getElementById('cal-grid');
-  const label= document.getElementById('cal-month-label');
+  const label = document.getElementById('cal-month-label');
   if (!grid) return;
   const { year, month } = state.cal;
   const now = new Date();
-  label.textContent = new Date(year,month).toLocaleDateString('en-US',{month:'long',year:'numeric'});
-  const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  const first = new Date(year,month,1).getDay();
-  const total = new Date(year,month+1,0).getDate();
-  const prevTotal = new Date(year,month,0).getDate();
-  let html = days.map(d=>`<div class="cal-hd">${d}</div>`).join('');
-  // Filler days from previous month
-  for (let i=0;i<first;i++) {
-    html += `<div class="cal-day other"><span class="cal-day-num">${prevTotal-first+i+1}</span></div>`;
+  if (label) label.textContent = new Date(year, month).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const first = new Date(year, month, 1).getDay();
+  const total = new Date(year, month + 1, 0).getDate();
+  const prevTotal = new Date(year, month, 0).getDate();
+  let html = days.map(d => `<div class="cal-hd">${d}</div>`).join('');
+  // Filler from previous month
+  for (let i = 0; i < first; i++) {
+    html += `<div class="cal-day other"><span class="cal-day-num">${prevTotal - first + i + 1}</span></div>`;
   }
-  for (let d=1;d<=total;d++) {
-    const isToday = year===now.getFullYear()&&month===now.getMonth()&&d===now.getDate();
-    const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    // Get events for this day (up to 3 chips)
-    const dayEvs = state.cal.events.filter(e=>{
-      const s = e.start || '';
-      return typeof s==='string' && s.startsWith(dateStr);
+  for (let d = 1; d <= total; d++) {
+    const isToday = year === now.getFullYear() && month === now.getMonth() && d === now.getDate();
+    const dateStr = `${year}-${String(month + 1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    // Match events: start is an ISO string like "2026-04-12T09:00:00..." or "2026-04-12"
+    const dayEvs = state.cal.events.filter(e => {
+      const s = String(e.start || '');
+      return s.slice(0, 10) === dateStr;
     });
-    const hasEv = dayEvs.length > 0;
-    // Build mini event chips inside the cell
-    const chipsHtml = dayEvs.slice(0,3).map(e=>{
-      const timeStr = e.allDay ? '' : new Date(e.start).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
-      const label = (timeStr ? timeStr + ' ' : '') + escHtml(e.summary||'');
-      // Use a safe colour — CSS variable strings can't be used in inline rgba
-      const safeColor = (e.color && e.color.startsWith('hsl')) ? e.color : '#a855f7';
-      return `<div class="cal-day-ev-chip" style="background:${safeColor};opacity:0.85;border-left:2px solid ${safeColor}">${label}</div>`;
+    // Build event chips — compact, colored
+    const chipsHtml = dayEvs.slice(0, 3).map(e => {
+      const safeColor = (e.color && (e.color.startsWith('hsl') || e.color.startsWith('#') || e.color.startsWith('rgb'))) ? e.color : '#a855f7';
+      const timeStr = (!e.allDay && e.start && e.start.length > 10)
+        ? new Date(e.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+        : '';
+      const chipText = escHtml((timeStr ? timeStr + ' ' : '') + (e.summary || '(no title)'));
+      return `<div class="cal-day-ev-chip" style="background:${safeColor}">${chipText}</div>`;
     }).join('');
-    const moreHtml = dayEvs.length > 3 ? `<div style="font-size:9px;color:#aaa;margin-top:1px">+${dayEvs.length-3} more</div>` : '';
-    html += `<div class="cal-day ${isToday?'today':''}" onclick="clickCalDay('${dateStr}')">
+    const moreHtml = dayEvs.length > 3
+      ? `<div class="cal-day-more">+${dayEvs.length - 3} more</div>`
+      : '';
+    html += `<div class="cal-day${isToday ? ' today' : ''}" onclick="clickCalDay('${dateStr}')">
       <span class="cal-day-num">${d}</span>
       <div class="cal-day-events">${chipsHtml}${moreHtml}</div>
     </div>`;
   }
   const remaining = 42 - first - total;
-  for (let d=1;d<=remaining;d++) html += `<div class="cal-day other"><span class="cal-day-num">${d}</span></div>`;
+  for (let d = 1; d <= remaining; d++) html += `<div class="cal-day other"><span class="cal-day-num">${d}</span></div>`;
   grid.innerHTML = html;
 }
 
 function clickCalDay(dateStr) {
-  // Show day detail panel with events for that day
-  const panel = document.getElementById('cal-day-panel');
   const title = document.getElementById('cal-day-panel-title');
   const evContainer = document.getElementById('cal-day-panel-events');
-  if (!panel || !title || !evContainer) return;
+  const sidebar = document.getElementById('cal-sidebar');
+  if (!evContainer) return;
 
-  // Format the date nicely
+  // Highlight selected day in grid
+  document.querySelectorAll('.cal-day.selected').forEach(el => el.classList.remove('selected'));
+  const clickedEl = document.querySelector(`.cal-day[onclick="clickCalDay('${dateStr}')"]`);
+  if (clickedEl) clickedEl.classList.add('selected');
+
+  // Format date nicely in sidebar title
   const d = new Date(dateStr + 'T12:00:00');
-  title.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' });
+  if (title) title.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' });
 
-  // Get events for this day
+  // Close add-event form when switching days
+  const form = document.getElementById('add-ev-form');
+  if (form) form.classList.remove('show');
+
+  // Filter events for this day
   const dayEvs = state.cal.events.filter(e => {
-    const s = e.start || '';
-    return typeof s === 'string' && s.startsWith(dateStr);
-  }).sort((a,b) => new Date(a.start||0) - new Date(b.start||0));
+    return String(e.start || '').slice(0, 10) === dateStr;
+  }).sort((a, b) => new Date(a.start || 0) - new Date(b.start || 0));
 
   if (!dayEvs.length) {
-    evContainer.innerHTML = `<div style="color:#aaa;font-size:13px;padding:8px 0">No events — <button onclick="clickCalDayAdd('${dateStr}')" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:13px;text-decoration:underline">Add one?</button></div>`;
+    evContainer.innerHTML = `<div style="color:#888;font-size:12px;padding:8px 0;text-align:center">
+      No events<br>
+      <button onclick="clickCalDayAdd('${dateStr}')" style="margin-top:8px;padding:5px 12px;border-radius:7px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:11px;cursor:pointer">+ Add event</button>
+    </div>`;
   } else {
     evContainer.innerHTML = dayEvs.map(ev => {
       const start = ev.start || '';
-      const timeLabel = (!ev.allDay && start) ? new Date(start).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true}) : 'All day';
-      const endLabel  = (!ev.allDay && ev.end) ? ' – ' + new Date(ev.end).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true}) : '';
-      const safeColor = (ev.color && ev.color.startsWith('hsl')) ? ev.color : '#a855f7';
-      return `<div class="ev-item">
-        <div class="ev-dot" style="background:${safeColor}"></div>
+      const safeColor = (ev.color && (ev.color.startsWith('hsl') || ev.color.startsWith('#') || ev.color.startsWith('rgb'))) ? ev.color : '#a855f7';
+      const timeLabel = (!ev.allDay && start.length > 10)
+        ? new Date(start).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+        : 'All day';
+      const endLabel = (!ev.allDay && ev.end && ev.end.length > 10)
+        ? ' – ' + new Date(ev.end).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+        : '';
+      return `<div class="ev-item" style="border-left:3px solid ${safeColor}">
         <div style="flex:1;min-width:0">
-          <div class="ev-sum">${escHtml(ev.summary||'(no title)')}</div>
+          <div class="ev-sum">${escHtml(ev.summary || '(no title)')}</div>
           <div class="ev-time">${timeLabel}${endLabel}</div>
         </div>
         <button class="btn-blk" onclick="blockAroundEvent('${ev.id}')">Block</button>
       </div>`;
-    }).join('');
+    }).join('') + `<button onclick="clickCalDayAdd('${dateStr}')" style="margin-top:8px;width:100%;padding:5px;border-radius:7px;border:1px dashed rgba(168,85,247,.4);background:transparent;color:#aaa;font-size:11px;cursor:pointer">+ Add event</button>`;
   }
 
-  panel.style.display = 'block';
-  // Scroll panel into view
-  setTimeout(() => panel.scrollIntoView({ behavior:'smooth', block:'nearest' }), 50);
+  // Ensure sidebar is visible
+  if (sidebar) sidebar.style.display = 'block';
 }
 
 function clickCalDayAdd(dateStr) {
   const form = document.getElementById('add-ev-form');
   const startEl = document.getElementById('ev-start');
   const endEl = document.getElementById('ev-end');
+  const sidebar = document.getElementById('cal-sidebar');
+  if (sidebar) sidebar.style.display = 'block';
   form.classList.add('show');
   startEl.value = dateStr + 'T09:00';
   endEl.value   = dateStr + 'T10:00';
   document.getElementById('ev-title').focus();
+  // Scroll form into view inside sidebar
+  setTimeout(() => form.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
 }
 
 function _calDebug(msg, data, isError) {
@@ -1641,10 +1664,10 @@ function _showCalReconnectBanner() {
         Reconnect →
       </button>
     `;
-    // Insert before the event list
-    const evList = document.getElementById('ev-list');
-    if (evList) evList.parentNode.insertBefore(banner, evList);
-    else document.querySelector('.cal-wrap')?.prepend(banner);
+    // Insert before the cal-grid
+    const calGrid = document.getElementById('cal-grid');
+    if (calGrid) calGrid.parentNode.insertBefore(banner, calGrid);
+    else document.getElementById('tab-pane-calendar')?.prepend(banner);
   }
   banner.style.display = 'flex';
 }
