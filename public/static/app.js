@@ -562,7 +562,25 @@ function showMainApp(isDemo=false) {
   if (FS_USER) loadD1History();
   // Check for referral claim (?ref=FS-XXXXX in URL)
   if (FS_USER) setTimeout(checkReferralClaim, 800);
+  // Restore active pair session on reload
+  if (FS_USER) setTimeout(_restorePairSession, 1500);
 }
+
+async function _restorePairSession() {
+  try {
+    const res = await fetch('/api/pair/status', { credentials: 'include' });
+    const data = await res.json();
+    if (data.status === 'paired' && data.data?.partnerEmail) {
+      _pairState = { ...data.data, status: 'paired', pollTimer: null, pingTimer: null, msgTimer: null, countdownInterval: null };
+      // Silently restore — show banner but don't pop the modal
+      _updatePairBanner();
+      // Start background ping polling
+      _pairState.pingTimer = setInterval(_pollPartnerPing, 6000);
+      _pairState.msgTimer  = setInterval(_loadPairMessages, 4000);
+      notify(`🤝 Resuming pair session with ${escHtml(_pairState.partnerName || 'your partner')}`, 'info');
+    }
+  } catch(e) {}
+
 
 // ── Load real session history from D1, seed state + update UI ─────────────
 async function loadD1History() {
@@ -3334,6 +3352,8 @@ function buildMetrics() {
 
   // Output breakdown (D1 only)
   _renderOutputBreakdown();
+  // Session journal (D1 only)
+  _renderSessionJournal();
   loadBehaviorInsight();
 }
 
@@ -3370,6 +3390,114 @@ function _renderOutputBreakdown() {
         </div>`).join('')}
       </div>` : ''}
     </div>`;
+}
+
+// ── Session Journal (Phase 4) — renders the last 30 sessions as a log ──────
+function _renderSessionJournal() {
+  const d1 = _d1History;
+  // Find or create the journal container
+  let el = document.getElementById('session-journal-wrap');
+  if (!el) {
+    const breakdown = document.getElementById('output-breakdown-wrap');
+    const chartWrap = document.querySelector('.chart-wrap');
+    const anchor = breakdown || chartWrap;
+    if (!anchor) return;
+    el = document.createElement('div');
+    el.id = 'session-journal-wrap';
+    anchor.after(el);
+  }
+
+  if (!d1 || !d1.sessions || d1.sessions.length === 0) {
+    el.innerHTML = `
+      <div style="margin-top:20px;background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:20px;text-align:center">
+        <div style="font-size:28px;margin-bottom:6px">📓</div>
+        <div style="font-size:13px;font-weight:700;color:var(--text-p);margin-bottom:4px">Focus Journal</div>
+        <div style="font-size:12px;color:var(--text-s)">Complete a focus session to see your journal. Each session logs your FlowScore, duration, and output type.</div>
+      </div>`;
+    return;
+  }
+
+  const sessions = d1.sessions.slice(0, 30); // cap at 30
+  const MOOD_ICONS = { Writing:'✍️', Code:'💻', Design:'🎨', Reading:'📚', Planning:'📋', Meeting:'💬', Other:'🔘', Music:'🎵', Research:'🔬' };
+  const scoreColor = s => s >= 80 ? '#10b981' : s >= 55 ? '#f59e0b' : '#ef4444';
+  const scoreLabel = s => s >= 80 ? 'Deep' : s >= 55 ? 'Solid' : 'Light';
+
+  // Group by date
+  const byDate = {};
+  sessions.forEach(s => {
+    const d = s.session_date || s.date || '—';
+    if (!byDate[d]) byDate[d] = [];
+    byDate[d].push(s);
+  });
+
+  const todayStr = new Date().toISOString().slice(0,10);
+  const yesterdayStr = new Date(Date.now()-86400000).toISOString().slice(0,10);
+  const fmtDate = d => d === todayStr ? 'Today' : d === yesterdayStr ? 'Yesterday' : new Date(d+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+
+  let journalHTML = `
+    <div style="margin-top:20px">
+      <div class="chart-title" style="margin-bottom:12px;display:flex;align-items:center;justify-content:space-between">
+        <span><i class="fas fa-book-open" style="color:var(--accent)"></i> Focus Journal
+          <span style="font-size:10px;color:#10b981;font-weight:400;background:rgba(16,185,129,.1);padding:2px 7px;border-radius:10px;margin-left:6px">last 30 sessions</span>
+        </span>
+        <button onclick="_exportSessionJournal()" style="font-size:10px;font-weight:700;padding:3px 9px;background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.2);border-radius:6px;color:var(--accent);cursor:pointer">↓ Export</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:16px">`;
+
+  Object.entries(byDate).forEach(([date, daySessions]) => {
+    const dayMins = daySessions.reduce((s,r) => s+(r.duration_mins||0), 0);
+    journalHTML += `
+      <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text-m)">${fmtDate(date)}</div>
+          <div style="font-size:11px;color:var(--text-s)">${dayMins}m · ${daySessions.length} session${daySessions.length!==1?'s':''}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">`;
+    daySessions.forEach(sess => {
+      const score = sess.focus_score || 0;
+      const type  = sess.output_type || 'Other';
+      const note  = sess.output_note || '';
+      const mins  = sess.duration_mins || 0;
+      const time  = sess.created_at ? new Date(sess.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '';
+      journalHTML += `
+        <div style="display:flex;align-items:center;gap:10px;background:var(--bg-panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px">
+          <div style="flex-shrink:0;width:36px;height:36px;border-radius:8px;background:${score>=80?'rgba(16,185,129,.15)':score>=55?'rgba(245,158,11,.12)':'rgba(239,68,68,.1)'};border:1px solid ${scoreColor(score)}33;display:flex;align-items:center;justify-content:center;font-size:14px">${MOOD_ICONS[type]||'🔘'}</div>
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+              <span style="font-size:12px;font-weight:700;color:var(--text-p)">${type}</span>
+              <span style="font-size:10px;padding:1px 6px;border-radius:4px;background:${score>=80?'rgba(16,185,129,.15)':score>=55?'rgba(245,158,11,.12)':'rgba(239,68,68,.1)'};color:${scoreColor(score)};font-weight:700">${scoreLabel(score)} ${score}</span>
+              <span style="font-size:11px;color:var(--text-s)">${mins}m</span>
+              ${time ? `<span style="font-size:10px;color:var(--text-s);margin-left:auto">${time}</span>` : ''}
+            </div>
+            ${note ? `<div style="font-size:11px;color:var(--text-s);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(note)}">💬 ${escHtml(note)}</div>` : ''}
+          </div>
+        </div>`;
+    });
+    journalHTML += `</div></div>`;
+  });
+
+  journalHTML += `</div></div>`;
+  el.innerHTML = journalHTML;
+}
+
+function _exportSessionJournal() {
+  const d1 = _d1History;
+  if (!d1?.sessions?.length) { notify('No sessions to export', 'warning'); return; }
+  const headers = ['Date','Time','Duration (mins)','FlowScore','Output Type','Note'];
+  const rows = d1.sessions.map(s => [
+    s.session_date || '',
+    s.created_at ? new Date(s.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '',
+    s.duration_mins || 0,
+    s.focus_score || 0,
+    s.output_type || '',
+    (s.output_note || '').replace(/,/g,'；') // escape commas
+  ]);
+  const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='flowstate-journal.csv'; a.click();
+  URL.revokeObjectURL(url);
+  notify('✅ Journal exported as CSV', 'success');
 }
 
 // ── Token wall, upgrade moment, model downgrade badge ─────────────────────
@@ -8327,7 +8455,7 @@ function _renderCoachUI(data) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 4C — ACCOUNTABILITY PAIRING
 // ══════════════════════════════════════════════════════════════════════════════
-let _pairState = { status: 'none', partner: null, sessionId: null, endsAt: null, pollTimer: null, pingTimer: null };
+let _pairState = { status: 'none', partner: null, sessionId: null, endsAt: null, pollTimer: null, pingTimer: null, msgTimer: null, countdownInterval: null };
 
 async function openPairingModal() {
   if (!FS_USER) { notify('Sign in to use accountability pairing', 'info'); return; }
@@ -8458,70 +8586,207 @@ function _renderWaitingUI() {
   `);
 }
 
+// ── Quick emoji reactions for the chat ────────────────────────────────────────
+const PAIR_QUICK_EMOJIS = ['👋','🔥','💪','✅','🚀','😤','☕','🎯'];
+
 function _renderPairedUI() {
   const p = _pairState;
   const endsAt = p.endsAt ? new Date(p.endsAt) : null;
   const minsLeft = endsAt ? Math.max(0, Math.round((endsAt - Date.now()) / 60000)) : p.durationMins || 25;
+  const secsLeft = endsAt ? Math.max(0, Math.floor((endsAt - Date.now()) / 1000)) : (p.durationMins || 25) * 60;
+  const pct = endsAt ? Math.min(100, Math.round((1 - (endsAt - Date.now()) / ((p.durationMins||25)*60000)) * 100)) : 0;
 
   openModal(`
-    <div style="text-align:center;padding:8px 0">
-      <div style="font-size:40px;margin-bottom:8px">🤝</div>
-      <h2 style="font-weight:900;margin-bottom:4px">Paired with ${escHtml(p.partnerName || 'Creator')}</h2>
-      <p style="color:var(--text-s);font-size:13px;margin-bottom:20px">You're both focusing for ${p.durationMins || 25} minutes. Hold each other accountable!</p>
+    <div style="display:flex;flex-direction:column;gap:0;padding:0 0 4px">
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
-        <div style="background:linear-gradient(135deg,rgba(168,85,247,.1),rgba(236,72,153,.06));border:1px solid rgba(168,85,247,.25);border-radius:12px;padding:16px">
-          <div style="font-size:24px;margin-bottom:4px">⏱</div>
-          <div style="font-size:22px;font-weight:900;color:#a855f7" id="pair-countdown">${minsLeft}m</div>
-          <div style="font-size:11px;color:var(--text-s)">remaining</div>
+      <!-- Header bar -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:0 0 12px;border-bottom:1px solid var(--border);margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;font-size:16px">🤝</div>
+          <div>
+            <div style="font-weight:800;font-size:15px;line-height:1.2">Paired with <span style="color:#10b981">${escHtml(p.partnerName || 'Creator')}</span></div>
+            <div style="font-size:11px;color:var(--text-s)" id="pair-status-line">● Live session · ${p.durationMins||25}m block</div>
+          </div>
         </div>
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px">
-          <div style="font-size:24px;margin-bottom:4px">🤝</div>
-          <div style="font-size:16px;font-weight:700;color:#10b981">${escHtml(p.partnerName || 'Partner')}</div>
-          <div style="font-size:11px;color:var(--text-s)">your partner</div>
+        <div style="text-align:right">
+          <div style="font-size:22px;font-weight:900;color:#a855f7;line-height:1" id="pair-countdown">${_fmtCountdown(secsLeft)}</div>
+          <div style="font-size:10px;color:var(--text-s)">remaining</div>
         </div>
       </div>
 
-      <div id="pair-ping-area" style="margin-bottom:16px;min-height:32px;font-size:13px;color:var(--text-s)"></div>
+      <!-- Progress bar -->
+      <div style="height:4px;background:rgba(255,255,255,.07);border-radius:2px;margin-bottom:16px;overflow:hidden">
+        <div id="pair-progress-bar" style="height:100%;width:${pct}%;background:linear-gradient(90deg,#a855f7,#ec4899);border-radius:2px;transition:width 1s linear"></div>
+      </div>
 
+      <!-- Message feed -->
+      <div id="pair-msg-feed" style="flex:1;min-height:160px;max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:4px 0;margin-bottom:12px">
+        <div style="text-align:center;color:var(--text-s);font-size:12px;padding:16px 0" id="pair-feed-empty">
+          <div style="font-size:24px;margin-bottom:4px">💬</div>
+          Loading messages…
+        </div>
+      </div>
+
+      <!-- Quick emoji row -->
+      <div style="display:flex;gap:6px;margin-bottom:10px;overflow-x:auto;padding-bottom:2px">
+        ${PAIR_QUICK_EMOJIS.map(e => `<button onclick="_sendPairEmoji('${e}')" style="flex-shrink:0;font-size:18px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:8px;padding:5px 8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(168,85,247,.2)'" onmouseout="this.style.background='rgba(255,255,255,.06)'">${e}</button>`).join('')}
+        <button onclick="_sendCheckin()" style="flex-shrink:0;font-size:11px;font-weight:700;color:#10b981;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:5px 10px;cursor:pointer;white-space:nowrap">👋 Check In</button>
+      </div>
+
+      <!-- Text input -->
       <div style="display:flex;gap:8px;margin-bottom:12px">
-        <button class="btn-primary" style="flex:1;gap:6px;justify-content:center" onclick="_sendCheckin()">
-          <i class="fas fa-hand-pointer"></i> Check In 👋
-        </button>
-        <button class="btn-sm" style="flex:1;gap:6px;justify-content:center" onclick="closeModal();switchTab('focus')">
-          <i class="fas fa-bolt"></i> Start Focusing
+        <input id="pair-msg-input" type="text" maxlength="200" placeholder="Message your partner…"
+          style="flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text-p);font-size:13px;outline:none"
+          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();_sendPairMessage();}">
+        <button class="btn-primary" onclick="_sendPairMessage()" style="padding:9px 14px;font-size:13px;flex-shrink:0">
+          <i class="fas fa-paper-plane"></i>
         </button>
       </div>
-      <button class="btn-sm" style="width:100%;color:var(--danger);border-color:var(--danger)" onclick="_leavePair()">
-        <i class="fas fa-times"></i> End Session
-      </button>
+
+      <!-- Action buttons -->
+      <div style="display:flex;gap:8px">
+        <button class="btn-sm" style="flex:1;justify-content:center;gap:6px" onclick="closeModal();switchTab('focus')">
+          <i class="fas fa-bolt"></i> Focus Mode
+        </button>
+        <button class="btn-sm" style="flex:1;justify-content:center;color:var(--danger);border-color:var(--danger)" onclick="_leavePair()">
+          <i class="fas fa-times"></i> End Session
+        </button>
+      </div>
     </div>
-  `);
+  `, true);
 
-  // Start polling for pings from partner
+  // Show the focus-tab banner
+  _updatePairBanner();
+
+  // Load messages immediately
+  _loadPairMessages();
+
+  // Start polling: messages every 4s, pings every 6s
   if (_pairState.pingTimer) clearInterval(_pairState.pingTimer);
-  _pairState.pingTimer = setInterval(_pollPartnerPing, 8000);
+  if (_pairState.msgTimer) clearInterval(_pairState.msgTimer);
+  _pairState.pingTimer = setInterval(_pollPartnerPing, 6000);
+  _pairState.msgTimer  = setInterval(_loadPairMessages, 4000);
 
-  // Countdown timer
-  if (endsAt) {
-    const countdownEl = document.getElementById('pair-countdown');
-    if (countdownEl) {
-      const tick = () => {
-        const left = Math.max(0, Math.round((endsAt - Date.now()) / 60000));
-        if (countdownEl) countdownEl.textContent = left + 'm';
-        if (left === 0) { notify('⏰ Paired session complete! Great work!', 'success'); _leavePair(); }
-      };
-      setInterval(tick, 60000);
+  // Precise second countdown
+  if (_pairState.countdownInterval) clearInterval(_pairState.countdownInterval);
+  _pairState.countdownInterval = setInterval(() => {
+    if (!endsAt) return;
+    const left = Math.max(0, Math.floor((endsAt - Date.now()) / 1000));
+    const totalSecs = (p.durationMins||25)*60;
+    const elapsed = totalSecs - left;
+    const pctNow = Math.min(100, Math.round((elapsed/totalSecs)*100));
+    const cdEl = document.getElementById('pair-countdown');
+    const pbEl = document.getElementById('pair-progress-bar');
+    if (cdEl) cdEl.textContent = _fmtCountdown(left);
+    if (pbEl) pbEl.style.width = pctNow + '%';
+    if (left === 0) {
+      clearInterval(_pairState.countdownInterval);
+      notify('⏰ Paired session complete! Great work, both of you! 🔥', 'success');
+      _sendSystemMessage('Session complete! Great work 🎉');
+      setTimeout(_leavePair, 3000);
     }
+  }, 1000);
+}
+
+function _fmtCountdown(secs) {
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return m > 0 ? `${m}:${String(s).padStart(2,'0')}` : `0:${String(s).padStart(2,'0')}`;
+}
+
+async function _loadPairMessages() {
+  try {
+    const res = await fetch('/api/pair/messages', { credentials: 'include' });
+    const data = await res.json();
+    const feed = document.getElementById('pair-msg-feed');
+    if (!feed) return;
+    const msgs = data.messages || [];
+    if (msgs.length === 0) {
+      feed.innerHTML = `<div style="text-align:center;color:var(--text-s);font-size:12px;padding:20px 0">
+        <div style="font-size:22px;margin-bottom:4px">💬</div>
+        Say hi to ${escHtml(_pairState.partnerName || 'your partner')}!
+      </div>`;
+      return;
+    }
+    // Only re-render if count changed (avoid scroll jumping)
+    if (feed.dataset.count === String(msgs.length)) return;
+    feed.dataset.count = msgs.length;
+    const wasAtBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+    feed.innerHTML = msgs.map(m => _renderPairMsg(m)).join('');
+    if (wasAtBottom || msgs.length <= 3) feed.scrollTop = feed.scrollHeight;
+  } catch(e) {}
+}
+
+function _renderPairMsg(m) {
+  const mine = m.mine;
+  const isEmoji = m.type === 'emoji';
+  const isSystem = m.type === 'system';
+  if (isSystem) {
+    return `<div style="text-align:center;font-size:11px;color:var(--text-s);padding:4px 0">${escHtml(m.text)}</div>`;
   }
+  const time = m.at ? new Date(m.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+  return `<div style="display:flex;flex-direction:column;align-items:${mine?'flex-end':'flex-start'};gap:2px">
+    ${!mine ? `<div style="font-size:10px;color:var(--text-s);margin-left:8px">${escHtml(m.from)}</div>` : ''}
+    <div style="max-width:78%;padding:${isEmoji?'4px 10px':'8px 12px'};border-radius:${mine?'14px 14px 4px 14px':'14px 14px 14px 4px'};background:${mine?'linear-gradient(135deg,rgba(168,85,247,.3),rgba(236,72,153,.2))':'rgba(255,255,255,.07)'};border:1px solid ${mine?'rgba(168,85,247,.3)':'var(--border)'};font-size:${isEmoji?'24px':'13px'};color:var(--text-p);word-break:break-word;line-height:1.4">
+      ${escHtml(m.text)}
+    </div>
+    <div style="font-size:10px;color:var(--text-s);margin:0 8px">${time}</div>
+  </div>`;
+}
+
+async function _sendPairMessage() {
+  const inp = document.getElementById('pair-msg-input');
+  if (!inp) return;
+  const text = inp.value.trim();
+  if (!text) return;
+  inp.value = '';
+  inp.focus();
+  try {
+    await fetch('/api/pair/message', {
+      method: 'POST', credentials: 'include',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text, type: 'text' })
+    });
+    await _loadPairMessages();
+  } catch(e) { notify('Could not send message', 'error'); }
+}
+
+async function _sendPairEmoji(emoji) {
+  try {
+    await fetch('/api/pair/message', {
+      method: 'POST', credentials: 'include',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text: emoji, type: 'emoji' })
+    });
+    await _loadPairMessages();
+  } catch(e) {}
+}
+
+async function _sendSystemMessage(text) {
+  try {
+    await fetch('/api/pair/message', {
+      method: 'POST', credentials: 'include',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text, type: 'system' })
+    });
+  } catch(e) {}
 }
 
 async function _sendCheckin() {
   try {
     const res = await fetch('/api/pair/checkin', { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: '{}' });
     const data = await res.json();
-    if (data.ok) notify(`👋 Check-in sent to ${_pairState.partnerName}!`, 'success');
-    else notify(data.error || 'Failed to send check-in', 'error');
+    if (data.ok) {
+      notify(`👋 Check-in sent to ${_pairState.partnerName}!`, 'success');
+      // Also send as a message so it appears in the chat
+      await fetch('/api/pair/message', {
+        method: 'POST', credentials: 'include',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ text: '👋 Checking in — how\'s it going?', type: 'text' })
+      });
+      await _loadPairMessages();
+    } else { notify(data.error || 'Failed to send check-in', 'error'); }
   } catch(e) { notify('Network error', 'error'); }
 }
 
@@ -8530,27 +8795,62 @@ async function _pollPartnerPing() {
     const res = await fetch('/api/pair/checkin', { credentials: 'include' });
     const data = await res.json();
     if (data.ping) {
-      const pingArea = document.getElementById('pair-ping-area');
       if (data.ping.type === 'partner_left') {
-        notify(`${data.ping.from} ended the session`, 'info');
+        notify(`${escHtml(data.ping.from)} ended the session`, 'info');
         clearInterval(_pairState.pollTimer);
         clearInterval(_pairState.pingTimer);
-        _pairState = { status: 'none', partner: null, sessionId: null, endsAt: null, pollTimer: null, pingTimer: null };
+        clearInterval(_pairState.msgTimer);
+        clearInterval(_pairState.countdownInterval);
+        _pairState = { status: 'none', partner: null, sessionId: null, endsAt: null, pollTimer: null, pingTimer: null, msgTimer: null, countdownInterval: null };
         closeModal();
+      } else if (data.ping.type === 'message') {
+        // New message arrived — reload feed
+        await _loadPairMessages();
+        if (!document.getElementById('pair-msg-feed')) {
+          // Modal is closed — show notification
+          notify(`💬 ${escHtml(data.ping.from)}: ${escHtml((data.ping.preview||'').slice(0,40))}`, 'info');
+        }
       } else {
-        if (pingArea) pingArea.innerHTML = `<div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.2);border-radius:8px;padding:10px;animation:fadeIn .3s ease"><i class="fas fa-hand-pointer" style="color:#10b981"></i> <strong>${escHtml(data.ping.from)}</strong> just checked in! 👋</div>`;
-        notify(`👋 ${data.ping.from} checked in!`, 'success');
-        setTimeout(() => { const el = document.getElementById('pair-ping-area'); if(el) el.innerHTML=''; }, 8000);
+        // Generic ping (check-in)
+        const pingArea = document.getElementById('pair-ping-area');
+        if (pingArea) {
+          pingArea.innerHTML = `<div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.2);border-radius:8px;padding:8px 12px;animation:fadeIn .3s ease;font-size:12px"><i class="fas fa-hand-pointer" style="color:#10b981"></i> <strong>${escHtml(data.ping.from)}</strong> just checked in! 👋</div>`;
+          setTimeout(() => { const el = document.getElementById('pair-ping-area'); if(el) el.innerHTML=''; }, 6000);
+        }
+        notify(`👋 ${escHtml(data.ping.from)} checked in!`, 'success');
       }
     }
   } catch(e) {}
 }
 
+function _updatePairBanner() {
+  const banner = document.getElementById('pair-session-banner');
+  const nameEl = document.getElementById('pair-banner-name');
+  const timeEl = document.getElementById('pair-banner-time');
+  const pairBtn = document.getElementById('btn-pair');
+  if (!banner) return;
+  if (_pairState.status === 'paired' && _pairState.partnerName) {
+    banner.style.display = 'flex';
+    if (nameEl) nameEl.textContent = _pairState.partnerName;
+    if (timeEl && _pairState.endsAt) {
+      const left = Math.max(0, Math.round((new Date(_pairState.endsAt) - Date.now()) / 60000));
+      timeEl.textContent = `· ${left}m left`;
+    }
+    if (pairBtn) { pairBtn.style.background = 'rgba(16,185,129,.2)'; pairBtn.style.borderColor = '#10b981'; pairBtn.title = `In session with ${_pairState.partnerName} — click to chat`; }
+  } else {
+    banner.style.display = 'none';
+    if (pairBtn) { pairBtn.style.background = ''; pairBtn.style.borderColor = 'rgba(16,185,129,.4)'; pairBtn.title = 'Find an accountability partner'; }
+  }
+}
+
 async function _leavePair() {
   clearInterval(_pairState.pollTimer);
   clearInterval(_pairState.pingTimer);
-  _pairState = { status: 'none', partner: null, sessionId: null, endsAt: null, pollTimer: null, pingTimer: null };
+  clearInterval(_pairState.msgTimer);
+  clearInterval(_pairState.countdownInterval);
+  _pairState = { status: 'none', partner: null, sessionId: null, endsAt: null, pollTimer: null, pingTimer: null, msgTimer: null, countdownInterval: null };
   try { await fetch('/api/pair/leave', { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: '{}' }); } catch(e) {}
+  _updatePairBanner();
   closeModal();
   notify('Session ended', 'info');
 }

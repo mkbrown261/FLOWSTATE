@@ -47,7 +47,7 @@
 | Notion integration (sync tasks + create pages) | ✅ |
 | Slack integration (standup notifications) | ✅ |
 | Referral program (invite friends → earn tokens) | ✅ |
-| Stripe billing (Pro $12/mo, Team tier, annual plans) | ✅ |
+| Stripe billing (Pro $18/mo monthly · $14/mo annual; Team $15/seat/mo monthly · $12/seat/mo annual; Enterprise contact us) | ✅ |
 | Token top-ups (50k / 200k / 500k packs via Stripe) | ✅ |
 | Daily AI token budgets with purchased-token overflow | ✅ |
 | AI Coach onboarding modal (3-step, localStorage gated) | ✅ |
@@ -137,7 +137,7 @@
 
 | Item | Notes |
 |---|---|
-| **Team plan pricing finalization** | Set Team tier price (estimated $29/mo/seat), enable team billing |
+| **Team plan billing activation** | Team monthly $15/seat, annual $12/seat — Stripe price IDs wired, confirm live activation |
 | **Annual plan discount** | 2 months free on annual (already wired in Stripe, needs activation) |
 | **Affiliate program** | Extend referral system to support affiliate links with custom tracking |
 | **Public API** | Documented public API for FlowScore read access — developers can embed scores |

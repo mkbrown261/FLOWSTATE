@@ -6331,7 +6331,7 @@ em{color:var(--accent);font-style:italic}
     <button class="btn-sm" id="btn-pricing"><i class="fas fa-star"></i> Pro</button>
     <button class="btn-sm" id="btn-invite" title="Invite friends — earn tokens"><i class="fas fa-user-plus"></i></button>
     <button class="btn-sm" onclick="openFlowCoach()" title="AI Flow Coach — personalized insights" style="color:#a855f7;border-color:rgba(168,85,247,.4)"><i class="fas fa-brain"></i></button>
-    <button class="btn-sm" onclick="openPairingModal()" title="Find an accountability partner" style="color:#10b981;border-color:rgba(16,185,129,.4)"><i class="fas fa-handshake"></i></button>
+    <button class="btn-sm" id="btn-pair" onclick="openPairingModal()" title="Find an accountability partner" style="color:#10b981;border-color:rgba(16,185,129,.4)"><i class="fas fa-handshake"></i></button>
     <button class="btn-sm" id="pwa-install-btn" onclick="triggerPwaInstall()" title="Add FlowState to home screen" style="display:none"><i class="fas fa-download"></i></button>
     <button class="btn-sm" id="btn-settings"><i class="fas fa-gear"></i></button>
   </div>
@@ -6339,6 +6339,18 @@ em{color:var(--accent);font-style:italic}
 
 <!-- FOCUS TAB -->
 <div class="tab-pane active" id="tab-pane-focus" style="display:none">
+  <!-- Pair session active banner — shown by JS when paired -->
+  <div id="pair-session-banner" style="display:none;background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:12px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="width:8px;height:8px;border-radius:50%;background:#10b981;display:inline-block;animation:pulse 2s infinite"></span>
+      <span style="font-size:13px;font-weight:700;color:#10b981">Paired with <span id="pair-banner-name">Partner</span></span>
+      <span id="pair-banner-time" style="font-size:12px;color:var(--text-s)"></span>
+    </div>
+    <div style="display:flex;gap:6px">
+      <button onclick="openPairingModal()" style="font-size:11px;font-weight:700;padding:4px 10px;background:rgba(16,185,129,.15);border:1px solid rgba(16,185,129,.3);border-radius:6px;color:#10b981;cursor:pointer">💬 Chat</button>
+      <button onclick="_leavePair()" style="font-size:11px;font-weight:700;padding:4px 10px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);border-radius:6px;color:#ef4444;cursor:pointer">Leave</button>
+    </div>
+  </div>
   <div class="timer-wrap">
     <div class="phase-btns">
       <button class="ph-btn active" id="ph-focus">Focus</button>
@@ -8341,31 +8353,61 @@ Respond with JSON ONLY (no markdown): {
 }`
 
   try {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${aiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'meta-llama/llama-3.1-8b-instruct:free',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 400,
-        temperature: 0.7,
-      })
-    })
-    const data: any = await res.json()
-    const content = data?.choices?.[0]?.message?.content || ''
-    // Parse JSON from response
-    const jsonMatch = content.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) return c.json({ error: 'parse_failed', raw: content.slice(0, 200) }, 500)
+    // Use multiple model fallback: try gpt-4o-mini first (reliable JSON), fallback to llama
+    const COACH_MODELS = [
+      'openai/gpt-4o-mini',
+      'google/gemini-flash-1.5-8b',
+      'meta-llama/llama-3.1-8b-instruct:free',
+    ]
+    let content = ''
+    for (const model of COACH_MODELS) {
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${aiKey}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://flowst8.cc', 'X-Title': 'FlowState AI Coach' },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: 'system', content: 'You are the AI Flow Coach for FlowState. You MUST respond with valid JSON only — no markdown, no backticks, no commentary. Just the raw JSON object.' },
+              { role: 'user', content: prompt }
+            ],
+            max_tokens: 500,
+            temperature: 0.7,
+            response_format: { type: 'json_object' },
+          })
+        })
+        const d: any = await res.json()
+        const c2 = d?.choices?.[0]?.message?.content || ''
+        if (c2 && c2.includes('headline')) { content = c2; break }
+      } catch (_) {}
+    }
+    if (!content) return c.json({ error: 'ai_unavailable' }, 503)
+    // Robust JSON extraction — strip markdown fences if present
+    const cleaned = content.replace(/^```[a-z]*\n?/i, '').replace(/```$/i, '').trim()
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      // Build fallback coaching from stats so user always gets something
+      const fallback = {
+        headline: stats.sessions > 0 ? `${stats.sessions} sessions this month — keep building` : 'Start your first session today',
+        insight: stats.sessions > 0
+          ? `You've logged ${stats.sessions} focus sessions (${stats.focusMin} minutes) in the last 30 days with an average FlowScore of ${stats.avgScore}. ${stats.streak > 0 ? `Your current streak is ${stats.streak} day${stats.streak !== 1 ? 's' : ''} — keep it alive!` : 'Start a streak by completing a session today.'}`
+          : 'No sessions logged yet this month. Fire up the timer and start building your focus habit.',
+        tip: stats.peakHour > 0 ? `Your peak focus hour is ${stats.peakHour}:00 — protect that time block ruthlessly.` : 'Try your first 25-minute deep work session to discover your natural peak focus time.',
+        badge: stats.streak >= 7 ? '🔥' : stats.sessions >= 10 ? '⚡' : '🌱',
+        badgeLabel: stats.streak >= 7 ? 'Streak Builder' : stats.sessions >= 10 ? 'Active Creator' : 'Getting Started',
+        coachMood: stats.sessions > 5 ? 'impressed' : 'encouraging'
+      }
+      return c.json({ ok: true, coaching: fallback, stats, source: 'fallback' })
+    }
     const coaching = JSON.parse(jsonMatch[0])
     return c.json({ ok: true, coaching, stats })
   } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
-// GET /api/coach/insight — same but GET so it can be polled on tab open
+// GET /api/coach/insight — same logic as POST, used by openFlowCoach()
 app.get('/api/coach/insight', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
-  // Forward to POST handler logic — duplicate db query for simplicity
   const db = c.env?.DB
   const aiKey = c.env?.OPENROUTER_API_KEY
   if (!aiKey) return c.json({ error: 'ai_not_configured' }, 503)
@@ -8384,8 +8426,8 @@ app.get('/api/coach/insight', async (c) => {
       const top = Object.entries(stats.outputBreakdown).sort((a, b) => b[1] - a[1])[0]
       if (top) stats.topOutput = top[0]
       const daySet = new Set((results as any[]).map((r: any) => r.session_date))
-      const today = new Date()
-      for (let i = 0; i < 365; i++) { const d = new Date(today); d.setDate(d.getDate() - i); if (daySet.has(d.toISOString().slice(0, 10))) stats.streak++; else if (i > 0) break }
+      const today2 = new Date()
+      for (let i = 0; i < 365; i++) { const d = new Date(today2); d.setDate(d.getDate() - i); if (daySet.has(d.toISOString().slice(0, 10))) stats.streak++; else if (i > 0) break }
       const hourCounts: Record<number, number> = {}
       ;(results as any[]).forEach((r: any) => { try { const h = new Date(r.created_at).getHours(); hourCounts[h] = (hourCounts[h] || 0) + 1 } catch (_) {} })
       const peakHourEntry = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0]
@@ -8399,19 +8441,37 @@ app.get('/api/coach/insight', async (c) => {
   const name = session.name?.split(' ')[0] || 'Creator'
   const prompt = `You are the AI Flow Coach for FlowState. Give a SHORT personalized coaching insight.
 User: ${name} | Sessions last 30d: ${stats.sessions} | Focus time: ${stats.focusMin}m | Streak: ${stats.streak}d | Avg score: ${stats.avgScore} | Top output: ${stats.topOutput || 'none'} | Peak hour: ${stats.peakHour}:00 | Best days: ${stats.peakDays.join(', ') || 'none'}
-Respond JSON only: {"headline":"max 10 words","insight":"2-3 sentences using their data","tip":"1 actionable tip","badge":"emoji","badgeLabel":"badge name","coachMood":"inspired|concerned|encouraging|impressed"}`
+Respond with JSON only — no markdown, no backticks. Format: {"headline":"max 10 words","insight":"2-3 sentences using their data","tip":"1 actionable tip","badge":"emoji","badgeLabel":"badge name","coachMood":"inspired|concerned|encouraging|impressed"}`
   try {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${aiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'meta-llama/llama-3.1-8b-instruct:free', messages: [{ role: 'user', content: prompt }], max_tokens: 400, temperature: 0.7 })
-    })
-    const data: any = await res.json()
-    const content = data?.choices?.[0]?.message?.content || ''
-    const jsonMatch = content.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) return c.json({ error: 'parse_failed' }, 500)
-    const coaching = JSON.parse(jsonMatch[0])
-    return c.json({ ok: true, coaching, stats })
+    const COACH_MODELS2 = ['openai/gpt-4o-mini', 'google/gemini-flash-1.5-8b', 'meta-llama/llama-3.1-8b-instruct:free']
+    let content = ''
+    for (const model of COACH_MODELS2) {
+      try {
+        const res2 = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${aiKey}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://flowst8.cc', 'X-Title': 'FlowState AI Coach' },
+          body: JSON.stringify({ model, messages: [{ role: 'system', content: 'Respond with valid JSON only. No markdown. No backticks.' }, { role: 'user', content: prompt }], max_tokens: 500, temperature: 0.7, response_format: { type: 'json_object' } })
+        })
+        const d2: any = await res2.json()
+        const c3 = d2?.choices?.[0]?.message?.content || ''
+        if (c3 && c3.includes('headline')) { content = c3; break }
+      } catch (_) {}
+    }
+    if (!content) {
+      // Stat-based fallback — always works even with no AI key
+      return c.json({ ok: true, coaching: {
+        headline: stats.sessions > 0 ? `${stats.sessions} sessions this month` : 'Start your focus journey',
+        insight: stats.sessions > 0 ? `You've completed ${stats.sessions} sessions totalling ${stats.focusMin} minutes this month. ${stats.streak > 1 ? `Your ${stats.streak}-day streak shows real consistency.` : 'Build a streak by focusing daily.'}` : 'No sessions logged yet. Start the timer to track your focus and unlock personalized insights.',
+        tip: stats.topOutput ? `You focus best on ${stats.topOutput} — lean into that.` : 'Set a clear intention before each session to boost your FlowScore.',
+        badge: stats.streak >= 5 ? '🔥' : '⚡',
+        badgeLabel: stats.streak >= 5 ? 'Streak Builder' : 'Creator',
+        coachMood: 'encouraging'
+      }, stats, source: 'fallback' })
+    }
+    const cleaned2 = content.replace(/^```[a-z]*\n?/i, '').replace(/```$/i, '').trim()
+    const jsonMatch2 = cleaned2.match(/\{[\s\S]*\}/)
+    if (!jsonMatch2) return c.json({ ok: true, coaching: { headline: 'Keep building your focus habit', insight: `You've had ${stats.sessions} sessions this month.`, tip: 'Complete one session today.', badge: '⚡', badgeLabel: 'Creator', coachMood: 'encouraging' }, stats, source: 'fallback' })
+    return c.json({ ok: true, coaching: JSON.parse(jsonMatch2[0]), stats })
   } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
@@ -8532,6 +8592,70 @@ app.post('/api/pair/leave', async (c) => {
     }
   }
   return c.json({ ok: true })
+})
+
+// POST /api/pair/message  — send a text message to your partner (stored in Redis list, TTL 4h)
+// GET  /api/pair/messages — fetch all messages for this session
+app.post('/api/pair/message', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ error: 'redis_unavailable' }, 503)
+
+  const userKey = `pair_user:${encodeURIComponent(session.email)}`
+  const raw = await redisGet(c, userKey)
+  if (!raw) return c.json({ error: 'not_paired' }, 404)
+  const pairData = typeof raw === 'string' ? JSON.parse(raw) : raw
+  if (!pairData.sessionId) return c.json({ error: 'not_paired' }, 404)
+
+  const { text, type = 'text' } = await c.req.json().catch(() => ({}))
+  if (!text || String(text).trim().length === 0) return c.json({ error: 'empty_message' }, 400)
+  const safeText = String(text).slice(0, 500) // max 500 chars per message
+
+  const msgKey = `pair_msgs:${pairData.sessionId}`
+  const msg = {
+    from: session.name?.split(' ')[0] || 'Partner',
+    fromEmail: session.email,
+    text: safeText,
+    type, // 'text' | 'emoji' | 'system'
+    at: new Date().toISOString(),
+    ts: Date.now(),
+  }
+  // RPUSH to list + set expiry
+  await redisPipeline(url, token, [
+    ['RPUSH', msgKey, JSON.stringify(msg)],
+    ['EXPIRE', msgKey, '14400'], // 4 hours
+  ])
+  // Also send a ping notification to the partner so they get an alert
+  const pingKey = `pair_ping:${encodeURIComponent(pairData.partnerEmail)}`
+  await redisPipeline(url, token, [
+    ['SET', pingKey, JSON.stringify({ from: session.name?.split(' ')[0] || 'Partner', at: new Date().toISOString(), type: 'message', preview: safeText.slice(0, 60) }), 'EX', '30'],
+  ])
+  return c.json({ ok: true, msg })
+})
+
+app.get('/api/pair/messages', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ messages: [] })
+
+  const userKey = `pair_user:${encodeURIComponent(session.email)}`
+  const raw = await redisGet(c, userKey)
+  if (!raw) return c.json({ messages: [] })
+  const pairData = typeof raw === 'string' ? JSON.parse(raw) : raw
+  if (!pairData.sessionId) return c.json({ messages: [] })
+
+  const msgKey = `pair_msgs:${pairData.sessionId}`
+  // LRANGE — get last 100 messages
+  const listRes = await fetch(`${url}/lrange/${msgKey}/0/99`, { headers: { Authorization: `Bearer ${token}` } })
+  const listData: any = await listRes.json()
+  const rawMsgs: string[] = listData?.result || []
+  const messages = rawMsgs.map((m: string) => { try { return JSON.parse(m) } catch { return null } }).filter(Boolean)
+  // Mark which messages are "mine" for the frontend
+  return c.json({ messages: messages.map((m: any) => ({ ...m, mine: m.fromEmail === session.email })) })
 })
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -8736,7 +8860,7 @@ app.get('/launch', async (c) => {
     <div class="card glow pulse-glow" style="padding:28px;border-color:rgba(168,85,247,.5);position:relative">
       <div style="position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#a855f7,#ec4899);border-radius:99px;padding:4px 16px;font-size:11px;font-weight:800;color:#fff">POPULAR</div>
       <div style="font-size:22px;font-weight:800;margin-bottom:4px">Pro</div>
-      <div style="font-size:36px;font-weight:900;margin:12px 0" class="grad-text">$18<span style="font-size:16px;color:#6b7280">/mo</span></div>
+      <div style="font-size:36px;font-weight:900;margin:12px 0" class="grad-text">$18<span style="font-size:16px;color:#6b7280">/month</span></div>
       <ul style="list-style:none;text-align:left;font-size:13px;color:#9ca3af;line-height:2">
         <li>✅ 100,000 AI tokens/day</li><li>✅ All models unlocked</li><li>✅ Full session history</li>
         <li>✅ ClawFlow release pipeline</li><li>✅ Priority support</li>
@@ -8744,7 +8868,7 @@ app.get('/launch', async (c) => {
     </div>
     <div class="card" style="padding:28px">
       <div style="font-size:22px;font-weight:800;margin-bottom:4px">Team</div>
-      <div style="font-size:36px;font-weight:900;margin:12px 0;color:#10b981">$12<span style="font-size:16px;color:#6b7280">/seat/mo</span></div>
+      <div style="font-size:36px;font-weight:900;margin:12px 0;color:#10b981">$15<span style="font-size:16px;color:#6b7280">/seat/month</span></div>
       <ul style="list-style:none;text-align:left;font-size:13px;color:#9ca3af;line-height:2">
         <li>✅ Everything in Pro</li><li>✅ Team leaderboard</li><li>✅ Sprint health dashboard</li>
         <li>✅ Burnout risk detection</li><li>✅ Slack integration</li>
@@ -9310,8 +9434,9 @@ const TERMS_OF_USE_HTML = `
 <p>FlowState offers the following plans (prices and features subject to change with notice):</p>
 <ul>
   <li><strong>Free:</strong> Timer, basic AI chat, limited daily AI tokens (1,500/day), local Kanban, public FlowScore widget, ambient sounds.</li>
-  <li><strong>Pro ($12/month or equivalent annual rate):</strong> All Free features, plus multi-LLM routing, Smart Deadlines, D1-synced tasks, all integrations, AI Flow Coach, CLAW Release Manager, FlowState Audio, full Generate tab, and 100,000 daily AI tokens.</li>
-  <li><strong>Team (pricing TBD):</strong> Pro features plus team Hub, leaderboard, burnout risk monitoring, sprint health, shared standup, and 100,000 daily AI tokens per seat.</li>
+  <li><strong>Pro ($18/month monthly, $14/month billed annually):</strong> All Free features, plus multi-LLM routing, Smart Deadlines, D1-synced tasks, all integrations, AI Flow Coach, CLAW Release Manager, FlowState Audio, full Generate tab, and 100,000 daily AI tokens.</li>
+  <li><strong>Team ($15/seat/month monthly, $12/seat/month billed annually):</strong> Pro features plus Team Hub, leaderboard, burnout risk monitoring, sprint health, shared standup, and 100,000 daily AI tokens per seat.</li>
+  <li><strong>Enterprise (contact us):</strong> Custom pricing, dedicated support, white-label options, SSO, and volume token pricing. Contact <a href="mailto:enterprise@flowst8.cc">enterprise@flowst8.cc</a>.</li>
 </ul>
 <h3>4.2 Billing</h3>
 <ul>
