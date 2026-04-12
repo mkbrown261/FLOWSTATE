@@ -1497,48 +1497,66 @@ function clickCalDay(dateStr) {
   document.getElementById('ev-title').focus();
 }
 
+function _calDebug(msg, data, isError) {
+  const dbg = document.getElementById('cal-debug-panel');
+  if (!dbg) return;
+  const text = '[CAL] ' + msg + (data ? '\n' + JSON.stringify(data, null, 2) : '');
+  if (isError) {
+    dbg.textContent = text;
+    dbg.style.display = 'block';
+  }
+  // Always log to console for debugging
+  console.log(text);
+}
+
 function loadCalEvents() {
+  _calDebug('loadCalEvents called. FS_USER=' + (FS_USER ? FS_USER.email : 'NULL') + ' year=' + state.cal.year + ' month=' + state.cal.month);
   if (!FS_USER) {
     document.getElementById('cal-auth-banner').style.display = 'block';
     renderCalGrid();
     return;
   }
   document.getElementById('cal-auth-banner').style.display = 'none';
-  // Pass the currently-viewed year+month so the API fetches the full month,
-  // not just the next 7 days (which missed most school lectures)
+  // Hide debug panel on fresh load
+  const dbgPanel = document.getElementById('cal-debug-panel');
+  if (dbgPanel) dbgPanel.style.display = 'none';
   const { year, month } = state.cal;
+  _calDebug('Fetching /api/calendar/events?year=' + year + '&month=' + month);
   fetch(`/api/calendar/events?year=${year}&month=${month}`, { credentials: 'include' })
-    .then(r => r.json())
+    .then(r => {
+      _calDebug('HTTP status: ' + r.status);
+      return r.json();
+    })
     .then(d => {
+      _calDebug('Response received', { error: d.error || null, eventCount: d.events ? d.events.length : 'no events key', firstEvent: d.events && d.events[0] ? d.events[0] : null, keys: Object.keys(d) });
       // Check for auth error FIRST — API always returns events:[] even on 401
       if (d.error === 'not_authenticated') {
         _showCalReconnectBanner();
-        // Also show the top resync notice
+        // Hide the "just enabled" yellow notice — this is a different error
         const notice = document.getElementById('cal-resync-notice');
-        if (notice) notice.style.display = 'flex';
+        if (notice) notice.style.display = 'none';
         renderCalGrid();
         return;
       }
       if (d.error) {
-        // Some other API error — log and render empty grid
-        console.warn('[FlowState] Calendar error:', d.error);
+        _calDebug('Google Calendar API error: ' + JSON.stringify(d.error) + '\n\nVisit /api/calendar/debug for details.', null, true);
         renderCalGrid();
         return;
       }
-      // Success — d.events is a real array (may be empty if user has no events this month)
+      // Success — hide all error UI
+      const rb = document.getElementById('cal-reconnect-banner');
+      if (rb) rb.style.display = 'none';
+      const notice = document.getElementById('cal-resync-notice');
+      if (notice) notice.style.display = 'none';
+      if (dbgPanel) dbgPanel.style.display = 'none';
+      // d.events is a real array (may be empty if user has no events this month)
       if (Array.isArray(d.events)) {
         state.cal.events = d.events;
         renderCalGrid();
         renderEvents(d.events);
-        // Hide reconnect banner if previously shown
-        const rb = document.getElementById('cal-reconnect-banner');
-        if (rb) rb.style.display = 'none';
-        // Hide re-sync notice if events loaded successfully
-        const notice = document.getElementById('cal-resync-notice');
-        if (notice) notice.style.display = 'none';
       }
     })
-    .catch(() => { renderCalGrid(); });
+    .catch(err => { _calDebug('Network error fetching calendar: ' + (err && err.message ? err.message : String(err)), null, true); renderCalGrid(); });
 }
 
 function _showCalReconnectBanner() {

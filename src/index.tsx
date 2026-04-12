@@ -5775,7 +5775,7 @@ em{color:var(--accent);font-style:italic}
     <p>See upcoming events, block focus time, and create events directly from FlowState.</p>
     <button class="btn-primary" id="cal-connect-btn"><i class="fas fa-google"></i>&nbsp; Connect Google</button>
   </div>
-  <div id="cal-resync-notice" style="display:none;margin-bottom:10px;padding:10px 14px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.35);border-radius:9px;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+  <div id="cal-resync-notice" style="display:none;margin-bottom:10px;padding:10px 14px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.35);border-radius:9px;font-size:12px;align-items:center;justify-content:space-between;gap:10px">
     <div><strong style="color:#f59e0b">&#128197; Calendar was just enabled</strong> <span style="color:rgba(255,255,255,.5)">— click Re-sync to load your events</span></div>
     <button onclick="window.location.href='/api/auth/calendar-reconnect'" style="padding:6px 14px;border-radius:7px;border:none;background:#f59e0b;color:#000;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">Re-sync Google →</button>
   </div>
@@ -5799,6 +5799,7 @@ em{color:var(--accent);font-style:italic}
       <button class="btn-sm" id="ev-cancel-btn">Cancel</button>
     </div>
   </div>
+  <div id="cal-debug-panel" style="display:none;background:#0f0f1a;border:1px solid #ef4444;border-radius:8px;padding:10px 12px;font-size:11px;font-family:monospace;color:#ef4444;margin-bottom:10px;white-space:pre-wrap;word-break:break-all"></div>
   <div class="cal-grid" id="cal-grid"></div>
   <div class="ev-list" id="ev-list"></div>
 </div>
