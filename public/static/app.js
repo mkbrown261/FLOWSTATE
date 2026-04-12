@@ -7321,3 +7321,362 @@ function _crwStep5(header) {
     }), 1000);
   }
 })();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 1A — STREAK EMAIL FALLBACK
+// If push notifications are blocked, send an email reminder instead
+// ══════════════════════════════════════════════════════════════════════════════
+async function sendStreakEmailFallback() {
+  if (!FS_USER) return;
+  // Only send if push is not granted
+  if ('Notification' in window && Notification.permission === 'granted') return;
+  // Throttle: only send once per day
+  const today = new Date().toISOString().slice(0,10);
+  const key = `fs_streak_email_sent_${today}`;
+  if (localStorage.getItem(key)) return;
+  try {
+    const res = await fetch('/api/email/streak-reminder', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      localStorage.setItem(key, '1');
+      console.log('[FlowState] Streak email sent:', data.streak + '-day streak');
+    }
+  } catch(e) {}
+}
+
+// Check at app load — if streak > 0 and push blocked, try email fallback
+(function initStreakEmailFallback() {
+  if (!FS_USER) return;
+  const todayKey = `fs_session_today_${new Date().toISOString().slice(0,10)}`;
+  const hasSession = localStorage.getItem(todayKey);
+  if (hasSession) return; // Already focused today, no reminder needed
+  // Wait 30s after load to not be intrusive
+  setTimeout(() => {
+    const streak = state?.timer?.streak || 0;
+    if (streak > 0) sendStreakEmailFallback();
+  }, 30000);
+})();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 4A — AI FLOW COACH
+// ══════════════════════════════════════════════════════════════════════════════
+let _coachData = null;
+let _coachLoading = false;
+
+async function openFlowCoach() {
+  if (!FS_USER) { notify('Sign in to access your AI Flow Coach', 'info'); return; }
+
+  openModal(`
+    <div style="text-align:center;padding:8px 0 4px">
+      <div style="font-size:36px;margin-bottom:6px">🧠</div>
+      <h2 style="font-weight:900;margin-bottom:4px">AI Flow Coach</h2>
+      <p style="color:var(--text-s);font-size:13px;margin-bottom:20px">Personalized insights from your session data</p>
+      <div id="coach-content">
+        <div style="padding:40px;color:var(--text-s)"><i class="fas fa-spinner fa-spin"></i> Analyzing your patterns...</div>
+      </div>
+    </div>
+  `, true);
+
+  if (_coachData && !_coachLoading) {
+    _renderCoachUI(_coachData);
+    return;
+  }
+
+  _coachLoading = true;
+  try {
+    const res = await fetch('/api/coach/insight', { credentials: 'include' });
+    const data = await res.json();
+    _coachLoading = false;
+    if (!data.ok) {
+      document.getElementById('coach-content').innerHTML = `<p style="color:var(--danger)">Could not load insights: ${data.error || 'unknown error'}</p>`;
+      return;
+    }
+    _coachData = data;
+    _renderCoachUI(data);
+  } catch(e) {
+    _coachLoading = false;
+    document.getElementById('coach-content').innerHTML = `<p style="color:var(--danger)">Network error loading coach</p>`;
+  }
+}
+
+function _renderCoachUI(data) {
+  const el = document.getElementById('coach-content');
+  if (!el) return;
+  const c = data.coaching || {};
+  const s = data.stats || {};
+  const moodColor = { inspired:'#a855f7', impressed:'#10b981', encouraging:'#f59e0b', concerned:'#ef4444' };
+  const mc = moodColor[c.coachMood] || '#a855f7';
+  const peakTime = s.peakHour != null ? `${s.peakHour}:00` : 'N/A';
+
+  el.innerHTML = `
+    <!-- Badge + Headline -->
+    <div style="background:linear-gradient(135deg,rgba(168,85,247,.1),rgba(236,72,153,.06));border:1px solid rgba(168,85,247,.25);border-radius:14px;padding:20px;margin-bottom:16px;text-align:center">
+      <div style="font-size:44px;margin-bottom:6px">${c.badge || '⚡'}</div>
+      <div style="font-size:13px;font-weight:800;color:${mc};text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">${c.badgeLabel || 'Flow Builder'}</div>
+      <div style="font-size:18px;font-weight:900;color:#f0f0f0;line-height:1.3;margin-bottom:10px">${c.headline || 'Keep building momentum'}</div>
+      <p style="color:#c084fc;font-size:13px;line-height:1.6;margin:0">${c.insight || 'Loading...'}</p>
+    </div>
+
+    <!-- Stats grid -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center">
+        <div style="font-size:22px;font-weight:900;color:#a855f7">${s.sessions || 0}</div>
+        <div style="font-size:10px;color:var(--text-s);margin-top:2px">Sessions</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center">
+        <div style="font-size:22px;font-weight:900;color:#10b981">${s.focusMin || 0}m</div>
+        <div style="font-size:10px;color:var(--text-s);margin-top:2px">Focus Time</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center">
+        <div style="font-size:22px;font-weight:900;color:#f59e0b">${s.streak || 0}🔥</div>
+        <div style="font-size:10px;color:var(--text-s);margin-top:2px">Day Streak</div>
+      </div>
+    </div>
+
+    <!-- Patterns -->
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;font-size:13px">
+      <div style="font-weight:700;color:var(--text-m);margin-bottom:8px;font-size:11px;text-transform:uppercase;letter-spacing:.6px">📊 Your Patterns</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;color:var(--text-s)">
+        <span>🕐 Peak hour: <strong style="color:var(--text)">${peakTime}</strong></span>
+        <span>📅 Best days: <strong style="color:var(--text)">${(s.peakDays||[]).join(', ') || 'N/A'}</strong></span>
+        <span>🎯 Top output: <strong style="color:var(--text)">${s.topOutput || 'None logged'}</strong></span>
+        <span>📈 Avg score: <strong style="color:var(--text)">${s.avgScore || 0}/100</strong></span>
+      </div>
+    </div>
+
+    <!-- Actionable tip -->
+    <div style="background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.25);border-radius:10px;padding:14px;margin-bottom:16px">
+      <div style="font-size:11px;font-weight:800;color:#a855f7;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">💡 Coach's Tip</div>
+      <p style="font-size:13px;color:#d0d0d0;line-height:1.6;margin:0">${c.tip || 'Keep showing up daily — consistency beats intensity.'}</p>
+    </div>
+
+    <div style="display:flex;gap:8px">
+      <button class="btn-sm" style="flex:1;justify-content:center" onclick="_coachData=null;openFlowCoach()"><i class="fas fa-sync-alt"></i> Refresh</button>
+      <button class="btn-primary" style="flex:1;justify-content:center" onclick="closeModal();switchTab('focus')"><i class="fas fa-bolt"></i> Start Session</button>
+    </div>
+  `;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 4C — ACCOUNTABILITY PAIRING
+// ══════════════════════════════════════════════════════════════════════════════
+let _pairState = { status: 'none', partner: null, sessionId: null, endsAt: null, pollTimer: null, pingTimer: null };
+
+async function openPairingModal() {
+  if (!FS_USER) { notify('Sign in to use accountability pairing', 'info'); return; }
+
+  // Check current pairing status first
+  try {
+    const res = await fetch('/api/pair/status', { credentials: 'include' });
+    const data = await res.json();
+    if (data.status === 'paired' && data.data?.partnerEmail) {
+      _pairState = { ...data.data, status: 'paired' };
+      _renderPairedUI();
+      return;
+    }
+    if (data.status === 'waiting') {
+      _pairState.status = 'waiting';
+      _renderWaitingUI();
+      return;
+    }
+  } catch(e) {}
+
+  _renderPairLobbyUI();
+}
+
+function _renderPairLobbyUI() {
+  openModal(`
+    <div style="text-align:center;padding:8px 0 4px">
+      <div style="font-size:40px;margin-bottom:8px">🤝</div>
+      <h2 style="font-weight:900;margin-bottom:4px">Accountability Partner</h2>
+      <p style="color:var(--text-s);font-size:13px;margin-bottom:24px">Get matched with another creator for a shared focus session. Stay accountable, ship together.</p>
+      <div style="display:flex;gap:8px;justify-content:center;margin-bottom:24px">
+        ${[25,45,60,90].map(m => `<button class="btn-sm pair-dur-btn ${m===25?'btn-primary':''}" data-min="${m}" onclick="_setPairDuration(${m})">${m}m</button>`).join('')}
+      </div>
+      <div id="pair-lobby-status" style="margin-bottom:16px;font-size:13px;color:var(--text-s)">You'll be matched with someone ready to focus for the same duration.</div>
+      <button class="btn-primary" style="width:100%;padding:14px;font-size:15px;gap:8px" onclick="_joinPairQueue()">
+        <i class="fas fa-search"></i> Find a Focus Partner
+      </button>
+      <p style="color:var(--text-s);font-size:11px;margin-top:12px">Matched users see each other's first name only. Sessions are private.</p>
+    </div>
+  `);
+  window._pairSelectedDuration = 25;
+}
+
+function _setPairDuration(m) {
+  window._pairSelectedDuration = m;
+  document.querySelectorAll('.pair-dur-btn').forEach(b => {
+    b.classList.toggle('btn-primary', parseInt(b.dataset.min) === m);
+    b.classList.toggle('btn-sm', true);
+  });
+}
+
+async function _joinPairQueue() {
+  const dur = window._pairSelectedDuration || 25;
+  const statusEl = document.getElementById('pair-lobby-status');
+  if (statusEl) statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Searching for a partner...';
+
+  try {
+    const res = await fetch('/api/pair/queue', {
+      method: 'POST', credentials: 'include',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ durationMins: dur })
+    });
+    const data = await res.json();
+    if (data.status === 'matched') {
+      _pairState = { status: 'paired', partnerName: data.partner, sessionId: data.sessionId, durationMins: data.durationMins, endsAt: data.endsAt };
+      _renderPairedUI();
+    } else if (data.status === 'waiting') {
+      _pairState.status = 'waiting';
+      _renderWaitingUI();
+      // Poll every 5s for match
+      if (_pairState.pollTimer) clearInterval(_pairState.pollTimer);
+      _pairState.pollTimer = setInterval(_pollPairStatus, 5000);
+    } else if (data.status === 'already_paired') {
+      _pairState = { status: 'paired', partnerName: data.partner, sessionId: data.sessionId };
+      _renderPairedUI();
+    }
+  } catch(e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">Error connecting. Try again.</span>';
+  }
+}
+
+async function _pollPairStatus() {
+  try {
+    const res = await fetch('/api/pair/status', { credentials: 'include' });
+    const data = await res.json();
+    if (data.status === 'paired' && data.data?.partnerEmail) {
+      clearInterval(_pairState.pollTimer);
+      _pairState = { ...data.data, status: 'paired' };
+      _renderPairedUI();
+    } else if (data.status === 'none') {
+      clearInterval(_pairState.pollTimer);
+      _pairState.status = 'none';
+      notify('Session expired — try again', 'warning');
+    }
+  } catch(e) {}
+}
+
+function _renderWaitingUI() {
+  openModal(`
+    <div style="text-align:center;padding:16px 0">
+      <div style="font-size:48px;margin-bottom:12px">🔍</div>
+      <h2 style="font-weight:900;margin-bottom:8px">Finding Your Partner...</h2>
+      <p style="color:var(--text-s);font-size:13px;margin-bottom:24px">You're in the queue. We'll match you with the next creator who joins.</p>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;justify-content:center;gap:8px;color:var(--text-s)">
+          <i class="fas fa-spinner fa-spin" style="color:#a855f7"></i>
+          <span>Polling every 5 seconds...</span>
+        </div>
+      </div>
+      <button class="btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="_leavePair()">Cancel</button>
+    </div>
+  `);
+}
+
+function _renderPairedUI() {
+  const p = _pairState;
+  const endsAt = p.endsAt ? new Date(p.endsAt) : null;
+  const minsLeft = endsAt ? Math.max(0, Math.round((endsAt - Date.now()) / 60000)) : p.durationMins || 25;
+
+  openModal(`
+    <div style="text-align:center;padding:8px 0">
+      <div style="font-size:40px;margin-bottom:8px">🤝</div>
+      <h2 style="font-weight:900;margin-bottom:4px">Paired with ${escHtml(p.partnerName || 'Creator')}</h2>
+      <p style="color:var(--text-s);font-size:13px;margin-bottom:20px">You're both focusing for ${p.durationMins || 25} minutes. Hold each other accountable!</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
+        <div style="background:linear-gradient(135deg,rgba(168,85,247,.1),rgba(236,72,153,.06));border:1px solid rgba(168,85,247,.25);border-radius:12px;padding:16px">
+          <div style="font-size:24px;margin-bottom:4px">⏱</div>
+          <div style="font-size:22px;font-weight:900;color:#a855f7" id="pair-countdown">${minsLeft}m</div>
+          <div style="font-size:11px;color:var(--text-s)">remaining</div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px">
+          <div style="font-size:24px;margin-bottom:4px">🤝</div>
+          <div style="font-size:16px;font-weight:700;color:#10b981">${escHtml(p.partnerName || 'Partner')}</div>
+          <div style="font-size:11px;color:var(--text-s)">your partner</div>
+        </div>
+      </div>
+
+      <div id="pair-ping-area" style="margin-bottom:16px;min-height:32px;font-size:13px;color:var(--text-s)"></div>
+
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <button class="btn-primary" style="flex:1;gap:6px;justify-content:center" onclick="_sendCheckin()">
+          <i class="fas fa-hand-pointer"></i> Check In 👋
+        </button>
+        <button class="btn-sm" style="flex:1;gap:6px;justify-content:center" onclick="closeModal();switchTab('focus')">
+          <i class="fas fa-bolt"></i> Start Focusing
+        </button>
+      </div>
+      <button class="btn-sm" style="width:100%;color:var(--danger);border-color:var(--danger)" onclick="_leavePair()">
+        <i class="fas fa-times"></i> End Session
+      </button>
+    </div>
+  `);
+
+  // Start polling for pings from partner
+  if (_pairState.pingTimer) clearInterval(_pairState.pingTimer);
+  _pairState.pingTimer = setInterval(_pollPartnerPing, 8000);
+
+  // Countdown timer
+  if (endsAt) {
+    const countdownEl = document.getElementById('pair-countdown');
+    if (countdownEl) {
+      const tick = () => {
+        const left = Math.max(0, Math.round((endsAt - Date.now()) / 60000));
+        if (countdownEl) countdownEl.textContent = left + 'm';
+        if (left === 0) { notify('⏰ Paired session complete! Great work!', 'success'); _leavePair(); }
+      };
+      setInterval(tick, 60000);
+    }
+  }
+}
+
+async function _sendCheckin() {
+  try {
+    const res = await fetch('/api/pair/checkin', { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: '{}' });
+    const data = await res.json();
+    if (data.ok) notify(`👋 Check-in sent to ${_pairState.partnerName}!`, 'success');
+    else notify(data.error || 'Failed to send check-in', 'error');
+  } catch(e) { notify('Network error', 'error'); }
+}
+
+async function _pollPartnerPing() {
+  try {
+    const res = await fetch('/api/pair/checkin', { credentials: 'include' });
+    const data = await res.json();
+    if (data.ping) {
+      const pingArea = document.getElementById('pair-ping-area');
+      if (data.ping.type === 'partner_left') {
+        notify(`${data.ping.from} ended the session`, 'info');
+        clearInterval(_pairState.pingTimer);
+        _pairState = { status: 'none' };
+        closeModal();
+      } else {
+        if (pingArea) pingArea.innerHTML = `<div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.2);border-radius:8px;padding:10px;animation:fadeIn .3s ease"><i class="fas fa-hand-pointer" style="color:#10b981"></i> <strong>${escHtml(data.ping.from)}</strong> just checked in! 👋</div>`;
+        notify(`👋 ${data.ping.from} checked in!`, 'success');
+        setTimeout(() => { const el = document.getElementById('pair-ping-area'); if(el) el.innerHTML=''; }, 8000);
+      }
+    }
+  } catch(e) {}
+}
+
+async function _leavePair() {
+  clearInterval(_pairState.pollTimer);
+  clearInterval(_pairState.pingTimer);
+  _pairState = { status: 'none' };
+  try { await fetch('/api/pair/leave', { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: '{}' }); } catch(e) {}
+  closeModal();
+  notify('Session ended', 'info');
+}
+
+// ── Add Flow Coach + Pair buttons to settings modal (patch) ──────────────────
+const _origOpenSettingsModal = openSettingsModal;
+// Expose helpers globally
+window.openFlowCoach = openFlowCoach;
+window.openPairingModal = openPairingModal;
+

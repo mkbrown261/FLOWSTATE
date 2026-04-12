@@ -6316,6 +6316,8 @@ em{color:var(--accent);font-style:italic}
     <button class="btn-sm" id="btn-topup" title="Buy More Tokens" onclick="openTopupModal()" style="background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.4);color:#10b981;display:flex;align-items:center;gap:4px"><i class="fas fa-coins"></i><span id="token-balance-display" style="font-size:10px;font-weight:700;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span></button>
     <button class="btn-sm" id="btn-pricing"><i class="fas fa-star"></i> Pro</button>
     <button class="btn-sm" id="btn-invite" title="Invite friends — earn tokens"><i class="fas fa-user-plus"></i></button>
+    <button class="btn-sm" onclick="openFlowCoach()" title="AI Flow Coach — personalized insights" style="color:#a855f7;border-color:rgba(168,85,247,.4)"><i class="fas fa-brain"></i></button>
+    <button class="btn-sm" onclick="openPairingModal()" title="Find an accountability partner" style="color:#10b981;border-color:rgba(16,185,129,.4)"><i class="fas fa-handshake"></i></button>
     <button class="btn-sm" id="pwa-install-btn" onclick="triggerPwaInstall()" title="Add FlowState to home screen" style="display:none"><i class="fas fa-download"></i></button>
     <button class="btn-sm" id="btn-settings"><i class="fas fa-gear"></i></button>
   </div>
@@ -8054,6 +8056,719 @@ app.get('/u/:slug', async (c) => {
   </div>
 </body>
 </html>`)
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 1A — STREAK EMAIL FALLBACK (via Resend)
+// POST /api/email/streak-reminder  — called client-side when push is blocked
+// ══════════════════════════════════════════════════════════════════════════════
+app.post('/api/email/streak-reminder', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const resendKey = c.env?.RESEND_API_KEY
+  if (!resendKey) return c.json({ error: 'email_not_configured' }, 503)
+  const db = c.env?.DB
+  let streak = 0, focusMin = 0
+  if (db) {
+    try {
+      const since7 = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10)
+      const { results } = await db.prepare(
+        `SELECT duration_mins, session_date FROM sessions WHERE email=? AND session_date>=? AND phase='focus' AND completed=1 ORDER BY session_date DESC`
+      ).bind(session.email, since7).all() as any
+      focusMin = (results as any[]).reduce((s: number, r: any) => s + (r.duration_mins || 0), 0)
+      const daySet = new Set((results as any[]).map((r: any) => r.session_date))
+      const today = new Date()
+      for (let i = 0; i < 365; i++) { const d = new Date(today); d.setDate(d.getDate() - i); if (daySet.has(d.toISOString().slice(0, 10))) streak++; else if (i > 0) break }
+    } catch (_) {}
+  }
+  if (streak === 0) return c.json({ skipped: true, reason: 'no_streak' })
+  const name = session.name?.split(' ')[0] || 'Creator'
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#0a0a12;font-family:system-ui,sans-serif;color:#f0f0f0">
+<div style="max-width:520px;margin:0 auto;padding:32px 24px;text-align:center">
+  <div style="font-size:40px;margin-bottom:4px">⚡</div>
+  <h1 style="font-size:20px;font-weight:900;margin:0 0 6px;background:linear-gradient(135deg,#a855f7,#ec4899);-webkit-background-clip:text;-webkit-text-fill-color:transparent">FLOWSTATE</h1>
+  <p style="color:#888;font-size:14px;margin:0 0 24px">Morning check-in for ${name}</p>
+  <div style="background:#12102a;border:2px solid #f59e0b;border-radius:16px;padding:24px;margin-bottom:24px">
+    <div style="font-size:48px;margin-bottom:4px">🔥</div>
+    <div style="font-size:36px;font-weight:900;color:#f59e0b">${streak}-day streak</div>
+    <div style="font-size:13px;color:#888;margin-top:6px">Don't break it — ${focusMin}m focused this week</div>
+  </div>
+  <a href="https://flowst8.cc" style="display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:14px 40px;border-radius:12px;font-weight:700;font-size:15px">Lock In Today →</a>
+  <p style="color:#333;font-size:11px;margin-top:28px">FlowState · <a href="https://flowst8.cc" style="color:#555;text-decoration:none">flowst8.cc</a></p>
+</div></body></html>`
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: 'FlowState <streak@flowst8.cc>', to: [session.email], subject: `🔥 Don't break your ${streak}-day streak, ${name}!`, html })
+    })
+    const data: any = await res.json()
+    if (data.id) return c.json({ ok: true, emailId: data.id, streak })
+    return c.json({ error: data.message || 'send_failed' }, 500)
+  } catch (err: any) { return c.json({ error: err.message }, 500) }
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 4B — PUBLIC FLOWSCORE API  GET /api/v1/score/:slug
+// ══════════════════════════════════════════════════════════════════════════════
+app.get('/api/v1/score/:slug', async (c) => {
+  const slug = c.req.param('slug')
+  const db = c.env?.DB
+  if (!db) return c.json({ error: 'db_unavailable' }, 503)
+  try {
+    const profile = await db.prepare(
+      `SELECT email, display_name, tagline, avatar_url, show_score, show_streak, slug FROM public_profiles WHERE slug=?`
+    ).bind(slug).first() as any
+    if (!profile) return c.json({ error: 'not_found' }, 404)
+    if (!profile.show_score) return c.json({ error: 'profile_private' }, 403)
+    const since7  = new Date(Date.now() - 7  * 86400000).toISOString().slice(0, 10)
+    const since30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+    const { results } = await db.prepare(
+      `SELECT duration_mins, output_type, session_date FROM sessions WHERE email=? AND session_date>=? AND phase='focus' AND completed=1 ORDER BY session_date DESC`
+    ).bind(profile.email, since30).all() as any
+    const week = (results as any[]).filter((r: any) => r.session_date >= since7)
+    const focusMin = week.reduce((s: number, r: any) => s + (r.duration_mins || 0), 0)
+    const daySet = new Set((results as any[]).map((r: any) => r.session_date))
+    let streak = 0; const today = new Date()
+    for (let i = 0; i < 365; i++) { const d = new Date(today); d.setDate(d.getDate() - i); if (daySet.has(d.toISOString().slice(0, 10))) streak++; else if (i > 0) break }
+    const flowScore = Math.min(100, Math.round((focusMin / 120) * 40 + (week.length / 5) * 30 + Math.min(streak, 7) * 4 + (week.length > 0 ? 15 : 0)))
+    const outputBreakdown: Record<string, number> = {}
+    ;(results as any[]).forEach((r: any) => { if (r.output_type) outputBreakdown[r.output_type] = (outputBreakdown[r.output_type] || 0) + 1 })
+    c.header('Access-Control-Allow-Origin', '*')
+    c.header('Cache-Control', 'public, max-age=300')
+    return c.json({
+      slug: profile.slug,
+      displayName: profile.display_name,
+      tagline: profile.tagline,
+      avatarUrl: profile.avatar_url,
+      flowScore,
+      weeklyFocusMinutes: focusMin,
+      weeklySessions: week.length,
+      streakDays: profile.show_streak ? streak : null,
+      outputBreakdown,
+      profileUrl: `https://flowst8.cc/u/${profile.slug}`,
+      updatedAt: new Date().toISOString(),
+    })
+  } catch (err: any) { return c.json({ error: err.message }, 500) }
+})
+
+// CORS pre-flight for public API
+app.options('/api/v1/*', (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  c.header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+  c.header('Access-Control-Allow-Headers', 'Content-Type')
+  return c.text('', 204)
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 4A — AI FLOW COACH  POST /api/coach/insight
+// Returns personalized coaching based on last 30 days of D1 session history
+// ══════════════════════════════════════════════════════════════════════════════
+app.post('/api/coach/insight', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const db = c.env?.DB
+  const aiKey = c.env?.OPENROUTER_API_KEY
+  if (!aiKey) return c.json({ error: 'ai_not_configured' }, 503)
+
+  let stats = { focusMin: 0, sessions: 0, streak: 0, avgScore: 0, topOutput: '', peakHour: 0, outputBreakdown: {} as Record<string,number>, peakDays: [] as string[] }
+
+  if (db) {
+    try {
+      const since30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+      const { results } = await db.prepare(
+        `SELECT duration_mins, focus_score, output_type, session_date, created_at FROM sessions WHERE email=? AND session_date>=? AND phase='focus' AND completed=1 ORDER BY session_date DESC`
+      ).bind(session.email, since30).all() as any
+      stats.sessions = results.length
+      stats.focusMin = (results as any[]).reduce((s: number, r: any) => s + (r.duration_mins || 0), 0)
+      stats.avgScore = stats.sessions ? Math.round((results as any[]).reduce((s: number, r: any) => s + (r.focus_score || 0), 0) / stats.sessions) : 0
+      ;(results as any[]).forEach((r: any) => { if (r.output_type) stats.outputBreakdown[r.output_type] = (stats.outputBreakdown[r.output_type] || 0) + 1 })
+      const top = Object.entries(stats.outputBreakdown).sort((a, b) => b[1] - a[1])[0]
+      if (top) stats.topOutput = top[0]
+      // Streak
+      const daySet = new Set((results as any[]).map((r: any) => r.session_date))
+      const today = new Date()
+      for (let i = 0; i < 365; i++) { const d = new Date(today); d.setDate(d.getDate() - i); if (daySet.has(d.toISOString().slice(0, 10))) stats.streak++; else if (i > 0) break }
+      // Peak hour from created_at timestamps
+      const hourCounts: Record<number, number> = {}
+      ;(results as any[]).forEach((r: any) => { try { const h = new Date(r.created_at).getHours(); hourCounts[h] = (hourCounts[h] || 0) + 1 } catch (_) {} })
+      const peakHourEntry = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0]
+      if (peakHourEntry) stats.peakHour = parseInt(peakHourEntry[0])
+      // Peak days
+      const dowCounts: Record<string, number> = {}
+      const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+      ;(results as any[]).forEach((r: any) => { try { const dow = DAYS[new Date(r.session_date).getDay()]; dowCounts[dow] = (dowCounts[dow] || 0) + 1 } catch (_) {} })
+      stats.peakDays = Object.entries(dowCounts).sort((a, b) => b[1] - a[1]).slice(0, 2).map(e => e[0])
+    } catch (_) {}
+  }
+
+  const name = session.name?.split(' ')[0] || 'Creator'
+  const prompt = `You are the AI Flow Coach for FlowState, a focus productivity app used by creators.
+Analyze this user's last 30 days and give a SHORT, PERSONAL, ACTIONABLE coaching insight.
+
+User: ${name}
+Stats:
+- Focus sessions: ${stats.sessions}
+- Total focus time: ${stats.focusMin} minutes
+- Current streak: ${stats.streak} days
+- Average focus score: ${stats.avgScore}/100
+- Top output type: ${stats.topOutput || 'none logged'}
+- Output breakdown: ${JSON.stringify(stats.outputBreakdown)}
+- Peak focus hour: ${stats.peakHour}:00
+- Most productive days: ${stats.peakDays.join(', ') || 'none'}
+
+Respond with JSON ONLY (no markdown): {
+  "headline": "short punchy headline (max 10 words)",
+  "insight": "2-3 sentences of personalized coaching using their actual data",
+  "tip": "one specific actionable tip based on their patterns",
+  "badge": "an emoji badge they've earned this month (pick something fitting)",
+  "badgeLabel": "badge name (e.g. 'Night Owl', 'Streak King', 'Code Machine')",
+  "coachMood": "one of: inspired, concerned, encouraging, impressed"
+}`
+
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${aiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'meta-llama/llama-3.1-8b-instruct:free',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 400,
+        temperature: 0.7,
+      })
+    })
+    const data: any = await res.json()
+    const content = data?.choices?.[0]?.message?.content || ''
+    // Parse JSON from response
+    const jsonMatch = content.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) return c.json({ error: 'parse_failed', raw: content.slice(0, 200) }, 500)
+    const coaching = JSON.parse(jsonMatch[0])
+    return c.json({ ok: true, coaching, stats })
+  } catch (err: any) { return c.json({ error: err.message }, 500) }
+})
+
+// GET /api/coach/insight — same but GET so it can be polled on tab open
+app.get('/api/coach/insight', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  // Forward to POST handler logic — duplicate db query for simplicity
+  const db = c.env?.DB
+  const aiKey = c.env?.OPENROUTER_API_KEY
+  if (!aiKey) return c.json({ error: 'ai_not_configured' }, 503)
+
+  let stats = { focusMin: 0, sessions: 0, streak: 0, avgScore: 0, topOutput: '', peakHour: 0, outputBreakdown: {} as Record<string,number>, peakDays: [] as string[] }
+  if (db) {
+    try {
+      const since30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+      const { results } = await db.prepare(
+        `SELECT duration_mins, focus_score, output_type, session_date, created_at FROM sessions WHERE email=? AND session_date>=? AND phase='focus' AND completed=1 ORDER BY session_date DESC`
+      ).bind(session.email, since30).all() as any
+      stats.sessions = results.length
+      stats.focusMin = (results as any[]).reduce((s: number, r: any) => s + (r.duration_mins || 0), 0)
+      stats.avgScore = stats.sessions ? Math.round((results as any[]).reduce((s: number, r: any) => s + (r.focus_score || 0), 0) / stats.sessions) : 0
+      ;(results as any[]).forEach((r: any) => { if (r.output_type) stats.outputBreakdown[r.output_type] = (stats.outputBreakdown[r.output_type] || 0) + 1 })
+      const top = Object.entries(stats.outputBreakdown).sort((a, b) => b[1] - a[1])[0]
+      if (top) stats.topOutput = top[0]
+      const daySet = new Set((results as any[]).map((r: any) => r.session_date))
+      const today = new Date()
+      for (let i = 0; i < 365; i++) { const d = new Date(today); d.setDate(d.getDate() - i); if (daySet.has(d.toISOString().slice(0, 10))) stats.streak++; else if (i > 0) break }
+      const hourCounts: Record<number, number> = {}
+      ;(results as any[]).forEach((r: any) => { try { const h = new Date(r.created_at).getHours(); hourCounts[h] = (hourCounts[h] || 0) + 1 } catch (_) {} })
+      const peakHourEntry = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0]
+      if (peakHourEntry) stats.peakHour = parseInt(peakHourEntry[0])
+      const dowCounts: Record<string, number> = {}
+      const DAYS2 = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+      ;(results as any[]).forEach((r: any) => { try { const dow = DAYS2[new Date(r.session_date).getDay()]; dowCounts[dow] = (dowCounts[dow] || 0) + 1 } catch (_) {} })
+      stats.peakDays = Object.entries(dowCounts).sort((a, b) => b[1] - a[1]).slice(0, 2).map(e => e[0])
+    } catch (_) {}
+  }
+  const name = session.name?.split(' ')[0] || 'Creator'
+  const prompt = `You are the AI Flow Coach for FlowState. Give a SHORT personalized coaching insight.
+User: ${name} | Sessions last 30d: ${stats.sessions} | Focus time: ${stats.focusMin}m | Streak: ${stats.streak}d | Avg score: ${stats.avgScore} | Top output: ${stats.topOutput || 'none'} | Peak hour: ${stats.peakHour}:00 | Best days: ${stats.peakDays.join(', ') || 'none'}
+Respond JSON only: {"headline":"max 10 words","insight":"2-3 sentences using their data","tip":"1 actionable tip","badge":"emoji","badgeLabel":"badge name","coachMood":"inspired|concerned|encouraging|impressed"}`
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${aiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'meta-llama/llama-3.1-8b-instruct:free', messages: [{ role: 'user', content: prompt }], max_tokens: 400, temperature: 0.7 })
+    })
+    const data: any = await res.json()
+    const content = data?.choices?.[0]?.message?.content || ''
+    const jsonMatch = content.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) return c.json({ error: 'parse_failed' }, 500)
+    const coaching = JSON.parse(jsonMatch[0])
+    return c.json({ ok: true, coaching, stats })
+  } catch (err: any) { return c.json({ error: err.message }, 500) }
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 4C — ACCOUNTABILITY PAIRING
+// POST /api/pair/queue    — join the pairing queue
+// GET  /api/pair/status   — check if matched / session active
+// POST /api/pair/checkin  — send a check-in ping to your partner
+// POST /api/pair/leave    — leave current pair
+// ══════════════════════════════════════════════════════════════════════════════
+app.post('/api/pair/queue', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ error: 'redis_unavailable' }, 503)
+
+  const { durationMins = 25 } = await c.req.json().catch(() => ({}))
+  const userKey = `pair_user:${encodeURIComponent(session.email)}`
+  const queueKey = 'pair_queue'
+
+  // Check if already paired
+  const existing = await redisGet(c, userKey)
+  if (existing) {
+    const data = typeof existing === 'string' ? JSON.parse(existing) : existing
+    return c.json({ status: 'already_paired', partner: data.partnerName, sessionId: data.sessionId })
+  }
+
+  // Try to pop someone from queue
+  const pendingRaw = await redisGet(c, queueKey)
+  let pending = pendingRaw ? (typeof pendingRaw === 'string' ? JSON.parse(pendingRaw) : pendingRaw) : null
+
+  if (pending && pending.email !== session.email) {
+    // Match found! Create a pair
+    const sessionId = `pair_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const endsAt = new Date(Date.now() + durationMins * 60000).toISOString()
+    const pairA = { email: session.email, name: session.name || 'Creator', partnerEmail: pending.email, partnerName: pending.name, sessionId, durationMins, endsAt, checkins: 0 }
+    const pairB = { email: pending.email, name: pending.name, partnerEmail: session.email, partnerName: session.name || 'Creator', sessionId, durationMins, endsAt, checkins: 0 }
+    await redisPipeline(url, token, [
+      ['SET', userKey, JSON.stringify(pairA), 'EX', String(durationMins * 60 + 300)],
+      ['SET', `pair_user:${encodeURIComponent(pending.email)}`, JSON.stringify(pairB), 'EX', String(durationMins * 60 + 300)],
+      ['DEL', queueKey],
+    ])
+    return c.json({ status: 'matched', partner: pending.name, sessionId, durationMins, endsAt })
+  } else {
+    // Add self to queue
+    const queueEntry = { email: session.email, name: session.name || 'Creator', durationMins, joinedAt: new Date().toISOString() }
+    await redisPipeline(url, token, [
+      ['SET', queueKey, JSON.stringify(queueEntry), 'EX', '120'], // expires after 2 min if no match
+      ['SET', userKey, JSON.stringify({ status: 'waiting', joinedAt: new Date().toISOString() }), 'EX', '130'],
+    ])
+    return c.json({ status: 'waiting', message: 'Looking for a focus partner...' })
+  }
+})
+
+app.get('/api/pair/status', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const userKey = `pair_user:${encodeURIComponent(session.email)}`
+  const raw = await redisGet(c, userKey)
+  if (!raw) return c.json({ status: 'none' })
+  const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+  return c.json({ status: data.partnerEmail ? 'paired' : 'waiting', data })
+})
+
+app.post('/api/pair/checkin', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ error: 'redis_unavailable' }, 503)
+  const userKey = `pair_user:${encodeURIComponent(session.email)}`
+  const raw = await redisGet(c, userKey)
+  if (!raw) return c.json({ error: 'not_paired' }, 404)
+  const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+  if (!data.partnerEmail) return c.json({ error: 'not_paired' }, 404)
+  const pingKey = `pair_ping:${encodeURIComponent(data.partnerEmail)}`
+  await redisPipeline(url, token, [
+    ['SET', pingKey, JSON.stringify({ from: session.name || session.email, at: new Date().toISOString() }), 'EX', '300'],
+  ])
+  return c.json({ ok: true, message: `Check-in sent to ${data.partnerName}!` })
+})
+
+app.get('/api/pair/checkin', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ ping: null })
+  const pingKey = `pair_ping:${encodeURIComponent(session.email)}`
+  const raw = await redisGet(c, pingKey)
+  if (!raw) return c.json({ ping: null })
+  const ping = typeof raw === 'string' ? JSON.parse(raw) : raw
+  await redisPipeline(url, token, [['DEL', pingKey]])
+  return c.json({ ping })
+})
+
+app.post('/api/pair/leave', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ error: 'redis_unavailable' }, 503)
+  const userKey = `pair_user:${encodeURIComponent(session.email)}`
+  const raw = await redisGet(c, userKey)
+  if (raw) {
+    const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+    if (data.partnerEmail) {
+      const partnerKey = `pair_user:${encodeURIComponent(data.partnerEmail)}`
+      const pingKey = `pair_ping:${encodeURIComponent(data.partnerEmail)}`
+      await redisPipeline(url, token, [
+        ['DEL', userKey],
+        ['DEL', partnerKey],
+        ['SET', pingKey, JSON.stringify({ from: session.name || session.email, at: new Date().toISOString(), type: 'partner_left' }), 'EX', '300'],
+      ])
+    } else {
+      await redisPipeline(url, token, [['DEL', userKey], ['DEL', 'pair_queue']])
+    }
+  }
+  return c.json({ ok: true })
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 3A — PRODUCT HUNT LAUNCH PAGE  GET /launch
+// ══════════════════════════════════════════════════════════════════════════════
+app.get('/launch', async (c) => {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FlowState — Build in Flow | Product Hunt Launch</title>
+<meta name="description" content="The AI-powered focus OS for creators. Session tracking, AI Chat, Music generation, Release pipeline, FlowScore and more. Free to start.">
+<!-- OG / Twitter Card -->
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://flowst8.cc/launch">
+<meta property="og:title" content="FlowState — Build in Flow 🚀">
+<meta property="og:description" content="The AI focus OS built for creators. Track sessions, generate music/video, manage releases, and measure your flow — all in one place.">
+<meta property="og:image" content="https://flowst8.cc/static/og-launch.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@flowst8cc">
+<meta name="twitter:title" content="FlowState — Build in Flow 🚀">
+<meta name="twitter:description" content="The AI focus OS for creators. Free to start.">
+<meta name="twitter:image" content="https://flowst8.cc/static/og-launch.png">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0a0a12;color:#f0f0f0;font-family:'Inter',system-ui,sans-serif;overflow-x:hidden}
+  .grad{background:linear-gradient(135deg,#a855f7,#ec4899)}
+  .grad-text{background:linear-gradient(135deg,#a855f7,#ec4899);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  .glow{box-shadow:0 0 40px rgba(168,85,247,.3)}
+  .card{background:#12102a;border:1px solid rgba(168,85,247,.2);border-radius:16px}
+  .pill{display:inline-flex;align-items:center;gap:6px;background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.3);border-radius:99px;padding:6px 14px;font-size:12px;font-weight:600;color:#c084fc}
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+  @keyframes pulse-glow{0%,100%{box-shadow:0 0 20px rgba(168,85,247,.3)}50%{box-shadow:0 0 60px rgba(168,85,247,.6)}}
+  .float{animation:float 4s ease-in-out infinite}
+  .pulse-glow{animation:pulse-glow 3s ease-in-out infinite}
+  .feature-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}
+  .stat-num{font-size:42px;font-weight:900;line-height:1}
+</style>
+</head>
+<body>
+<!-- NAV -->
+<nav style="position:sticky;top:0;z-index:100;backdrop-filter:blur(20px);background:rgba(10,10,18,.8);border-bottom:1px solid rgba(168,85,247,.1);padding:14px 24px;display:flex;align-items:center;justify-content:space-between">
+  <div style="font-size:20px;font-weight:900" class="grad-text">⚡ FLOWSTATE</div>
+  <div style="display:flex;gap:12px;align-items:center">
+    <a href="https://www.producthunt.com/posts/flowstate-3" target="_blank" style="display:flex;align-items:center;gap:8px;background:#ff6154;color:#fff;text-decoration:none;padding:8px 16px;border-radius:10px;font-weight:700;font-size:13px">
+      <i class="fas fa-cat"></i> Vote on Product Hunt
+    </a>
+    <a href="https://flowst8.cc" style="display:flex;align-items:center;gap:6px;background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.4);color:#c084fc;text-decoration:none;padding:8px 16px;border-radius:10px;font-weight:700;font-size:13px">
+      Try Free <i class="fas fa-arrow-right"></i>
+    </a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section style="max-width:1100px;margin:0 auto;padding:80px 24px 60px;text-align:center">
+  <div class="pill" style="margin-bottom:20px">
+    <span style="width:7px;height:7px;border-radius:50%;background:#10b981;animation:pulse-glow 2s infinite"></span>
+    Launching on Product Hunt Today 🎉
+  </div>
+  <h1 style="font-size:clamp(36px,6vw,72px);font-weight:900;line-height:1.05;margin-bottom:20px">
+    <span class="grad-text">Build in Flow.</span><br>
+    Ship with AI.
+  </h1>
+  <p style="font-size:clamp(16px,2vw,20px);color:#9ca3af;max-width:600px;margin:0 auto 36px;line-height:1.6">
+    FlowState is the focus OS built for creators — combining Pomodoro sessions, AI chat, music generation, release pipeline, and real-time FlowScore in one place.
+  </p>
+  <div style="display:flex;flex-wrap:wrap;gap:12px;justify-content:center;margin-bottom:48px">
+    <a href="https://flowst8.cc" style="display:inline-flex;align-items:center;gap:8px;padding:16px 40px;border-radius:14px;font-weight:800;font-size:17px;text-decoration:none;color:#fff" class="grad glow pulse-glow">
+      <i class="fas fa-bolt"></i> Start Free — No Credit Card
+    </a>
+    <a href="https://www.producthunt.com/posts/flowstate-3" target="_blank" style="display:inline-flex;align-items:center;gap:8px;padding:16px 32px;border-radius:14px;font-weight:700;font-size:16px;text-decoration:none;color:#ff6154;border:2px solid #ff6154;background:rgba(255,97,84,.08)">
+      <i class="fas fa-arrow-up"></i> Upvote on PH
+    </a>
+  </div>
+
+  <!-- Stat strip -->
+  <div style="display:flex;flex-wrap:wrap;gap:24px;justify-content:center;margin-bottom:60px">
+    <div style="text-align:center"><div class="stat-num grad-text">376+</div><div style="font-size:12px;color:#6b7280;margin-top:4px;text-transform:uppercase;letter-spacing:.8px">Visitors</div></div>
+    <div style="color:#2a2a3e;font-size:40px">|</div>
+    <div style="text-align:center"><div class="stat-num" style="color:#10b981">139</div><div style="font-size:12px;color:#6b7280;margin-top:4px;text-transform:uppercase;letter-spacing:.8px">API Endpoints</div></div>
+    <div style="color:#2a2a3e;font-size:40px">|</div>
+    <div style="text-align:center"><div class="stat-num" style="color:#f59e0b">13</div><div style="font-size:12px;color:#6b7280;margin-top:4px;text-transform:uppercase;letter-spacing:.8px">Feature Tabs</div></div>
+    <div style="color:#2a2a3e;font-size:40px">|</div>
+    <div style="text-align:center"><div class="stat-num" style="color:#ec4899">Free</div><div style="font-size:12px;color:#6b7280;margin-top:4px;text-transform:uppercase;letter-spacing:.8px">To Start</div></div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section style="max-width:1100px;margin:0 auto;padding:0 24px 80px">
+  <div style="text-align:center;margin-bottom:40px">
+    <div class="pill" style="margin-bottom:12px"><i class="fas fa-star"></i> What makes FlowState different</div>
+    <h2 style="font-size:clamp(24px,4vw,40px);font-weight:900">Everything a creator needs<br><span class="grad-text">in one focused space</span></h2>
+  </div>
+  <div class="feature-grid">
+    <div class="card" style="padding:24px">
+      <div style="font-size:32px;margin-bottom:12px">⏱️</div>
+      <h3 style="font-size:17px;font-weight:800;margin-bottom:8px">Focus Timer + FlowScore</h3>
+      <p style="color:#9ca3af;font-size:14px;line-height:1.6">Pomodoro-style focus sessions with AI scoring. Track streaks, output type, and get a real-time FlowScore out of 100.</p>
+    </div>
+    <div class="card" style="padding:24px">
+      <div style="font-size:32px;margin-bottom:12px">🤖</div>
+      <h3 style="font-size:17px;font-weight:800;margin-bottom:8px">AI Chat & Tools</h3>
+      <p style="color:#9ca3af;font-size:14px;line-height:1.6">Multi-model AI chat with OpenRouter — GPT-4o, Claude, Llama — plus smart focus suggestions and AI Flow Coach.</p>
+    </div>
+    <div class="card" style="padding:24px">
+      <div style="font-size:32px;margin-bottom:12px">🎵</div>
+      <h3 style="font-size:17px;font-weight:800;margin-bottom:8px">Music & Video Generation</h3>
+      <p style="color:#9ca3af;font-size:14px;line-height:1.6">Generate beats, audio, and video concepts from the same app you use to focus. Built for music creators.</p>
+    </div>
+    <div class="card" style="padding:24px">
+      <div style="font-size:32px;margin-bottom:12px">🚀</div>
+      <h3 style="font-size:17px;font-weight:800;margin-bottom:8px">Release Pipeline (ClawFlow)</h3>
+      <p style="color:#9ca3af;font-size:14px;line-height:1.6">Metadata, cover art generation, DistroKid/UnitedMasters prep, PR pitch drafts, SubmitHub submission — all automated.</p>
+    </div>
+    <div class="card" style="padding:24px">
+      <div style="font-size:32px;margin-bottom:12px">📊</div>
+      <h3 style="font-size:17px;font-weight:800;margin-bottom:8px">Team Hub & Sprints</h3>
+      <p style="color:#9ca3af;font-size:14px;line-height:1.6">Sprint health, team pulse, standups, burnout risk detection, FlowScore leaderboard — for teams that ship together.</p>
+    </div>
+    <div class="card" style="padding:24px">
+      <div style="font-size:32px;margin-bottom:12px">🌐</div>
+      <h3 style="font-size:17px;font-weight:800;margin-bottom:8px">Public FlowScore Profile</h3>
+      <p style="color:#9ca3af;font-size:14px;line-height:1.6">Your public productivity card at <code style="color:#a855f7">flowst8.cc/u/yourslug</code>. Share your focus data, streak, and top outputs publicly.</p>
+    </div>
+    <div class="card" style="padding:24px">
+      <div style="font-size:32px;margin-bottom:12px">🧠</div>
+      <h3 style="font-size:17px;font-weight:800;margin-bottom:8px">AI Flow Coach</h3>
+      <p style="color:#9ca3af;font-size:14px;line-height:1.6">Personalized coaching from your actual session data — peak hours, output patterns, streak analysis, and actionable next steps.</p>
+    </div>
+    <div class="card" style="padding:24px">
+      <div style="font-size:32px;margin-bottom:12px">🤝</div>
+      <h3 style="font-size:17px;font-weight:800;margin-bottom:8px">Accountability Pairing</h3>
+      <p style="color:#9ca3af;font-size:14px;line-height:1.6">Get matched with another creator for a shared focus session. Check in, stay accountable, ship together.</p>
+    </div>
+    <div class="card" style="padding:24px">
+      <div style="font-size:32px;margin-bottom:12px">📅</div>
+      <h3 style="font-size:17px;font-weight:800;margin-bottom:8px">Calendar & Notion Sync</h3>
+      <p style="color:#9ca3af;font-size:14px;line-height:1.6">Auto-block focus time in Google Calendar and sync tasks and projects with Notion. Slack status updates too.</p>
+    </div>
+  </div>
+</section>
+
+<!-- COMPARISON -->
+<section style="max-width:900px;margin:0 auto;padding:0 24px 80px">
+  <div style="text-align:center;margin-bottom:40px">
+    <h2 style="font-size:clamp(24px,4vw,36px);font-weight:900">Why creators switch to <span class="grad-text">FlowState</span></h2>
+  </div>
+  <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:14px">
+      <thead>
+        <tr style="border-bottom:1px solid #2a2a3e">
+          <th style="text-align:left;padding:12px;color:#6b7280">Feature</th>
+          <th style="padding:12px;text-align:center" class="grad-text">FlowState</th>
+          <th style="padding:12px;text-align:center;color:#6b7280">Notion</th>
+          <th style="padding:12px;text-align:center;color:#6b7280">Linear</th>
+          <th style="padding:12px;text-align:center;color:#6b7280">Forest</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${[
+          ['Focus Timer + Scoring','✅','❌','❌','✅'],
+          ['AI Multi-model Chat','✅','⚠️','❌','❌'],
+          ['Music Generation','✅','❌','❌','❌'],
+          ['Release Pipeline','✅','❌','❌','❌'],
+          ['FlowScore / Gamification','✅','❌','❌','⚠️'],
+          ['Public Profile','✅','⚠️','❌','❌'],
+          ['Accountability Pairing','✅','❌','❌','✅'],
+          ['Weekly AI Digest Email','✅','❌','❌','❌'],
+          ['API Access','✅','✅','✅','❌'],
+          ['Free Tier','✅','✅','✅','⚠️'],
+        ].map(([f,a,b,c,d]) => `<tr style="border-bottom:1px solid #1a1a2e">
+          <td style="padding:12px;color:#d1d5db">${f}</td>
+          <td style="padding:12px;text-align:center">${a}</td>
+          <td style="padding:12px;text-align:center;color:#6b7280">${b}</td>
+          <td style="padding:12px;text-align:center;color:#6b7280">${c}</td>
+          <td style="padding:12px;text-align:center;color:#6b7280">${d}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- PRICING PREVIEW -->
+<section style="max-width:900px;margin:0 auto;padding:0 24px 80px;text-align:center">
+  <div class="pill" style="margin-bottom:16px"><i class="fas fa-tag"></i> Pricing</div>
+  <h2 style="font-size:clamp(24px,4vw,36px);font-weight:900;margin-bottom:40px">Start free. <span class="grad-text">Ship more.</span></h2>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px">
+    <div class="card" style="padding:28px">
+      <div style="font-size:22px;font-weight:800;margin-bottom:4px">Free</div>
+      <div style="font-size:36px;font-weight:900;margin:12px 0" class="grad-text">$0</div>
+      <p style="color:#6b7280;font-size:13px;margin-bottom:20px">forever</p>
+      <ul style="list-style:none;text-align:left;font-size:13px;color:#9ca3af;line-height:2">
+        <li>✅ Focus timer + FlowScore</li><li>✅ 1,500 AI tokens/day</li><li>✅ Session history (30d)</li>
+        <li>✅ Public profile</li><li>✅ Referral system</li>
+      </ul>
+    </div>
+    <div class="card glow pulse-glow" style="padding:28px;border-color:rgba(168,85,247,.5);position:relative">
+      <div style="position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#a855f7,#ec4899);border-radius:99px;padding:4px 16px;font-size:11px;font-weight:800;color:#fff">POPULAR</div>
+      <div style="font-size:22px;font-weight:800;margin-bottom:4px">Pro</div>
+      <div style="font-size:36px;font-weight:900;margin:12px 0" class="grad-text">$18<span style="font-size:16px;color:#6b7280">/mo</span></div>
+      <ul style="list-style:none;text-align:left;font-size:13px;color:#9ca3af;line-height:2">
+        <li>✅ 100,000 AI tokens/day</li><li>✅ All models unlocked</li><li>✅ Full session history</li>
+        <li>✅ ClawFlow release pipeline</li><li>✅ Priority support</li>
+      </ul>
+    </div>
+    <div class="card" style="padding:28px">
+      <div style="font-size:22px;font-weight:800;margin-bottom:4px">Team</div>
+      <div style="font-size:36px;font-weight:900;margin:12px 0" style="color:#10b981">$12<span style="font-size:16px;color:#6b7280">/seat/mo</span></div>
+      <ul style="list-style:none;text-align:left;font-size:13px;color:#9ca3af;line-height:2">
+        <li>✅ Everything in Pro</li><li>✅ Team leaderboard</li><li>✅ Sprint health dashboard</li>
+        <li>✅ Burnout risk detection</li><li>✅ Slack integration</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- FINAL CTA -->
+<section style="text-align:center;padding:60px 24px 80px">
+  <h2 style="font-size:clamp(28px,5vw,52px);font-weight:900;margin-bottom:16px">Ready to build in <span class="grad-text">flow?</span></h2>
+  <p style="color:#9ca3af;font-size:16px;margin-bottom:36px">Join creators who track focus, ship music, and score their flow.</p>
+  <div style="display:flex;flex-wrap:wrap;gap:12px;justify-content:center">
+    <a href="https://flowst8.cc" style="display:inline-flex;align-items:center;gap:8px;padding:18px 44px;border-radius:14px;font-weight:800;font-size:18px;text-decoration:none;color:#fff" class="grad glow">
+      <i class="fas fa-bolt"></i> Get Started Free
+    </a>
+    <a href="https://www.producthunt.com/posts/flowstate-3" target="_blank" style="display:inline-flex;align-items:center;gap:8px;padding:18px 36px;border-radius:14px;font-weight:700;font-size:17px;text-decoration:none;background:#ff6154;color:#fff">
+      <i class="fas fa-cat"></i> Upvote on Product Hunt
+    </a>
+  </div>
+  <p style="color:#374151;font-size:12px;margin-top:32px">Built by a creator, for creators. 🔥 <a href="https://twitter.com/flowst8cc" style="color:#6b7280;text-decoration:none">@flowst8cc</a></p>
+</section>
+
+<!-- EMBED WIDGET PREVIEW -->
+<section style="max-width:700px;margin:0 auto;padding:0 24px 80px;text-align:center">
+  <div class="pill" style="margin-bottom:16px"><i class="fas fa-code"></i> Embed Widget</div>
+  <h2 style="font-size:22px;font-weight:800;margin-bottom:12px">Show your FlowScore anywhere</h2>
+  <p style="color:#6b7280;font-size:14px;margin-bottom:20px">Paste this on your GitHub profile, portfolio, or website:</p>
+  <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:16px;text-align:left;font-size:13px;font-family:monospace;color:#79c0ff;overflow-x:auto;margin-bottom:16px">
+    &lt;script src="https://flowst8.cc/widget.js?slug=yourslug"&gt;&lt;/script&gt;
+  </div>
+  <div id="widget-preview" style="display:flex;justify-content:center"></div>
+  <script>
+    // Live widget preview
+    const s = document.createElement('script');
+    s.src = '/widget.js?slug=demo&preview=1';
+    document.getElementById('widget-preview').appendChild(s);
+  </script>
+</section>
+
+<footer style="border-top:1px solid #1a1a2e;padding:24px;text-align:center;color:#374151;font-size:13px">
+  <div style="margin-bottom:8px">
+    <a href="https://flowst8.cc" style="color:#6b7280;text-decoration:none;margin:0 12px">App</a>
+    <a href="https://flowst8.cc/launch" style="color:#6b7280;text-decoration:none;margin:0 12px">Launch</a>
+    <a href="https://twitter.com/flowst8cc" style="color:#6b7280;text-decoration:none;margin:0 12px">Twitter</a>
+    <a href="mailto:hello@flowst8.cc" style="color:#6b7280;text-decoration:none;margin:0 12px">Contact</a>
+  </div>
+  © 2025 FlowState · <a href="https://flowst8.cc" style="color:#555;text-decoration:none">flowst8.cc</a>
+</footer>
+</body>
+</html>`
+  return c.html(html)
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 3C — EMBED WIDGET  GET /widget.js
+// Injects a FlowScore badge that users can embed on GitHub / portfolios
+// ══════════════════════════════════════════════════════════════════════════════
+app.get('/widget.js', async (c) => {
+  const slug = c.req.query('slug') || 'demo'
+  const theme = c.req.query('theme') || 'dark'
+  const preview = c.req.query('preview') === '1'
+  const db = c.env?.DB
+
+  let flowScore = 0, streak = 0, focusMin = 0, displayName = 'Creator', topOutput = ''
+  let profileUrl = `https://flowst8.cc/u/${slug}`
+
+  if (db && slug !== 'demo') {
+    try {
+      const profile = await db.prepare(
+        `SELECT email, display_name, show_score, show_streak FROM public_profiles WHERE slug=?`
+      ).bind(slug).first() as any
+      if (profile && profile.show_score) {
+        displayName = profile.display_name || slug
+        const since7 = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10)
+        const since30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+        const { results } = await db.prepare(
+          `SELECT duration_mins, output_type, session_date FROM sessions WHERE email=? AND session_date>=? AND phase='focus' AND completed=1`
+        ).bind(profile.email, since30).all() as any
+        const week = (results as any[]).filter((r: any) => r.session_date >= since7)
+        focusMin = week.reduce((s: number, r: any) => s + (r.duration_mins || 0), 0)
+        const daySet = new Set((results as any[]).map((r: any) => r.session_date))
+        const today = new Date()
+        for (let i = 0; i < 365; i++) { const d = new Date(today); d.setDate(d.getDate() - i); if (daySet.has(d.toISOString().slice(0, 10))) streak++; else if (i > 0) break }
+        flowScore = Math.min(100, Math.round((focusMin / 120) * 40 + (week.length / 5) * 30 + Math.min(streak, 7) * 4 + (week.length > 0 ? 15 : 0)))
+        const outCounts: Record<string, number> = {}
+        ;(results as any[]).forEach((r: any) => { if (r.output_type) outCounts[r.output_type] = (outCounts[r.output_type] || 0) + 1 })
+        const top = Object.entries(outCounts).sort((a, b) => b[1] - a[1])[0]
+        if (top) topOutput = top[0]
+      }
+    } catch (_) {}
+  } else if (slug === 'demo') {
+    // Demo values
+    flowScore = 78; streak = 5; focusMin = 210; displayName = 'Demo User'; topOutput = 'Code'
+  }
+
+  const scoreColor = flowScore >= 70 ? '#10b981' : flowScore >= 40 ? '#a855f7' : '#f59e0b'
+  const bg = theme === 'light' ? '#ffffff' : '#12102a'
+  const textColor = theme === 'light' ? '#1a1a2e' : '#f0f0f0'
+  const borderColor = theme === 'light' ? '#e5e7eb' : 'rgba(168,85,247,.25)'
+
+  const widgetHtml = `<a href="${profileUrl}" target="_blank" rel="noopener" id="fs-widget-link" style="text-decoration:none;display:inline-flex;align-items:center;gap:12px;background:${bg};border:1px solid ${borderColor};border-radius:12px;padding:12px 18px;font-family:system-ui,-apple-system,sans-serif;color:${textColor};transition:transform .2s,box-shadow .2s;cursor:pointer" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 8px 24px rgba(168,85,247,.25)'" onmouseout="this.style.transform='';this.style.boxShadow=''">
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:52px;height:52px;border-radius:50%;border:3px solid ${scoreColor};background:${theme === 'light' ? '#f9fafb' : '#0a0a12'}">
+    <span style="font-size:18px;font-weight:900;color:${scoreColor};line-height:1">${flowScore}</span>
+    <span style="font-size:8px;color:${theme === 'light' ? '#9ca3af' : '#6b7280'};letter-spacing:.3px">FLOW</span>
+  </div>
+  <div>
+    <div style="font-size:13px;font-weight:700;margin-bottom:3px">${displayName}</div>
+    <div style="font-size:11px;color:${theme === 'light' ? '#6b7280' : '#9ca3af'};display:flex;gap:10px;flex-wrap:wrap">
+      ${streak > 0 ? `<span>🔥 ${streak}d streak</span>` : ''}
+      ${focusMin > 0 ? `<span>⏱ ${focusMin}m/wk</span>` : ''}
+      ${topOutput ? `<span>🎯 ${topOutput}</span>` : ''}
+    </div>
+    <div style="font-size:10px;color:${theme === 'light' ? '#d1d5db' : '#374151'};margin-top:3px">flowst8.cc ⚡</div>
+  </div>
+</a>`
+
+  // Return as a self-executing script that injects the widget
+  const js = `(function() {
+  var container = document.currentScript ? document.currentScript.parentNode : document.body;
+  var div = document.createElement('div');
+  div.innerHTML = ${JSON.stringify(widgetHtml)};
+  container.appendChild(div.firstChild);
+})();`
+
+  c.header('Content-Type', 'application/javascript; charset=UTF-8')
+  c.header('Cache-Control', 'public, max-age=300')
+  c.header('Access-Control-Allow-Origin', '*')
+  return c.text(js)
+})
+
+// Widget embed page (for iframe use)
+app.get('/widget', async (c) => {
+  const slug = c.req.query('slug') || 'demo'
+  const theme = c.req.query('theme') || 'dark'
+  // Redirect to profile page
+  return c.redirect(`/u/${slug}`)
 })
 
 // ══════════════════════════════════════════════════════════════════════════════
