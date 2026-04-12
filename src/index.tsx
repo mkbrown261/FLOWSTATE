@@ -8503,7 +8503,7 @@ app.get('/launch', async (c) => {
   <div style="display:flex;flex-wrap:wrap;gap:24px;justify-content:center;margin-bottom:60px">
     <div style="text-align:center"><div class="stat-num grad-text">376+</div><div style="font-size:12px;color:#6b7280;margin-top:4px;text-transform:uppercase;letter-spacing:.8px">Visitors</div></div>
     <div style="color:#2a2a3e;font-size:40px">|</div>
-    <div style="text-align:center"><div class="stat-num" style="color:#10b981">139</div><div style="font-size:12px;color:#6b7280;margin-top:4px;text-transform:uppercase;letter-spacing:.8px">API Endpoints</div></div>
+    <div style="text-align:center"><div class="stat-num" style="color:#10b981">156</div><div style="font-size:12px;color:#6b7280;margin-top:4px;text-transform:uppercase;letter-spacing:.8px">API Endpoints</div></div>
     <div style="color:#2a2a3e;font-size:40px">|</div>
     <div style="text-align:center"><div class="stat-num" style="color:#f59e0b">13</div><div style="font-size:12px;color:#6b7280;margin-top:4px;text-transform:uppercase;letter-spacing:.8px">Feature Tabs</div></div>
     <div style="color:#2a2a3e;font-size:40px">|</div>
@@ -8631,7 +8631,7 @@ app.get('/launch', async (c) => {
     </div>
     <div class="card" style="padding:28px">
       <div style="font-size:22px;font-weight:800;margin-bottom:4px">Team</div>
-      <div style="font-size:36px;font-weight:900;margin:12px 0" style="color:#10b981">$12<span style="font-size:16px;color:#6b7280">/seat/mo</span></div>
+      <div style="font-size:36px;font-weight:900;margin:12px 0;color:#10b981">$12<span style="font-size:16px;color:#6b7280">/seat/mo</span></div>
       <ul style="list-style:none;text-align:left;font-size:13px;color:#9ca3af;line-height:2">
         <li>✅ Everything in Pro</li><li>✅ Team leaderboard</li><li>✅ Sprint health dashboard</li>
         <li>✅ Burnout risk detection</li><li>✅ Slack integration</li>

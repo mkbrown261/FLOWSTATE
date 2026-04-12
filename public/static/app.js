@@ -1941,7 +1941,7 @@ function saveCalEvent() {
     } else {
       // Try fallback endpoint
       return fetch('/api/calendar/block', {
-        method:'POST', headers:{'Content-Type':'application/json'},
+        method:'POST', headers:{'Content-Type':'application/json'}, credentials:'include',
         body: JSON.stringify({ title, start, end, description:desc, color })
       }).then(r=>r.json()).then(d2=>{
         if (d2.ok||d2.id||d2.event?.id) {
@@ -2090,7 +2090,7 @@ function startFocusFromSuggestion(startISO, endISO, durationMin) {
 function blockSuggestion(startISO, endISO, durationMin) {
   if (!FS_USER) { notify('Sign in to block time on Google Calendar', 'info'); return; }
   fetch('/api/calendar/block', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
     body: JSON.stringify({ title: `⚡ Focus Block — FlowState`, start: startISO, end: endISO })
   }).then(r => r.json()).then(d => {
     if (d.ok || d.event?.id) {
@@ -7667,8 +7667,9 @@ async function _pollPartnerPing() {
       const pingArea = document.getElementById('pair-ping-area');
       if (data.ping.type === 'partner_left') {
         notify(`${data.ping.from} ended the session`, 'info');
+        clearInterval(_pairState.pollTimer);
         clearInterval(_pairState.pingTimer);
-        _pairState = { status: 'none' };
+        _pairState = { status: 'none', partner: null, sessionId: null, endsAt: null, pollTimer: null, pingTimer: null };
         closeModal();
       } else {
         if (pingArea) pingArea.innerHTML = `<div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.2);border-radius:8px;padding:10px;animation:fadeIn .3s ease"><i class="fas fa-hand-pointer" style="color:#10b981"></i> <strong>${escHtml(data.ping.from)}</strong> just checked in! 👋</div>`;
@@ -7682,7 +7683,7 @@ async function _pollPartnerPing() {
 async function _leavePair() {
   clearInterval(_pairState.pollTimer);
   clearInterval(_pairState.pingTimer);
-  _pairState = { status: 'none' };
+  _pairState = { status: 'none', partner: null, sessionId: null, endsAt: null, pollTimer: null, pingTimer: null };
   try { await fetch('/api/pair/leave', { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: '{}' }); } catch(e) {}
   closeModal();
   notify('Session ended', 'info');
