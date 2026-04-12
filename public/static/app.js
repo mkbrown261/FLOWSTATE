@@ -1539,7 +1539,11 @@ function loadCalEvents() {
         return;
       }
       if (d.error) {
-        _calDebug('Google Calendar API error: ' + JSON.stringify(d.error) + '\n\nVisit /api/calendar/debug for details.', null, true);
+        const msg = 'Google Calendar error: ' + d.error +
+          (d.google_reason ? ' — ' + d.google_reason : '') +
+          (d.google_code   ? ' (code ' + d.google_code + ')' : '') +
+          '\n\nOpen /api/calendar/debug in a new tab for full details.';
+        _calDebug(msg, null, true);
         renderCalGrid();
         return;
       }
@@ -1554,6 +1558,7 @@ function loadCalEvents() {
         state.cal.events = d.events;
         renderCalGrid();
         renderEvents(d.events);
+        console.log('[CAL] Loaded', d.events.length, 'events for', year + '/' + (month+1));
       }
     })
     .catch(err => { _calDebug('Network error fetching calendar: ' + (err && err.message ? err.message : String(err)), null, true); renderCalGrid(); });

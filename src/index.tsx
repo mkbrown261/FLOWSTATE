@@ -412,9 +412,15 @@ app.get('/api/calendar/events', async (c) => {
       { headers: { Authorization: 'Bearer ' + token } }
     )
     const data: any = await calRes.json()
-    // Google returns 401/403 with an error object when the token lacks calendar scope or was revoked
-    if (data.error?.code === 401 || data.error?.code === 403) {
-      return c.json({ error: 'not_authenticated', events: [] }, 401)
+    // Google returns 401/403 when token lacks calendar scope or was revoked
+    // code can be number OR string, so coerce
+    const errCode = data.error ? parseInt(String(data.error?.code || '0')) : 0
+    if (errCode === 401 || errCode === 403) {
+      return c.json({ error: 'not_authenticated', google_reason: data.error?.message || '', events: [] }, 401)
+    }
+    if (data.error) {
+      // Some other Google error — surface it so the debug panel can show it
+      return c.json({ error: data.error?.message || 'google_error', google_code: errCode, events: [] }, 500)
     }
     const events = (data.items || []).map((e: any) => ({
       id:     e.id,
@@ -424,7 +430,7 @@ app.get('/api/calendar/events', async (c) => {
       allDay: !e.start?.dateTime,
       color:  e.colorId ? 'hsl(' + (parseInt(e.colorId) * 37) + ', 60%, 60%)' : 'var(--accent-primary)',
     }))
-    return c.json({ events })
+    return c.json({ events, count: events.length })
   } catch (err: any) { return c.json({ error: err.message, events: [] }, 500) }
 })
 
@@ -5158,7 +5164,7 @@ app.get('/', (c) => {
 :root {
   --bg-base:#0f0f1a; --bg-panel:#1a1a2e; --bg-card:#16213e;
   --border:rgba(168,85,247,.18); --border-h:rgba(168,85,247,.45);
-  --text-p:#f0f0f0; --text-s:#888; --text-m:#555;
+  --text-p:#f0f0f0; --text-s:#aaa; --text-m:#bbb;
   --accent:#a855f7; --pink:#ec4899; --blue:#3b82f6; --cyan:#06b6d4;
   --green:#10b981; --warn:#f59e0b; --danger:#ef4444;
   --grad:linear-gradient(135deg,#a855f7,#ec4899);
@@ -5281,7 +5287,7 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .ev-item{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--bg-panel);border:1px solid var(--border);border-radius:11px;cursor:pointer;transition:.2s}
 .ev-item:hover{border-color:var(--border-h)}
 .ev-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
-.ev-time{font-size:12px;color:var(--text-m);min-width:48px;font-weight:600}
+.ev-time{font-size:12px;color:#aaa;min-width:48px;font-weight:500}
 .ev-sum{font-size:13px;font-weight:600;flex:1}
 .btn-blk{background:rgba(168,85,247,.1);border:1px solid var(--border);color:var(--text-m);padding:4px 9px;border-radius:7px;font-size:11px;cursor:pointer;transition:.2s;margin-left:auto}
 .btn-blk:hover{border-color:var(--accent);color:var(--accent)}
@@ -5531,7 +5537,7 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .btn-sm:hover{border-color:var(--border-h);color:var(--text-p)}
 .btn-primary{background:var(--grad);border:none;color:#fff;padding:9px 22px;border-radius:11px;font-size:13px;font-weight:700;cursor:pointer;transition:.2s}
 .btn-primary:hover{opacity:.85;transform:scale(1.02)}
-.empty{text-align:center;padding:36px 18px;color:var(--text-m)}
+.empty{text-align:center;padding:36px 18px;color:#888}
 .empty i{font-size:34px;margin-bottom:11px;display:block;opacity:.4}
 .empty p{font-size:13px;margin-bottom:14px;line-height:1.6}
 .auth-banner{background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(236,72,153,.05));border:1px solid rgba(168,85,247,.2);border-radius:13px;padding:18px;text-align:center;margin-bottom:14px}
