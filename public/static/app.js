@@ -4395,7 +4395,7 @@ let _tokenBalance = null;
 
 async function loadTokenBalance() {
   try {
-    const r = await fetch('/api/billing/balance');
+    const r = await fetch('/api/billing/balance', { credentials: 'include' });
     if (!r.ok) return;
     const data = await r.json();
     if (data.error) return; // not_authenticated or other error — skip update
