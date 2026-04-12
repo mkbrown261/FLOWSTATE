@@ -946,6 +946,16 @@ export const CREDENTIAL_TABLE: CredentialEntry[] = [
   { service: 'Clawbot AI (ClawFlow)', purpose: 'Autonomous agent — walkthrough generation, agentic tasks across 264 Pro, Flowstate Audio & Hub, coin ledger. $40/mo first month $20.', envKey: 'CLAWBOT_API_KEY', url: 'https://flowstatehub.com/clawflow', required: 'optional', tier: 'clawflow' },
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // ── CLAW RELEASE WIZARD — POST-RELEASE AUTOMATION ──────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  { service: 'fal.ai (Cover Art)', purpose: 'ClawFlow Release Wizard: AI-generated album/single cover art via FLUX Schnell — free for all users during release workflow', envKey: 'FAL_AI_KEY', url: 'https://fal.ai/dashboard/keys', required: 'recommended', tier: 'free' },
+  { service: 'Higgsfield AI (Video)', purpose: 'ClawFlow: Cinematic music video generation — Seedance 2.0, Wan 2.6, Kling v3 via Higgsfield API. Powers the Claw Video wizard.', envKey: 'HIGGSFIELD_API_KEY, HIGGSFIELD_API_SECRET', url: 'https://app.higgsfield.ai', required: 'optional', tier: 'clawflow' },
+  { service: 'DistroKid (Distribution)', purpose: 'ClawFlow Release: Direct upload API — Claw prepares full release payload (title, ISRC, genre, cover art key) and submits when partner API is live. Invite-only API.', envKey: 'DISTROKID_CLIENT_ID, DISTROKID_CLIENT_SECRET', url: 'https://distrokid.com/api', required: 'optional', tier: 'clawflow' },
+  { service: 'UnitedMasters (Distribution)', purpose: 'ClawFlow Release: Direct upload API — submit tracks to Spotify, Apple Music, TIDAL, TikTok, Amazon, YouTube Music + brand partnership opportunities.', envKey: 'UNITEDMASTERS_CLIENT_ID, UNITEDMASTERS_CLIENT_SECRET', url: 'https://unitedmasters.com/api', required: 'optional', tier: 'clawflow' },
+  { service: 'SubmitHub (Curator Pitching)', purpose: 'ClawFlow Release: Find and pitch real playlist curators, music blogs, and press outlets. Searches matching curators by genre and submits Claw-drafted pitches.', envKey: 'SUBMITHUB_API_KEY', url: 'https://www.submithub.com/api-settings', required: 'optional', tier: 'clawflow' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // ── FLOWSTATE AUDIO — MUSIC AI ─────────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 

@@ -2744,10 +2744,18 @@ async function loadPlatformStatus() {
     ${row('Pika 2.0', '⚡', s.pika, 'Creative effects, fast gen')}
     ${row('MiniMax / Hailuo', '🌀', s.minimax, 'Fast gen, face consistency')}
     ${row('Luma Dream Machine', '🌙', s.luma, 'Photorealistic, product shots')}
+    ${row('Higgsfield (Seedance 2.0 / Wan 2.6)', '🎞️', s.higgsfield, 'Claw Video wizard — cinematic music videos')}
     ${row('Suno (AI Music)', '🎵', s.suno, 'Full-track AI music generation')}
 
+    <div style="grid-column:1/-1;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text-m);margin:10px 0 2px">🚀 Claw Release Wizard</div>
+    ${row('fal.ai (Cover Art)', '🎨', s.fal_ai, 'AI album cover generation — free for all users')}
+    ${row('DistroKid API', '🎵', s.distrokid, 'Direct distribution upload — invite-only partner API')}
+    ${row('UnitedMasters API', '🎤', s.unitedmasters, 'Direct upload + brand partnerships')}
+    ${row('SubmitHub API', '📋', s.submithub, 'Curator & blog pitching — free tier: 3 blogs/day')}
+
     <div style="grid-column:1/-1;margin-top:12px;padding:10px 12px;background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:9px;font-size:11px;color:var(--text-s)">
-      Keys are stored as <strong style="color:var(--text)">Cloudflare Secrets</strong> — never visible to users. Contact the platform admin to activate missing services.
+      Keys are stored as <strong style="color:var(--text)">Cloudflare Secrets</strong> — never visible to users.
+      Add with: <code style="background:rgba(255,255,255,.06);padding:1px 5px;border-radius:3px">wrangler pages secret put KEY_NAME --project-name flowstate</code>
     </div>
   `;
 }
@@ -2762,6 +2770,7 @@ function openCredsModal() {
     // Build a lookup: envKey → live boolean
     // Map each CREDENTIAL_TABLE envKey string to the matching key-status field
     const KEY_MAP = {
+      // Core
       'GOOGLE_CLIENT_ID': ks.google_oauth, 'GOOGLE_CLIENT_SECRET': ks.google_oauth,
       'OPENROUTER_API_KEY': ks.openrouter,
       'UPSTASH_REDIS_URL': ks.redis, 'UPSTASH_REDIS_TOKEN': ks.redis,
@@ -2769,6 +2778,7 @@ function openCredsModal() {
       'RESEND_API_KEY': ks.resend,
       'NOTION_CLIENT_ID': ks.notion, 'NOTION_CLIENT_SECRET': ks.notion,
       'SLACK_CLIENT_ID': ks.slack, 'SLACK_CLIENT_SECRET': ks.slack, 'SLACK_BOT_TOKEN': ks.slack,
+      // AI
       'GOOGLE_AI_KEY': ks.google_ai,
       'ELEVENLABS_API_KEY': ks.elevenlabs,
       'REPLICATE_API_KEY': ks.replicate,
@@ -2785,6 +2795,12 @@ function openCredsModal() {
       'LUMA_API_KEY': ks.luma,
       'SUNO_API_KEY': ks.suno,
       'HUGGINGFACE_API_KEY': ks.huggingface,
+      // Claw Release Wizard
+      'FAL_AI_KEY': ks.fal_ai,
+      'HIGGSFIELD_API_KEY': ks.higgsfield, 'HIGGSFIELD_API_SECRET': ks.higgsfield,
+      'DISTROKID_CLIENT_ID': ks.distrokid, 'DISTROKID_CLIENT_SECRET': ks.distrokid,
+      'UNITEDMASTERS_CLIENT_ID': ks.unitedmasters, 'UNITEDMASTERS_CLIENT_SECRET': ks.unitedmasters,
+      'SUBMITHUB_API_KEY': ks.submithub,
     };
 
     const isLive = (envKey) => {
@@ -2796,15 +2812,17 @@ function openCredsModal() {
       return keys.every(k => KEY_MAP[k] === false);
     };
 
-    const coreItems=[], recItems=[], imgItems=[], vidItems=[], integItems=[], audioItems=[], pro264Items=[], otherItems=[];
-    const imgKeywords = ['Stability AI','Black Forest Labs','Ideogram','Recraft','Imagen','DALL-E','GPT-Image','OpenAI'];
-    const vidKeywords = ['Runway ML','Kling','Pika Labs','MiniMax','Luma AI','Veo','Sora'];
-    const audioKeywords = ['Suno','Udio','MusicGen','Moises','Loudme','ACRCloud','Dolby','AudioShake','ElevenLabs'];
-    const pro264Keywords = ['Replicate','Hugging Face','Cloudflare R2','Clawbot'];
-    const integKeywords = ['Microsoft','GitHub OAuth','Linear','Jira','Asana','Oura','Whoop','Plaid','Beehiiv','YouTube Embed','Spotify Embed'];
+    const coreItems=[], recItems=[], imgItems=[], vidItems=[], integItems=[], audioItems=[], pro264Items=[], releaseItems=[], otherItems=[];
+    const imgKeywords     = ['Stability AI','Black Forest Labs','Ideogram','Recraft','Imagen','DALL-E','GPT-Image','OpenAI'];
+    const vidKeywords     = ['Runway ML','Kling','Pika Labs','MiniMax','Luma AI','Veo','Sora','Higgsfield'];
+    const audioKeywords   = ['Suno','Udio','MusicGen','Moises','Loudme','ACRCloud','Dolby','AudioShake','ElevenLabs'];
+    const pro264Keywords  = ['Replicate','Hugging Face','Cloudflare R2','Clawbot'];
+    const releaseKeywords = ['fal.ai','DistroKid','UnitedMasters','SubmitHub'];
+    const integKeywords   = ['Microsoft','GitHub OAuth','Linear','Jira','Asana','Oura','Whoop','Plaid','Beehiiv','YouTube Embed','Spotify Embed'];
 
     (d.credentials||[]).forEach(c=>{
       if (c.required==='core') { coreItems.push(c); return; }
+      if (releaseKeywords.some(k=>c.service.includes(k))) { releaseItems.push(c); return; }
       if (c.required==='recommended') { recItems.push(c); return; }
       if (imgKeywords.some(k=>c.service.includes(k))) { imgItems.push(c); return; }
       if (vidKeywords.some(k=>c.service.includes(k))) { vidItems.push(c); return; }
@@ -2840,19 +2858,33 @@ function openCredsModal() {
       </tr>`).join('')}
     `;
 
+    // Summary counts for header
+    const totalServices = (d.credentials||[]).length;
+    const liveCount = (d.credentials||[]).filter(c => isLive(c.envKey)).length;
+    const missingCore = coreItems.filter(c => isAllMissing(c.envKey)).length;
+
     openModal(`
-      <h2 style="margin-bottom:6px">🔑 API Integration Status</h2>
-      <p style="color:var(--text-s);font-size:12px;margin-bottom:10px">Keys stored as Cloudflare Secrets — never exposed to users.<br>
-      <strong style="color:#10b981">● LIVE</strong> = configured &amp; active &nbsp;·&nbsp; <strong style="color:#f59e0b">⚠ MISSING</strong> = needs to be added &nbsp;·&nbsp; <strong style="color:#a78bfa">— —</strong> = not yet mapped</p>
+      <h2 style="margin-bottom:4px">🔑 API Integration Status</h2>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <span style="background:rgba(16,185,129,.12);color:#10b981;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700">● ${liveCount} live</span>
+        ${missingCore > 0 ? `<span style="background:rgba(239,68,68,.12);color:#f87171;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700">⚠ ${missingCore} core missing</span>` : ''}
+        <span style="background:rgba(255,255,255,.05);color:rgba(255,255,255,.4);border-radius:6px;padding:3px 9px;font-size:11px">${totalServices} total services</span>
+      </div>
+      <p style="color:var(--text-s);font-size:11px;margin-bottom:12px;line-height:1.5">
+        Keys stored as <strong>Cloudflare Secrets</strong> — never exposed to users or frontend code.<br>
+        Add keys via: <code style="background:rgba(255,255,255,.06);padding:1px 5px;border-radius:3px;font-size:10px">wrangler pages secret put KEY_NAME --project-name flowstate</code><br>
+        <strong style="color:#10b981">● LIVE</strong> = active &nbsp;·&nbsp; <strong style="color:#f59e0b">⚠ MISSING</strong> = needs key &nbsp;·&nbsp; <strong style="color:#a78bfa">— —</strong> = key check not mapped
+      </p>
       <div style="overflow-x:auto">
       <table class="cred-tbl">
         <thead><tr><th>Service</th><th>What It Powers</th><th>Env Variable(s)</th><th>Status</th><th>Get Key</th></tr></thead>
         <tbody>
-          ${renderSection('🟢 Core — Required', coreItems, '#10b981')}
+          ${renderSection('🟢 Core — Required for basic functionality', coreItems, '#10b981')}
           ${renderSection('🟡 Recommended — AI Chat Models', recItems, '#f59e0b')}
+          ${renderSection('🚀 Claw Release Wizard — Post-Release Automation', releaseItems, '#a855f7')}
           ${renderSection('🖼️ Image Generation Models', imgItems, '#a78bfa')}
           ${renderSection('🎬 Video Generation Models', vidItems, '#60a5fa')}
-          ${renderSection('🎵 FlowState Audio — Music &amp; Voice', audioItems, '#f472b6')}
+          ${renderSection('🎵 FlowState Audio — Music &amp; Voice AI', audioItems, '#f472b6')}
           ${renderSection('⚡ 264 Pro Video Editor', pro264Items, '#fb923c')}
           ${renderSection('🔗 Integrations — Productivity &amp; Team', integItems, '#6b7280')}
           ${otherItems.length ? renderSection('Other', otherItems, '#6b7280') : ''}
