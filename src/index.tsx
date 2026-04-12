@@ -5288,18 +5288,16 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .btn-send{width:42px;height:42px;border-radius:11px;background:var(--grad);border:none;color:#fff;font-size:15px;cursor:pointer;transition:.2s;flex-shrink:0;display:flex;align-items:center;justify-content:center}
 .chat-suggest-chip{background:var(--bg-panel);border:1px solid var(--border);color:var(--text-m);padding:7px 13px;border-radius:20px;font-size:12.5px;cursor:pointer;transition:.2s;white-space:nowrap}
 .chat-suggest-chip:hover{border-color:var(--accent);color:var(--accent);background:rgba(168,85,247,.07)}
-.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:14px}
-.cal-hd{text-align:center;font-size:10px;font-weight:700;color:#aaa;padding:5px 3px;text-transform:uppercase;letter-spacing:1px}
-.cal-day{min-height:64px;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;padding:6px 7px 4px;border-radius:9px;font-size:12px;font-weight:600;cursor:pointer;transition:.2s;position:relative;border:1px solid transparent;overflow:hidden}
-.cal-day:hover{background:rgba(168,85,247,.1);border-color:var(--border)}
-.cal-day.today{background:transparent;border-color:rgba(168,85,247,.4)}
-.cal-day.today .cal-day-num{background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
-.cal-day.has-ev .cal-day-dot{display:block}
-.cal-day-num{font-size:12px;font-weight:600;color:var(--text-p);line-height:1;margin-bottom:3px}
-.cal-day-dot{display:none;width:5px;height:5px;border-radius:50%;background:var(--accent);margin-top:2px}
-.cal-day-events{display:flex;flex-direction:column;gap:2px;width:100%;margin-top:2px}
-.cal-day-ev-chip{font-size:10px;font-weight:500;color:#fff;padding:1px 4px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-.cal-day.other{opacity:.2;cursor:default}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:14px}
+.cal-hd{text-align:center;font-size:10px;font-weight:700;color:#aaa;padding:6px 3px;text-transform:uppercase;letter-spacing:1px}
+.cal-day{min-height:80px;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;padding:6px 6px 4px;border-radius:8px;cursor:pointer;transition:.2s;position:relative;border:1px solid rgba(255,255,255,.05);overflow:hidden}
+.cal-day:hover{background:rgba(168,85,247,.08);border-color:rgba(168,85,247,.3)}
+.cal-day.today{background:transparent;border-color:rgba(168,85,247,.5)}
+.cal-day.today .cal-day-num{background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+.cal-day-num{font-size:12px;font-weight:600;color:#e0e0e0;line-height:1;margin-bottom:4px;flex-shrink:0}
+.cal-day-events{display:flex;flex-direction:column;gap:2px;width:100%}
+.cal-day-ev-chip{font-size:9px;font-weight:600;color:#fff;padding:2px 4px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;line-height:1.3}
+.cal-day.other{opacity:.2;cursor:default;pointer-events:none}
 .ev-list{display:flex;flex-direction:column;gap:7px;margin-top:8px}
 .ev-item{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--bg-panel);border:1px solid var(--border);border-radius:11px;cursor:pointer;transition:.2s}
 .ev-item:hover{border-color:var(--border-h)}
@@ -5548,7 +5546,7 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .login-feat{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-s)}
 .login-feat i{color:var(--accent);width:14px}
 .login-legal{font-size:11px;color:var(--text-m);margin-top:22px;line-height:1.5}
-.sec-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.sec-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;position:sticky;top:0;z-index:10;background:var(--bg-base);padding:4px 0 8px}
 .sec-title{font-size:14px;font-weight:800}
 .btn-sm{padding:5px 12px;border-radius:7px;font-size:12px;font-weight:700;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;transition:.2s}
 .btn-sm:hover{border-color:var(--border-h);color:var(--text-p)}

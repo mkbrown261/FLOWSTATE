@@ -1494,9 +1494,8 @@ function renderCalGrid() {
       return `<div class="cal-day-ev-chip" style="background:${safeColor};opacity:0.85;border-left:2px solid ${safeColor}">${label}</div>`;
     }).join('');
     const moreHtml = dayEvs.length > 3 ? `<div style="font-size:9px;color:#aaa;margin-top:1px">+${dayEvs.length-3} more</div>` : '';
-    html += `<div class="cal-day ${isToday?'today':''} ${hasEv?'has-ev':''}" onclick="clickCalDay('${dateStr}')">
+    html += `<div class="cal-day ${isToday?'today':''}" onclick="clickCalDay('${dateStr}')">
       <span class="cal-day-num">${d}</span>
-      <div class="cal-day-dot"></div>
       <div class="cal-day-events">${chipsHtml}${moreHtml}</div>
     </div>`;
   }
