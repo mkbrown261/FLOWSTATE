@@ -91,6 +91,24 @@ function encodeSession(data: object): string { return btoa(JSON.stringify(data))
 function decodeSession(token: string): any { try { return JSON.parse(atob(token)) } catch { return null } }
 
 // ─── Google OAuth ─────────────────────────────────────────────────────────────
+// GET /api/auth/calendar-reconnect — force Google re-consent to get a fresh refresh_token
+// Use this when the user is signed in but calendar shows no data (lost refresh_token)
+app.get('/api/auth/calendar-reconnect', (c) => {
+  const baseUrl = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
+  const intent  = declareGoogleOAuth(baseUrl)
+  setCookie(c, 'oauth_state', intent.stateParam, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' })
+  const params = new URLSearchParams({
+    client_id:     c.env?.GOOGLE_CLIENT_ID || '',
+    redirect_uri:  intent.redirectPath,
+    response_type: 'code',
+    scope:         intent.scopes.join(' '),
+    state:         intent.stateParam,
+    access_type:   'offline',
+    prompt:        'consent',   // Force consent screen so Google issues a new refresh_token
+  })
+  return c.redirect('https://accounts.google.com/o/oauth2/v2/auth?' + params)
+})
+
 app.get('/api/auth/google', async (c) => {
   // If already logged in AND no app-specific flow, redirect straight to app
   const existingSession = decodeSession(getCookie(c, 'fs_session') || '')
@@ -117,7 +135,7 @@ app.get('/api/auth/google', async (c) => {
     scope: intent.scopes.join(' '),
     state: intent.stateParam,
     access_type: 'offline',
-    prompt: 'select_account',
+    prompt: 'consent',            // Must be 'consent' to guarantee refresh_token on every auth
   })
   return c.redirect('https://accounts.google.com/o/oauth2/v2/auth?' + params)
 })
@@ -289,6 +307,18 @@ app.get('/api/onboarding/status', async (c) => {
 })
 
 // ─── Google Calendar ──────────────────────────────────────────────────────────
+// GET /api/auth/calendar-status — quick token validity check (no Google API call)
+app.get('/api/auth/calendar-status', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ connected: false, reason: 'not_signed_in' })
+  const hasToken = !!session.access_token
+  const expired  = session.expires_at ? Date.now() > session.expires_at - 60000 : false
+  const canRefresh = !!session.refresh_token
+  if (!hasToken)    return c.json({ connected: false, reason: 'no_token' })
+  if (expired && !canRefresh) return c.json({ connected: false, reason: 'token_expired_no_refresh', reconnectUrl: '/api/auth/calendar-reconnect' })
+  return c.json({ connected: true, expired, canRefresh })
+})
+
 app.get('/api/calendar/events', async (c) => {
   const token = await getValidAccessToken(c)
   if (!token) return c.json({ error: 'not_authenticated', events: [] }, 401)
@@ -296,7 +326,12 @@ app.get('/api/calendar/events', async (c) => {
     const now = new Date()
     const end = new Date(now.getTime() + 7*24*60*60*1000)
     const params = new URLSearchParams({ timeMin: now.toISOString(), timeMax: end.toISOString(), maxResults: '20', singleEvents: 'true', orderBy: 'startTime' })
-    const data: any = await (await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events?' + params, { headers: { Authorization: 'Bearer ' + token } })).json()
+    const calRes  = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events?' + params, { headers: { Authorization: 'Bearer ' + token } })
+    const data: any = await calRes.json()
+    // Google returns 401/403 with an error object when the token lacks calendar scope or was revoked
+    if (data.error?.code === 401 || data.error?.code === 403) {
+      return c.json({ error: 'not_authenticated', events: [] }, 401)
+    }
     const events = (data.items || []).map((e: any) => ({ id: e.id, summary: e.summary || '(No title)', start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date, allDay: !e.start?.dateTime, color: e.colorId ? 'hsl(' + (parseInt(e.colorId) * 37) + ', 60%, 60%)' : 'var(--accent-primary)' }))
     return c.json({ events })
   } catch (err: any) { return c.json({ error: err.message, events: [] }, 500) }
@@ -4986,7 +5021,7 @@ app.get('/', (c) => {
   const slackSes  = decodeSession(getCookie(c, 'fs_slack')   || '')
   const onboarding = decodeSession(getCookie(c, 'fs_onboarded') || '')
 
-  const userJson     = session     ? JSON.stringify({ name: session.name, email: session.email, picture: session.picture, role: session.role || 'member', provider: session.provider }) : 'null'
+  const userJson     = session     ? JSON.stringify({ name: session.name, email: session.email, picture: session.picture, role: session.role || 'member', tier: session.tier || 'free', provider: session.provider }) : 'null'
   const notionJson   = notionSes   ? JSON.stringify({ workspace: notionSes.workspace_name }) : 'null'
   const slackJson    = slackSes    ? JSON.stringify({ team: slackSes.team_name }) : 'null'
   // Tie onboarding to the signed-in user's email so different users

@@ -294,7 +294,7 @@ function renderObStep() {
       <div class="ob-title">Connect your workspace</div>
       <div class="ob-sub">These integrations unlock the full FlowState experience. Connect now or later.</div>
       <div class="integ-list">
-        <div class="integ-row"><div class="integ-left"><span class="integ-icon">📅</span><div><div class="integ-name">Google Calendar</div><div class="integ-desc">${FS_USER ? 'Signed in as ' + escHtml(FS_USER.email||FS_USER.name||'') : 'Sync events, block focus time'}</div></div></div><button class="btn-connect ${FS_USER?'connected':''}" onclick="${FS_USER ? 'notify(\'Calendar synced via Google login\',\'success\')' : 'window.location.href=\'/api/auth/google\''}">${FS_USER?'✓ Synced':'Connect Google'}</button></div>
+        <div class="integ-row"><div class="integ-left"><span class="integ-icon">📅</span><div><div class="integ-name">Google Calendar</div><div class="integ-desc">${FS_USER ? 'Signed in as ' + escHtml(FS_USER.email||FS_USER.name||'') + ' · Click to re-sync if events are missing' : 'Sync events, block focus time'}</div></div></div><button class="btn-connect ${FS_USER?'connected':''}" onclick="window.location.href='${FS_USER ? '/api/auth/calendar-reconnect' : '/api/auth/google'}'">${FS_USER?'↻ Re-sync':'Connect Google'}</button></div>
         <div class="integ-row"><div class="integ-left"><span class="integ-icon">📝</span><div><div class="integ-name">Notion</div><div class="integ-desc">Sync Kanban boards & tasks</div></div></div><button class="btn-connect ${FS_NOTION?'connected':''}" onclick="connectNotion()">${FS_NOTION?'✓ Connected':'Connect'}</button></div>
         <div class="integ-row"><div class="integ-left"><span class="integ-icon">💬</span><div><div class="integ-name">Slack</div><div class="integ-desc">Team notifications & standups</div></div></div><button class="btn-connect ${FS_SLACK?'connected':''}" onclick="connectSlack()">${FS_SLACK?'✓ Connected':'Connect'}</button></div>
       </div>
@@ -1491,15 +1491,60 @@ function loadCalEvents() {
     return;
   }
   document.getElementById('cal-auth-banner').style.display = 'none';
-  fetch('/api/calendar/events').then(r=>r.json()).then(d=>{
-    if (d.events) {
-      state.cal.events = d.events;
-      renderCalGrid();
-      renderEvents(d.events);
-    } else if (d.error === 'not_authenticated') {
-      document.getElementById('cal-auth-banner').style.display = 'block';
-    }
-  }).catch(()=>{ renderCalGrid(); });
+  fetch('/api/calendar/events', { credentials: 'include' })
+    .then(r => r.json())
+    .then(d => {
+      // Check for auth error FIRST — API always returns events:[] even on 401
+      if (d.error === 'not_authenticated') {
+        // Token expired and no refresh_token — show reconnect prompt
+        _showCalReconnectBanner();
+        renderCalGrid();
+        return;
+      }
+      if (d.error) {
+        // Some other API error — log and render empty grid
+        console.warn('[FlowState] Calendar error:', d.error);
+        renderCalGrid();
+        return;
+      }
+      // Success — d.events is a real array (may be empty if user has no events)
+      if (Array.isArray(d.events)) {
+        state.cal.events = d.events;
+        renderCalGrid();
+        renderEvents(d.events);
+        // Hide reconnect banner if previously shown
+        const rb = document.getElementById('cal-reconnect-banner');
+        if (rb) rb.style.display = 'none';
+      }
+    })
+    .catch(() => { renderCalGrid(); });
+}
+
+function _showCalReconnectBanner() {
+  // Create once, reuse
+  let banner = document.getElementById('cal-reconnect-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'cal-reconnect-banner';
+    banner.style.cssText = 'margin:10px 0;padding:10px 14px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.35);border-radius:9px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px';
+    banner.innerHTML = `
+      <div>
+        <strong style="color:#f59e0b">📅 Calendar needs reconnecting</strong>
+        <div style="color:rgba(255,255,255,.55);font-size:11px;margin-top:2px">
+          Your Google session expired. Re-connect to reload your events — takes 10 seconds.
+        </div>
+      </div>
+      <button onclick="window.location.href='/api/auth/calendar-reconnect'"
+        style="padding:6px 14px;border-radius:7px;border:none;background:#f59e0b;color:#000;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">
+        Reconnect →
+      </button>
+    `;
+    // Insert before the event list
+    const evList = document.getElementById('ev-list');
+    if (evList) evList.parentNode.insertBefore(banner, evList);
+    else document.querySelector('.cal-wrap')?.prepend(banner);
+  }
+  banner.style.display = 'flex';
 }
 
 function renderEvents(events) {
