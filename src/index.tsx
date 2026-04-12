@@ -7028,6 +7028,86 @@ em{color:var(--accent);font-style:italic}
               </div>
             </div>
 
+            <!-- TXT → PDF -->
+            <div class="file-tool-card">
+              <div class="file-tool-icon" style="background:rgba(245,158,11,.15)"><i class="fas fa-file-alt" style="color:var(--warn)"></i></div>
+              <div class="file-tool-name">TXT &rarr; PDF</div>
+              <div class="file-tool-desc">Convert any plain text file to a clean PDF document</div>
+              <label class="file-tool-drop" for="ft-txt-input">
+                <input type="file" id="ft-txt-input" accept=".txt,.md,.log,.csv,.json" style="display:none" onchange="ftTxtPreview(this)">
+                <i class="fas fa-cloud-upload-alt" style="font-size:20px;color:var(--warn);margin-bottom:6px"></i>
+                <span>Drop .txt / .md file</span>
+              </label>
+              <div id="ft-txt-opts" style="display:none;margin-top:8px">
+                <pre id="ft-txt-preview" style="display:none;font-size:10px;color:var(--text-s);background:var(--bg-card);border-radius:6px;padding:8px;max-height:70px;overflow:hidden;white-space:pre-wrap;word-break:break-all;margin-bottom:8px"></pre>
+                <button class="btn-gen" style="padding:8px 16px;font-size:12px" onclick="ftDoTxtToPdf()"><i class="fas fa-file-pdf"></i> Convert to PDF</button>
+              </div>
+              <div id="ft-txt-status" class="file-tool-status"></div>
+              <div id="ft-txt-result" class="file-tool-results"></div>
+            </div>
+
+            <!-- CSV → JSON -->
+            <div class="file-tool-card">
+              <div class="file-tool-icon" style="background:rgba(16,185,129,.15)"><i class="fas fa-table" style="color:#10b981"></i></div>
+              <div class="file-tool-name">CSV &rarr; JSON</div>
+              <div class="file-tool-desc">Convert CSV spreadsheets to clean JSON arrays</div>
+              <label class="file-tool-drop" for="ft-csv-input">
+                <input type="file" id="ft-csv-input" accept=".csv,.tsv" style="display:none" onchange="ftCsvPreview(this)">
+                <i class="fas fa-cloud-upload-alt" style="font-size:20px;color:#10b981;margin-bottom:6px"></i>
+                <span>Drop .csv / .tsv file</span>
+              </label>
+              <div id="ft-csv-opts" style="display:none;margin-top:8px">
+                <button class="btn-gen" style="padding:8px 16px;font-size:12px;background:linear-gradient(135deg,#10b981,#06b6d4)" onclick="ftDoCsvToJson()"><i class="fas fa-code"></i> Convert to JSON</button>
+              </div>
+              <div id="ft-csv-status" class="file-tool-status"></div>
+              <pre id="ft-csv-preview" style="display:none;font-size:10px;color:var(--text-s);background:var(--bg-card);border-radius:6px;padding:8px;max-height:80px;overflow:hidden;white-space:pre-wrap;word-break:break-all;margin-top:6px"></pre>
+              <div id="ft-csv-result" class="file-tool-results"></div>
+            </div>
+
+            <!-- SVG → PNG -->
+            <div class="file-tool-card">
+              <div class="file-tool-icon" style="background:rgba(6,182,212,.15)"><i class="fas fa-bezier-curve" style="color:var(--cyan)"></i></div>
+              <div class="file-tool-name">SVG &rarr; PNG</div>
+              <div class="file-tool-desc">Render SVG vector graphics to PNG at any scale</div>
+              <label class="file-tool-drop" for="ft-svg-input">
+                <input type="file" id="ft-svg-input" accept=".svg,image/svg+xml" style="display:none" onchange="ftSvgPreview(this)">
+                <i class="fas fa-cloud-upload-alt" style="font-size:20px;color:var(--cyan);margin-bottom:6px"></i>
+                <span>Drop .svg file</span>
+              </label>
+              <div id="ft-svg-opts" style="display:none;margin-top:8px">
+                <img id="ft-svg-preview" style="display:none;max-width:100%;max-height:80px;border-radius:6px;margin-bottom:8px;object-fit:contain">
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+                  <label style="font-size:11px;color:var(--text-s)">Scale:</label>
+                  <select id="ft-svg-scale" style="background:var(--bg-card);border:1px solid var(--border);border-radius:7px;padding:5px 8px;color:var(--text-p);font-size:12px">
+                    <option value="1">1× (original)</option>
+                    <option value="2" selected>2× (recommended)</option>
+                    <option value="3">3× (high-res)</option>
+                    <option value="4">4× (print)</option>
+                  </select>
+                </div>
+                <button class="btn-gen" style="padding:8px 16px;font-size:12px;background:linear-gradient(135deg,#06b6d4,#3b82f6)" onclick="ftDoSvgToPng()"><i class="fas fa-image"></i> Export PNG</button>
+              </div>
+              <div id="ft-svg-status" class="file-tool-status"></div>
+              <div id="ft-svg-result" class="file-tool-results"></div>
+            </div>
+
+            <!-- PPTX → PDF -->
+            <div class="file-tool-card">
+              <div class="file-tool-icon" style="background:rgba(239,68,68,.15)"><i class="fas fa-file-powerpoint" style="color:#ef4444"></i></div>
+              <div class="file-tool-name">PPTX &rarr; PDF</div>
+              <div class="file-tool-desc">Extract slides from PowerPoint files to a PDF (text + layout)</div>
+              <label class="file-tool-drop" for="ft-pptx-input">
+                <input type="file" id="ft-pptx-input" accept=".pptx,.ppt" style="display:none" onchange="ftPptxPreview(this)">
+                <i class="fas fa-cloud-upload-alt" style="font-size:20px;color:#ef4444;margin-bottom:6px"></i>
+                <span>Drop .pptx file</span>
+              </label>
+              <div id="ft-pptx-opts" style="display:none;margin-top:8px">
+                <button class="btn-gen" style="padding:8px 16px;font-size:12px" onclick="ftDoPptxToPdf()"><i class="fas fa-file-pdf"></i> Convert to PDF</button>
+              </div>
+              <div id="ft-pptx-status" class="file-tool-status"></div>
+              <div id="ft-pptx-result" class="file-tool-results"></div>
+            </div>
+
           </div><!-- /file-tool-grid -->
         </div>
       </div>
@@ -7043,6 +7123,10 @@ em{color:var(--accent);font-style:italic}
           <div class="gen-sidebar-row"><i class="fas fa-exchange-alt" style="color:#10b981"></i> Format Convert</div>
           <div class="gen-sidebar-row"><i class="fas fa-compress-alt" style="color:var(--pink)"></i> Compress</div>
           <div class="gen-sidebar-row"><i class="fas fa-code" style="color:var(--accent)"></i> Base64 Tools</div>
+          <div class="gen-sidebar-row"><i class="fas fa-file-alt" style="color:var(--warn)"></i> TXT &rarr; PDF</div>
+          <div class="gen-sidebar-row"><i class="fas fa-table" style="color:#10b981"></i> CSV &rarr; JSON</div>
+          <div class="gen-sidebar-row"><i class="fas fa-bezier-curve" style="color:var(--cyan)"></i> SVG &rarr; PNG</div>
+          <div class="gen-sidebar-row"><i class="fas fa-file-powerpoint" style="color:#ef4444"></i> PPTX &rarr; PDF</div>
         </div>
       </div>
     </div>

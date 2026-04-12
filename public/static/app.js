@@ -963,6 +963,263 @@ function ftB64Decode() {
   }
 }
 
+/* ── T7: Additional File Conversion Tools ────────────────────────────────── */
+
+/* TXT → PDF */
+let _ftTxtFile = null;
+function ftTxtPreview(input) {
+  if (!input.files || !input.files[0]) return;
+  _ftTxtFile = input.files[0];
+  const reader = new FileReader();
+  reader.onload = e => {
+    const preview = document.getElementById('ft-txt-preview');
+    if (preview) { preview.textContent = e.target.result.slice(0, 300) + (e.target.result.length > 300 ? '…' : ''); preview.style.display = 'block'; }
+    document.getElementById('ft-txt-opts').style.display = 'block';
+  };
+  reader.readAsText(_ftTxtFile);
+}
+async function ftDoTxtToPdf() {
+  if (!_ftTxtFile) return;
+  const statusEl = document.getElementById('ft-txt-status');
+  const resultEl = document.getElementById('ft-txt-result');
+  statusEl.textContent = 'Building PDF…';
+  resultEl.innerHTML = '';
+  try {
+    if (!window.jspdf) {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    const text = await _ftTxtFile.text();
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const marginX = 40, marginY = 50, lineH = 16, maxW = doc.internal.pageSize.getWidth() - marginX * 2;
+    const lines = doc.splitTextToSize(text, maxW);
+    let y = marginY;
+    for (const line of lines) {
+      if (y + lineH > doc.internal.pageSize.getHeight() - marginY) { doc.addPage(); y = marginY; }
+      doc.setFontSize(11);
+      doc.setTextColor(30, 30, 30);
+      doc.text(line, marginX, y);
+      y += lineH;
+    }
+    const blob = doc.output('blob');
+    const url = URL.createObjectURL(blob);
+    const fileName = _ftTxtFile.name.replace(/\.[^.]+$/, '') + '.pdf';
+    const link = document.createElement('a');
+    link.className = 'file-tool-dl'; link.href = url; link.download = fileName;
+    link.innerHTML = `<i class="fas fa-file-pdf"></i> ${fileName}`;
+    resultEl.appendChild(link);
+    statusEl.textContent = `✅ PDF ready (${lines.length} lines)`;
+    ftAddHistory(fileName, url, 'application/pdf');
+    genSidebarLog('filetools', `TXT → PDF (${lines.length} lines)`, 'success');
+  } catch (err) {
+    statusEl.textContent = '❌ ' + err.message;
+    genSidebarLog('filetools', 'TXT→PDF failed: ' + err.message, 'error');
+  }
+}
+
+/* CSV → JSON */
+let _ftCsvFile = null;
+function ftCsvPreview(input) {
+  if (!input.files || !input.files[0]) return;
+  _ftCsvFile = input.files[0];
+  document.getElementById('ft-csv-opts').style.display = 'block';
+  document.getElementById('ft-csv-status').textContent = `File: ${_ftCsvFile.name} (${(_ftCsvFile.size/1024).toFixed(1)} KB)`;
+}
+async function ftDoCsvToJson() {
+  if (!_ftCsvFile) return;
+  const statusEl = document.getElementById('ft-csv-status');
+  const resultEl = document.getElementById('ft-csv-result');
+  statusEl.textContent = 'Converting…';
+  resultEl.innerHTML = '';
+  try {
+    const text = await _ftCsvFile.text();
+    const lines = text.trim().split(/\r?\n/);
+    if (lines.length < 2) { statusEl.textContent = '❌ Need at least a header row and one data row'; return; }
+    const delimiter = text.includes('\t') ? '\t' : ',';
+    const parseRow = row => {
+      const result = []; let cur = '', inQ = false;
+      for (let i = 0; i < row.length; i++) {
+        const ch = row[i];
+        if (ch === '"') { inQ = !inQ; } else if (ch === delimiter && !inQ) { result.push(cur.trim()); cur = ''; } else { cur += ch; }
+      }
+      result.push(cur.trim());
+      return result;
+    };
+    const headers = parseRow(lines[0]);
+    const jsonData = lines.slice(1).filter(l => l.trim()).map(line => {
+      const vals = parseRow(line);
+      const obj = {};
+      headers.forEach((h, i) => { obj[h] = vals[i] !== undefined ? vals[i] : ''; });
+      return obj;
+    });
+    const jsonStr = JSON.stringify(jsonData, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const fileName = _ftCsvFile.name.replace(/\.[^.]+$/, '') + '.json';
+    const link = document.createElement('a');
+    link.className = 'file-tool-dl'; link.href = url; link.download = fileName;
+    link.innerHTML = `<i class="fas fa-file-code"></i> ${fileName} (${jsonData.length} rows)`;
+    resultEl.appendChild(link);
+    // Preview first 3 rows
+    const preview = document.getElementById('ft-csv-preview');
+    if (preview) {
+      preview.textContent = JSON.stringify(jsonData.slice(0, 3), null, 2) + (jsonData.length > 3 ? '\n…' : '');
+      preview.style.display = 'block';
+    }
+    statusEl.textContent = `✅ ${jsonData.length} rows converted`;
+    ftAddHistory(fileName, url, 'application/json');
+    genSidebarLog('filetools', `CSV → JSON (${jsonData.length} rows)`, 'success');
+  } catch (err) {
+    statusEl.textContent = '❌ ' + err.message;
+    genSidebarLog('filetools', 'CSV→JSON failed: ' + err.message, 'error');
+  }
+}
+
+/* SVG → PNG */
+let _ftSvgFile = null;
+function ftSvgPreview(input) {
+  if (!input.files || !input.files[0]) return;
+  _ftSvgFile = input.files[0];
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = document.getElementById('ft-svg-preview');
+    if (img) { img.src = e.target.result; img.style.display = 'block'; }
+    document.getElementById('ft-svg-opts').style.display = 'block';
+  };
+  reader.readAsDataURL(_ftSvgFile);
+}
+function ftDoSvgToPng() {
+  if (!_ftSvgFile) return;
+  const statusEl = document.getElementById('ft-svg-status');
+  const resultEl = document.getElementById('ft-svg-result');
+  const scale = parseInt(document.getElementById('ft-svg-scale')?.value || '2') || 2;
+  statusEl.textContent = 'Rendering…';
+  resultEl.innerHTML = '';
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      const w = (img.naturalWidth || 400) * scale;
+      const h = (img.naturalHeight || 400) * scale;
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/png');
+      const fileName = _ftSvgFile.name.replace(/\.svg$/i, '') + `@${scale}x.png`;
+      const link = document.createElement('a');
+      link.className = 'file-tool-dl'; link.href = dataUrl; link.download = fileName;
+      link.innerHTML = `<i class="fas fa-download"></i> ${fileName}`;
+      resultEl.appendChild(link);
+      statusEl.textContent = `✅ PNG ready (${w}×${h}px)`;
+      ftAddHistory(fileName, dataUrl, 'image/png');
+      genSidebarLog('filetools', `SVG → PNG ${w}×${h}`, 'success');
+    };
+    img.onerror = () => { statusEl.textContent = '❌ Could not render SVG — check file is valid'; };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(_ftSvgFile);
+}
+
+/* PPTX → PDF (client-side via PptxGenJS for text extraction, then jsPDF) */
+let _ftPptxFile = null;
+function ftPptxPreview(input) {
+  if (!input.files || !input.files[0]) return;
+  _ftPptxFile = input.files[0];
+  document.getElementById('ft-pptx-opts').style.display = 'block';
+  document.getElementById('ft-pptx-status').textContent = `File: ${_ftPptxFile.name} (${(_ftPptxFile.size/1024).toFixed(1)} KB)`;
+}
+async function ftDoPptxToPdf() {
+  if (!_ftPptxFile) return;
+  const statusEl = document.getElementById('ft-pptx-status');
+  const resultEl = document.getElementById('ft-pptx-result');
+  statusEl.textContent = 'Extracting slides…';
+  resultEl.innerHTML = '';
+  try {
+    // Load JSZip + pptx parsing libraries
+    if (!window.JSZip) {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    if (!window.jspdf) {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    const arrayBuf = await _ftPptxFile.arrayBuffer();
+    const zip = await window.JSZip.loadAsync(arrayBuf);
+    // Get slide XML files
+    const slideFiles = Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort();
+    if (!slideFiles.length) { statusEl.textContent = '❌ No slides found — ensure this is a valid .pptx file'; return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: [792, 612] });
+    const W = 792, H = 612, mx = 40, my = 50;
+    let firstPage = true;
+    for (let si = 0; si < slideFiles.length; si++) {
+      const xmlText = await zip.files[slideFiles[si]].async('string');
+      // Extract all text nodes <a:t>...</a:t>
+      const textMatches = [...xmlText.matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g)].map(m => m[1].replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'")).filter(t => t.trim());
+      if (!firstPage) doc.addPage();
+      firstPage = false;
+      // Slide number header
+      doc.setFillColor(20, 20, 35);
+      doc.rect(0, 0, W, H, 'F');
+      doc.setFontSize(9);
+      doc.setTextColor(100, 100, 120);
+      doc.text(`Slide ${si + 1} of ${slideFiles.length}`, W - mx, my - 20, { align: 'right' });
+      // Render text chunks
+      let y = my;
+      let isFirst = true;
+      for (const chunk of textMatches) {
+        const trimmed = chunk.trim();
+        if (!trimmed) continue;
+        const fontSize = isFirst ? 22 : 13;
+        const color = isFirst ? [240, 230, 255] : [200, 200, 220];
+        doc.setFontSize(fontSize);
+        doc.setTextColor(...color);
+        const wrapped = doc.splitTextToSize(trimmed, W - mx * 2);
+        for (const line of wrapped) {
+          if (y > H - my) break;
+          doc.text(line, mx, y);
+          y += fontSize * 1.4;
+        }
+        y += isFirst ? 14 : 6;
+        isFirst = false;
+      }
+      if (!textMatches.length) {
+        doc.setFontSize(13);
+        doc.setTextColor(100, 100, 120);
+        doc.text('[Slide contains images or shapes only]', mx, H / 2);
+      }
+      statusEl.textContent = `Processing slide ${si + 1}/${slideFiles.length}…`;
+    }
+    const blob = doc.output('blob');
+    const url = URL.createObjectURL(blob);
+    const fileName = _ftPptxFile.name.replace(/\.pptx?$/i, '') + '.pdf';
+    const link = document.createElement('a');
+    link.className = 'file-tool-dl'; link.href = url; link.download = fileName;
+    link.innerHTML = `<i class="fas fa-file-pdf"></i> ${fileName} (${slideFiles.length} slides)`;
+    resultEl.appendChild(link);
+    statusEl.textContent = `✅ PDF ready — ${slideFiles.length} slides extracted`;
+    ftAddHistory(fileName, url, 'application/pdf');
+    genSidebarLog('filetools', `PPTX → PDF (${slideFiles.length} slides)`, 'success');
+  } catch (err) {
+    statusEl.textContent = '❌ ' + err.message;
+    genSidebarLog('filetools', 'PPTX→PDF failed: ' + err.message, 'error');
+  }
+}
+
 function startClock() {
   function tick() {
     const now = new Date();
@@ -1228,9 +1485,24 @@ function startPomodoroMusic() {
   if (!saved) return;
   try {
     const cfg = JSON.parse(saved);
-    if (!cfg.url || !cfg.enabled) return;
-    if (cfg.type === 'youtube') startYouTubeMusic(cfg.videoId);
-    else if (cfg.type === 'spotify') startSpotifyMusic(cfg.uri);
+    if (!cfg.enabled) return;
+    if (cfg.type === 'youtube') {
+      // Use playlist if available, otherwise fall back to saved single URL
+      const playlist = JSON.parse(localStorage.getItem('yt_playlist') || '[]');
+      if (playlist.length > 0) {
+        const shuffle = localStorage.getItem('yt_shuffle') === '1';
+        const startIdx = shuffle ? Math.floor(Math.random() * playlist.length) : 0;
+        _ytPlaylistIdx = startIdx;
+        const item = playlist[startIdx];
+        if (item.listId) startYouTubePlaylist(item.listId, item.videoId);
+        else if (item.videoId) startYouTubeMusic(item.videoId);
+        else if (item.url) startYouTubeMusic(''); // fallback
+      } else if (cfg.videoId) {
+        startYouTubeMusic(cfg.videoId);
+      }
+    } else if (cfg.type === 'spotify') {
+      startSpotifyMusic(cfg.uri);
+    }
   } catch(e){}
 }
 
@@ -1261,35 +1533,144 @@ function startSpotifyMusic(uri) {
   pomodoroMusicEl.src = `https://open.spotify.com/embed/${embedUri}?autoplay=1`;
 }
 
+// ── T3: YouTube Playlist Manager ─────────────────────────────────────────────
+let _ytPlaylist = JSON.parse(localStorage.getItem('yt_playlist') || '[]');
+let _ytPlaylistIdx = 0;
+let _ytShuffleMode = localStorage.getItem('yt_shuffle') === '1';
+let _ytDragSrcIdx = null;
+
 function openMusicModal() {
   const saved = JSON.parse(localStorage.getItem('pomodoro_music') || '{"enabled":false,"type":"youtube","url":"","videoId":"","uri":""}');
+  _ytPlaylist = JSON.parse(localStorage.getItem('yt_playlist') || '[]');
+  _ytShuffleMode = localStorage.getItem('yt_shuffle') === '1';
   openModal(`
     <h2>🎵 Pomodoro Music</h2>
-    <p style="color:var(--text-s);font-size:13px;margin:6px 0 16px">Automatically start music when a focus session begins. Uses YouTube or Spotify embeds — no API key required.</p>
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button class="btn-sm ${saved.type==='youtube'?'btn-primary':''}" id="mus-yt-btn" onclick="selectMusicType('youtube')"><i class="fab fa-youtube" style="color:#ef4444"></i> YouTube</button>
+    <p style="color:var(--text-s);font-size:13px;margin:6px 0 14px">Auto-start music when a focus session begins.</p>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <button class="btn-sm ${saved.type!=='spotify'?'btn-primary':''}" id="mus-yt-btn" onclick="selectMusicType('youtube')"><i class="fab fa-youtube" style="color:#ef4444"></i> YouTube Playlist</button>
       <button class="btn-sm ${saved.type==='spotify'?'btn-primary':''}" id="mus-sp-btn" onclick="selectMusicType('spotify')"><i class="fab fa-spotify" style="color:#1db954"></i> Spotify</button>
     </div>
-    <div id="mus-yt-section" style="display:${saved.type==='youtube'?'block':'none'}">
-      <label style="font-size:12px;color:var(--text-m)">YouTube Video/Playlist URL</label>
-      <input class="fs-in" id="mus-yt-url" style="margin:6px 0 10px" placeholder="https://youtube.com/watch?v=..." value="${escHtml(saved.type==='youtube'?saved.url:'')}">
-      <div style="font-size:11px;color:var(--text-m)">Tip: Use lo-fi or focus music playlists for best results. e.g. "lofi hip hop radio" on YouTube.</div>
+    <div id="mus-yt-section" style="display:${saved.type!=='spotify'?'block':'none'}">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <label style="font-size:12px;font-weight:700;color:var(--text-m)">YouTube Links (${_ytPlaylist.length})</label>
+        <button class="btn-sm ${_ytShuffleMode?'btn-primary':''}" id="yt-shuffle-btn" onclick="_ytToggleShuffle()" style="font-size:11px;padding:4px 9px"><i class="fas fa-random"></i> Shuffle</button>
+      </div>
+      <div id="yt-playlist-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;max-height:190px;overflow-y:auto">
+        ${_renderYtPlaylistItems()}
+      </div>
+      <div style="display:flex;gap:6px">
+        <input class="fs-in" id="mus-yt-add-url" placeholder="Paste YouTube URL and press Add" style="flex:1;font-size:12px" onkeydown="if(event.key==='Enter')_ytAddUrl()">
+        <button class="btn-primary" style="padding:7px 12px;font-size:12px;white-space:nowrap" onclick="_ytAddUrl()"><i class="fas fa-plus"></i> Add</button>
+      </div>
+      <div style="font-size:10px;color:var(--text-s);margin-top:6px">Supports video links, playlist links, youtu.be short links. Drag to reorder. Plays sequentially or in shuffle order.</div>
     </div>
     <div id="mus-sp-section" style="display:${saved.type==='spotify'?'block':'none'}">
       <label style="font-size:12px;color:var(--text-m)">Spotify URI (spotify:playlist:... or spotify:album:...)</label>
       <input class="fs-in" id="mus-sp-uri" style="margin:6px 0 10px" placeholder="spotify:playlist:37i9dQZF1DX8NTLI2TtZa6" value="${escHtml(saved.type==='spotify'?saved.uri:'')}">
-      <div style="font-size:11px;color:var(--text-m)">Right-click a playlist → Share → Copy Spotify URI. Note: Spotify requires Premium account for autoplay.</div>
+      <div style="font-size:11px;color:var(--text-m)">Right-click playlist → Share → Copy Spotify URI. Requires Premium.</div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;margin:14px 0">
       <input type="checkbox" id="mus-enabled" ${saved.enabled?'checked':''}>
-      <label for="mus-enabled" style="font-size:13px;font-weight:600">Auto-start music when focus session begins</label>
+      <label for="mus-enabled" style="font-size:13px;font-weight:600">Auto-start when focus session begins</label>
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn-primary" onclick="saveMusicSettings()" style="flex:1">Save</button>
-      <button class="btn-sm" onclick="clearMusicSettings()">Clear</button>
+      <button class="btn-sm" onclick="clearMusicSettings()">Clear All</button>
     </div>
-    <div style="margin-top:10px;font-size:11px;color:var(--text-m)">⚖️ Using YouTube/Spotify embeds complies with their Terms of Service for personal use. Content is streamed from their servers.</div>
-  `);
+    <div style="margin-top:10px;font-size:10px;color:var(--text-s)">⚖️ YouTube/Spotify embeds comply with their ToS for personal use.</div>
+  `, true);
+}
+
+function _renderYtPlaylistItems() {
+  if (!_ytPlaylist.length) return '<div style="text-align:center;padding:14px;color:var(--text-s);font-size:12px">No links yet — add your first YouTube link above</div>';
+  return _ytPlaylist.map((item, i) => `
+    <div draggable="true" ondragstart="_ytDragStart(${i})" ondragover="event.preventDefault()" ondrop="_ytDrop(${i})"
+      style="display:flex;align-items:center;gap:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:8px 10px;cursor:grab">
+      <i class="fas fa-grip-vertical" style="color:var(--text-s);font-size:11px"></i>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:600;color:var(--text-p);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(item.title||'YouTube Video')}</div>
+        <div style="font-size:10px;color:var(--text-s);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(item.url)}</div>
+      </div>
+      <button onclick="_ytPlayNow(${i})" style="background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:4px 8px;color:#ef4444;cursor:pointer;font-size:11px" title="Play now"><i class="fas fa-play"></i></button>
+      <button onclick="_ytRemove(${i})" style="background:none;border:none;color:var(--text-s);cursor:pointer;font-size:12px;padding:2px 5px" title="Remove"><i class="fas fa-times"></i></button>
+    </div>`).join('');
+}
+
+function _ytAddUrl() {
+  const input = document.getElementById('mus-yt-add-url');
+  const url = input?.value?.trim();
+  if (!url) return;
+  const mV = url.match(/[?&]v=([^&]+)/)||url.match(/youtu\.be\/([^?]+)/)||url.match(/embed\/([^?]+)/);
+  const mL = url.match(/[?&]list=([^&]+)/);
+  const videoId = mV ? mV[1] : '';
+  const entry = { url, videoId, title: 'Loading…', listId: mL?mL[1]:'' };
+  _ytPlaylist.push(entry);
+  localStorage.setItem('yt_playlist', JSON.stringify(_ytPlaylist));
+  if (input) input.value = '';
+  _refreshYtList();
+  fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`)
+    .then(r=>r.json()).then(d=>{
+      const idx = _ytPlaylist.findIndex(x=>x.url===url);
+      if (idx>=0) { _ytPlaylist[idx].title = d.title||'YouTube Video'; localStorage.setItem('yt_playlist',JSON.stringify(_ytPlaylist)); _refreshYtList(); }
+    }).catch(()=>{ const idx=_ytPlaylist.findIndex(x=>x.url===url); if(idx>=0){_ytPlaylist[idx].title='YouTube Video'; localStorage.setItem('yt_playlist',JSON.stringify(_ytPlaylist)); _refreshYtList();} });
+}
+
+function _refreshYtList() {
+  const list = document.getElementById('yt-playlist-list');
+  if (list) list.innerHTML = _renderYtPlaylistItems();
+  const countLabel = document.querySelector('#mus-yt-section label');
+  if (countLabel) countLabel.textContent = `YouTube Links (${_ytPlaylist.length})`;
+}
+
+function _ytRemove(idx) {
+  _ytPlaylist.splice(idx, 1);
+  localStorage.setItem('yt_playlist', JSON.stringify(_ytPlaylist));
+  _refreshYtList();
+}
+
+function _ytPlayNow(idx) {
+  const item = _ytPlaylist[idx];
+  if (!item) return;
+  _ytPlaylistIdx = idx;
+  if (item.listId) startYouTubePlaylist(item.listId, item.videoId);
+  else if (item.videoId) startYouTubeMusic(item.videoId);
+  notify(`▶ Playing: ${item.title||'YouTube'}`, 'success');
+}
+
+function _ytToggleShuffle() {
+  _ytShuffleMode = !_ytShuffleMode;
+  localStorage.setItem('yt_shuffle', _ytShuffleMode?'1':'0');
+  const btn = document.getElementById('yt-shuffle-btn');
+  if (btn) btn.className = 'btn-sm ' + (_ytShuffleMode?'btn-primary':'');
+  notify(_ytShuffleMode?'🔀 Shuffle on':'▶ Sequential play', 'info');
+}
+
+function _ytDragStart(idx) { _ytDragSrcIdx = idx; }
+function _ytDrop(targetIdx) {
+  if (_ytDragSrcIdx === null || _ytDragSrcIdx === targetIdx) return;
+  const moved = _ytPlaylist.splice(_ytDragSrcIdx, 1)[0];
+  _ytPlaylist.splice(targetIdx, 0, moved);
+  _ytDragSrcIdx = null;
+  localStorage.setItem('yt_playlist', JSON.stringify(_ytPlaylist));
+  _refreshYtList();
+}
+
+function startYouTubePlaylist(listId, firstVideoId) {
+  if (!pomodoroMusicEl) {
+    pomodoroMusicEl = document.createElement('iframe');
+    pomodoroMusicEl.style.cssText = 'position:fixed;bottom:-200px;left:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    pomodoroMusicEl.allow = 'autoplay; encrypted-media';
+    document.body.appendChild(pomodoroMusicEl);
+  }
+  const vid = firstVideoId ? `&video=${firstVideoId}` : '';
+  pomodoroMusicEl.src = `https://www.youtube.com/embed/?listType=playlist&list=${listId}&autoplay=1${vid}&loop=1`;
+}
+
+function _getNextYtTrack() {
+  if (!_ytPlaylist.length) return null;
+  if (_ytShuffleMode) return _ytPlaylist[Math.floor(Math.random() * _ytPlaylist.length)];
+  _ytPlaylistIdx = (_ytPlaylistIdx + 1) % _ytPlaylist.length;
+  return _ytPlaylist[_ytPlaylistIdx];
 }
 
 function selectMusicType(type) {
@@ -1300,21 +1681,16 @@ function selectMusicType(type) {
 }
 
 function saveMusicSettings() {
-  const type = document.getElementById('mus-yt-section').style.display!=='none' ? 'youtube' : 'spotify';
-  const url = document.getElementById('mus-yt-url')?.value || '';
+  const type = document.getElementById('mus-yt-section')?.style.display!=='none' ? 'youtube' : 'spotify';
   const uri = document.getElementById('mus-sp-uri')?.value || '';
-  const enabled = document.getElementById('mus-enabled')?.checked;
-  let videoId = '';
-  try {
-    const m = url.match(/[?&]v=([^&]+)/)||url.match(/youtu\.be\/([^?]+)/)||url.match(/embed\/([^?]+)/);
-    if (m) videoId = m[1];
-    // Also handle playlist URLs
-    const pl = url.match(/[?&]list=([^&]+)/);
-    if (pl && !videoId) videoId = ''; // playlist — use URL directly
-  } catch(e){}
-  localStorage.setItem('pomodoro_music', JSON.stringify({enabled,type,url,videoId,uri}));
+  const enabled = document.getElementById('mus-enabled')?.checked || false;
+  // For youtube type, use first playlist item as the primary URL (backward compat)
+  const firstItem = _ytPlaylist[0];
+  const url = firstItem?.url || '';
+  const videoId = firstItem?.videoId || '';
+  localStorage.setItem('pomodoro_music', JSON.stringify({enabled, type, url, videoId, uri}));
   closeModal();
-  notify(enabled?'🎵 Pomodoro music saved! Music will start with focus sessions.':'Music settings saved.','success');
+  notify(enabled?'🎵 Music saved! Playlist starts with each focus session.':'Music settings saved.','success');
 }
 
 function clearMusicSettings() {
@@ -3222,35 +3598,6 @@ function renderTeamPulse(el) {
   }).join('');
 }
 
-function renderStandups(el) {
-  const today = new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
-  el.innerHTML = `
-    <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px">
-      <div class="sh-title"><i class="fas fa-microphone" style="color:var(--accent)"></i> Daily Standup — ${today}</div>
-      <div id="standup-entries" style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
-        ${DEMO_TEAM.map(m=>`
-          <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:12px">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
-              <span style="font-size:18px">${m.av}</span>
-              <strong style="font-size:13px">${m.name}</strong>
-              <span class="member-role" style="display:inline-block;font-size:10px;padding:2px 7px;background:rgba(168,85,247,.1);border-radius:5px;color:var(--text-m)">${m.role.replace('_',' ')}</span>
-              <div class="pulse-dot ${m.status}" style="margin-left:auto"></div>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:12px">
-              <div style="background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--green);margin-bottom:3px">✅ Yesterday</div>${m.tasks>2?'Completed API integration and code review':'Fixed bug in auth flow'}</div>
-              <div style="background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--accent);margin-bottom:3px">🎯 Today</div>${m.status==='focus'?'Deep work on feature branch':'Working on tests and documentation'}</div>
-              <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--danger);margin-bottom:3px">🚧 Blockers</div>${m.wellness<50?'Need review from lead on architecture decision':'None'}</div>
-            </div>
-          </div>`).join('')}
-      </div>
-      <div style="display:flex;gap:8px">
-        <button class="btn-primary" onclick="addMyStandup()"><i class="fas fa-plus"></i> Add My Update</button>
-        <button class="btn-sm" onclick="shareStandupSlack()"><i class="fas fa-slack"></i> Share to Slack</button>
-      </div>
-    </div>
-  `;
-}
-
 function renderBurnoutRisk(el) {
   el.innerHTML = `
     <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px">
@@ -3275,40 +3622,6 @@ function renderBurnoutRisk(el) {
             <div style="font-size:11px;color:var(--text-m)">${indicators.map(i=>`<div>• ${i}</div>`).join('')}</div>
           </div>`;
         }).join('')}
-      </div>
-    </div>
-  `;
-}
-
-function renderDeadlines(el) {
-  const now = new Date();
-  const deadlines = [
-    { title:'Q2 Feature Launch', date: new Date(now.getTime()+3*24*60*60*1000), owner:'Alex Chen', status:'on-track', progress:75 },
-    { title:'API Documentation', date: new Date(now.getTime()+7*24*60*60*1000), owner:'Jordan Lee', status:'at-risk', progress:45 },
-    { title:'Security Audit', date: new Date(now.getTime()+14*24*60*60*1000), owner:'Sam Rivera', status:'on-track', progress:30 },
-    { title:'Performance Review', date: new Date(now.getTime()+21*24*60*60*1000), owner:'Taylor Kim', status:'ahead', progress:90 },
-  ];
-  el.innerHTML = `
-    <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px">
-      <div class="sh-title"><i class="fas fa-clock" style="color:var(--warn)"></i> Deadline Intelligence</div>
-      <div style="display:flex;flex-direction:column;gap:10px">
-        ${deadlines.map(d=>{
-          const daysLeft = Math.round((d.date-now)/86400000);
-          const statusColor = d.status==='ahead'?'var(--blue)':d.status==='on-track'?'var(--green)':'var(--danger)';
-          const urgency = daysLeft<=3?'🔴':daysLeft<=7?'🟡':'🟢';
-          return `<div class="deadline-item" style="border:1px solid var(--border)">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
-              <div style="font-weight:700;font-size:13px">${urgency} ${d.title}</div>
-              <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;background:${d.status==='ahead'?'rgba(59,130,246,.15)':d.status==='on-track'?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)'};color:${statusColor}">${d.status.toUpperCase()}</span>
-            </div>
-            <div style="font-size:11px;color:var(--text-m);margin-bottom:7px">Owner: ${d.owner} · Due in ${daysLeft} day${daysLeft!==1?'s':''} (${d.date.toLocaleDateString('en-US',{month:'short',day:'numeric'})})</div>
-            <div class="sh-progress"><div class="sh-fill" style="width:${d.progress}%;background:${statusColor}"></div></div>
-            <div style="font-size:10px;color:var(--text-m);margin-top:3px">${d.progress}% complete</div>
-          </div>`;
-        }).join('')}
-      </div>
-      <div style="margin-top:12px">
-        <button class="btn-sm" onclick="addDeadline()"><i class="fas fa-plus"></i> Add Deadline</button>
       </div>
     </div>
   `;
@@ -3361,19 +3674,320 @@ function openSprintConfigModal() {
 }
 
 function exportSprintReport() { notify('Sprint report exported (PDF coming soon)','info'); }
-function addMyStandup() { notify('Standup form opening soon','info'); }
+
+// ── T1: Real Standup Form ────────────────────────────────────────────────────
+let _standupEntries = JSON.parse(localStorage.getItem('fs_standups') || '[]');
+
+function addMyStandup() {
+  const today = new Date().toISOString().slice(0,10);
+  const myEntry = _standupEntries.find(e => e.date === today && e.email === (FS_USER?.email || 'guest'));
+  openModal(`
+    <div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+        <div style="font-size:32px">📋</div>
+        <div>
+          <h2 style="margin:0;font-size:18px">My Standup</h2>
+          <div style="font-size:12px;color:var(--text-s)">${new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#10b981;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">✅ What I completed yesterday</label>
+          <textarea id="sd-yesterday" class="fs-in" rows="2" placeholder="e.g. Finished the auth flow, reviewed 3 PRs…" style="resize:vertical">${myEntry?.yesterday||''}</textarea>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#a855f7;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">🎯 What I'm working on today</label>
+          <textarea id="sd-today" class="fs-in" rows="2" placeholder="e.g. Building the dashboard component, fixing API bug…" style="resize:vertical">${myEntry?.today||''}</textarea>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#ef4444;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">🚧 Blockers (leave blank if none)</label>
+          <textarea id="sd-blockers" class="fs-in" rows="2" placeholder="e.g. Waiting on design review, need access to staging…" style="resize:vertical">${myEntry?.blockers||''}</textarea>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">😊 Mood / Energy (optional)</label>
+          <div style="display:flex;gap:8px" id="sd-mood-btns">
+            ${['🔥 Fired up','😊 Good','😐 Okay','😓 Tired','🤔 Blocked'].map(m=>`<button class="btn-sm sd-mood ${myEntry?.mood===m?'btn-primary':''}" onclick="_sdSelectMood(this,'${m}')" style="font-size:11px;padding:5px 8px">${m}</button>`).join('')}
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="btn-primary" style="flex:1" onclick="_saveStandup()"><i class="fas fa-check"></i> Post Update</button>
+        <button class="btn-sm" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>
+  `);
+}
+
+let _sdMoodSelected = '';
+function _sdSelectMood(btn, mood) {
+  document.querySelectorAll('.sd-mood').forEach(b => b.classList.remove('btn-primary'));
+  btn.classList.add('btn-primary');
+  _sdMoodSelected = mood;
+}
+
+function _saveStandup() {
+  const yesterday = document.getElementById('sd-yesterday')?.value?.trim();
+  const today = document.getElementById('sd-today')?.value?.trim();
+  const blockers = document.getElementById('sd-blockers')?.value?.trim();
+  const mood = _sdMoodSelected;
+  if (!yesterday && !today) { notify('Fill in at least one field', 'warning'); return; }
+  const dateKey = new Date().toISOString().slice(0,10);
+  const entry = {
+    date: dateKey,
+    email: FS_USER?.email || 'guest',
+    name: FS_USER?.name?.split(' ')[0] || 'You',
+    avatar: FS_USER?.picture || null,
+    yesterday: yesterday || '',
+    today: today || '',
+    blockers: blockers || '',
+    mood: mood || '',
+    ts: Date.now()
+  };
+  // Replace today's entry for this user if exists
+  _standupEntries = _standupEntries.filter(e => !(e.date === dateKey && e.email === entry.email));
+  _standupEntries.unshift(entry);
+  // Keep last 90 days only
+  const cutoff = new Date(Date.now() - 90*86400000).toISOString().slice(0,10);
+  _standupEntries = _standupEntries.filter(e => e.date >= cutoff);
+  localStorage.setItem('fs_standups', JSON.stringify(_standupEntries));
+  closeModal();
+  notify('✅ Standup posted!', 'success');
+  // Refresh standup display if visible
+  const teamContent = document.getElementById('team-tab-content');
+  if (teamContent && state.team.activeTab === 'standups') renderStandups(teamContent);
+  // Share to Slack if connected
+  if (FS_SLACK && yesterday && today) {
+    const msg = `*${entry.name}'s Standup — ${dateKey}*\n✅ Yesterday: ${yesterday}\n🎯 Today: ${today}${blockers?`\n🚧 Blockers: ${blockers}`:''}${mood?`\n${mood}`:''}`;
+    fetch('/api/slack/post', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ message: msg }) }).catch(()=>{});
+  }
+}
+
+// Override renderStandups to show real entries + demo
+function renderStandups(el) {
+  const today = new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+  const todayKey = new Date().toISOString().slice(0,10);
+  const todayEntries = _standupEntries.filter(e => e.date === todayKey);
+  const myEntry = todayEntries.find(e => e.email === (FS_USER?.email || 'guest'));
+
+  const realRows = todayEntries.map(e => `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+        ${e.avatar ? `<img src="${escHtml(e.avatar)}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">` : `<span style="font-size:18px">👤</span>`}
+        <strong style="font-size:13px">${escHtml(e.name)}</strong>
+        ${e.mood ? `<span style="font-size:11px;padding:2px 8px;background:rgba(168,85,247,.1);border-radius:20px;color:var(--accent)">${escHtml(e.mood)}</span>` : ''}
+        <span style="margin-left:auto;font-size:10px;color:var(--text-s)">${new Date(e.ts).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:12px">
+        <div style="background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--green);margin-bottom:3px">✅ Yesterday</div>${escHtml(e.yesterday||'—')}</div>
+        <div style="background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--accent);margin-bottom:3px">🎯 Today</div>${escHtml(e.today||'—')}</div>
+        <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--danger);margin-bottom:3px">🚧 Blockers</div>${escHtml(e.blockers||'None')}</div>
+      </div>
+    </div>`).join('');
+
+  // Demo rows when no real entries
+  const demoRows = todayEntries.length === 0 ? DEMO_TEAM.slice(0,2).map(m=>`
+    <div style="background:var(--bg-card);border:1px solid rgba(255,255,255,.05);border-radius:10px;padding:12px;opacity:.5">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+        <span style="font-size:18px">${m.av}</span>
+        <strong style="font-size:13px">${m.name}</strong>
+        <span style="font-size:10px;padding:2px 8px;background:rgba(255,255,255,.05);border-radius:20px;color:var(--text-s)">demo</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:12px">
+        <div style="background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--green);margin-bottom:3px">✅ Yesterday</div>${m.tasks>2?'Finished API integration':'Fixed auth bug'}</div>
+        <div style="background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--accent);margin-bottom:3px">🎯 Today</div>${m.status==='focus'?'Deep work sprint':'Writing tests'}</div>
+        <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.15);border-radius:7px;padding:7px"><div style="font-weight:700;color:var(--danger);margin-bottom:3px">🚧 Blockers</div>${m.wellness<50?'Needs architecture review':'None'}</div>
+      </div>
+    </div>`).join('') : '';
+
+  el.innerHTML = `
+    <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div class="sh-title" style="margin:0"><i class="fas fa-microphone" style="color:var(--accent)"></i> Daily Standup — ${today}</div>
+        <span style="font-size:11px;color:var(--text-s)">${todayEntries.length} update${todayEntries.length!==1?'s':''} today</span>
+      </div>
+      <div id="standup-entries" style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
+        ${realRows || demoRows || '<div style="text-align:center;padding:20px;color:var(--text-s)">No standups yet today — be the first to post!</div>'}
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" onclick="addMyStandup()">
+          <i class="fas ${myEntry ? 'fa-edit' : 'fa-plus'}"></i> ${myEntry ? 'Update My Standup' : 'Add My Update'}
+        </button>
+        <button class="btn-sm" onclick="shareStandupSlack()"><i class="fab fa-slack"></i> Share to Slack</button>
+      </div>
+    </div>
+  `;
+}
+
 function shareStandupSlack() {
   if (!FS_SLACK) { openSlackModal(); return; }
-  notify('Standup shared to Slack!','success');
+  const todayKey = new Date().toISOString().slice(0,10);
+  const myEntry = _standupEntries.find(e => e.date === todayKey && e.email === (FS_USER?.email || 'guest'));
+  if (!myEntry) { notify('Post your standup first', 'warning'); return; }
+  const msg = `*${myEntry.name}'s Standup — ${todayKey}*\n✅ Yesterday: ${myEntry.yesterday}\n🎯 Today: ${myEntry.today}${myEntry.blockers?`\n🚧 Blockers: ${myEntry.blockers}`:''}${myEntry.mood?`\n${myEntry.mood}`:''}`;
+  fetch('/api/slack/post', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ message: msg }) })
+    .then(r=>r.json()).then(d => d.ok ? notify('📣 Standup shared to Slack!','success') : notify(d.error||'Slack error','error'))
+    .catch(()=>notify('Could not reach Slack','error'));
 }
-function addDeadline() {
-  openModal(`<h2>➕ Add Deadline</h2>
-    <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
-      <input class="fs-in" placeholder="Deadline title" id="dl-title">
-      <input class="fs-in" type="date" id="dl-date">
-      <input class="fs-in" placeholder="Owner name" id="dl-owner">
+
+// ── T2: Smart Deadlines (Pro) ────────────────────────────────────────────────
+let _deadlines = JSON.parse(localStorage.getItem('fs_deadlines') || '[]');
+
+function renderDeadlines(el) {
+  const now = new Date();
+  const isPro = _tokenBalance?.tier === 'pro' || _tokenBalance?.tier === 'team' || FS_USER?.tier === 'pro' || FS_USER?.tier === 'team';
+
+  const allDeadlines = _deadlines.length > 0 ? _deadlines : [
+    { id:'d1', title:'Q2 Feature Launch', date: new Date(now.getTime()+3*86400000).toISOString().slice(0,10), owner:'Alex Chen', status:'on-track', progress:75, priority:'high' },
+    { id:'d2', title:'API Documentation', date: new Date(now.getTime()+7*86400000).toISOString().slice(0,10), owner:'Jordan Lee', status:'at-risk', progress:45, priority:'medium' },
+    { id:'d3', title:'Security Audit', date: new Date(now.getTime()+14*86400000).toISOString().slice(0,10), owner:'Sam Rivera', status:'on-track', progress:30, priority:'medium' },
+    { id:'d4', title:'Performance Review', date: new Date(now.getTime()+21*86400000).toISOString().slice(0,10), owner:'Taylor Kim', status:'ahead', progress:90, priority:'low' },
+  ];
+
+  const sorted = [...allDeadlines].sort((a,b) => new Date(a.date) - new Date(b.date));
+
+  const rows = sorted.map(d => {
+    const daysLeft = Math.round((new Date(d.date) - now) / 86400000);
+    const isOverdue = daysLeft < 0;
+    const statusColor = d.status==='ahead'?'var(--blue)':d.status==='on-track'?'var(--green)':isOverdue?'#ff4444':'var(--danger)';
+    const urgency = isOverdue?'🔴':daysLeft<=3?'🔴':daysLeft<=7?'🟡':'🟢';
+    const aiRisk = isPro && d.status==='at-risk' ? `<div style="font-size:11px;color:#f59e0b;margin-top:6px;padding:6px 8px;background:rgba(245,158,11,.08);border-radius:6px;border-left:2px solid #f59e0b">⚡ AI: ${daysLeft<=3?'Critical — escalate now':'Progress at '+d.progress+'% with '+daysLeft+'d left — needs daily check-ins'}</div>` : '';
+    const isDemo = !_deadlines.length;
+    return `<div class="deadline-item" style="border:1px solid var(--border);position:relative${isDemo?';opacity:.6':''}">
+      ${isPro && !isDemo ? `<div style="position:absolute;top:8px;right:8px;display:flex;gap:6px">
+        <button onclick="_editDeadline('${d.id}')" style="background:none;border:none;cursor:pointer;color:var(--text-s);font-size:12px;padding:2px 5px" title="Edit"><i class="fas fa-pencil"></i></button>
+        <button onclick="_deleteDeadline('${d.id}')" style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:12px;padding:2px 5px" title="Delete"><i class="fas fa-trash"></i></button>
+      </div>` : ''}
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;padding-right:${isPro&&!isDemo?'48px':'0'}">
+        <div style="font-weight:700;font-size:13px">${urgency} ${escHtml(d.title)}</div>
+        <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;background:${d.status==='ahead'?'rgba(59,130,246,.15)':d.status==='on-track'?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)'};color:${statusColor}">${isOverdue?'OVERDUE':d.status.toUpperCase()}</span>
+      </div>
+      <div style="font-size:11px;color:var(--text-m);margin-bottom:7px">Owner: ${escHtml(d.owner)} · ${isOverdue?`<span style="color:#ef4444">${Math.abs(daysLeft)}d overdue</span>`:`Due in ${daysLeft} day${daysLeft!==1?'s':''}`} (${new Date(d.date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})})</div>
+      <div class="sh-progress"><div class="sh-fill" style="width:${d.progress}%;background:${statusColor}"></div></div>
+      <div style="font-size:10px;color:var(--text-m);margin-top:3px">${d.progress}% complete</div>
+      ${aiRisk}
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div class="sh-title" style="margin:0"><i class="fas fa-clock" style="color:var(--warn)"></i> Smart Deadlines${isPro?'':' <span style="font-size:10px;padding:1px 6px;background:rgba(245,158,11,.15);color:#f59e0b;border-radius:4px;font-weight:700">PRO</span>'}</div>
+        ${isPro ? `<button class="btn-primary" style="padding:5px 12px;font-size:12px" onclick="addDeadline()"><i class="fas fa-plus"></i> Add</button>` : ''}
+      </div>
+      ${!isPro ? `<div style="background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#f59e0b"><i class="fas fa-star" style="margin-right:6px"></i>Upgrade to Pro to add real deadlines with AI risk analysis</div>` : ''}
+      <div style="display:flex;flex-direction:column;gap:10px">${rows}</div>
+      ${!isPro ? `<button class="btn-primary" style="width:100%;margin-top:12px" onclick="openPricingModal()">🚀 Upgrade to Pro — Unlock Smart Deadlines</button>` : ''}
     </div>
-    <button class="btn-primary" style="width:100%;margin-top:14px" onclick="closeModal();notify('Deadline added','success')">Add Deadline</button>`);
+  `;
+}
+
+function addDeadline() {
+  openModal(`
+    <div>
+      <h2 style="margin-bottom:4px">➕ Add Smart Deadline</h2>
+      <p style="font-size:12px;color:var(--text-s);margin-bottom:16px">AI will flag at-risk deadlines and suggest escalation</p>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div>
+          <label style="font-size:11px;color:var(--text-m);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Title</label>
+          <input class="fs-in" placeholder="e.g. Q3 feature launch" id="dl-title" style="margin-top:5px">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <label style="font-size:11px;color:var(--text-m);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Due Date</label>
+            <input class="fs-in" type="date" id="dl-date" style="margin-top:5px" min="${new Date().toISOString().slice(0,10)}">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text-m);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Owner</label>
+            <input class="fs-in" placeholder="Your name" id="dl-owner" style="margin-top:5px" value="${FS_USER?.name?.split(' ')[0]||''}">
+          </div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-m);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Progress %</label>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:5px">
+            <input id="dl-progress" type="range" min="0" max="100" value="0" oninput="document.getElementById('dl-prog-val').textContent=this.value+'%'" style="flex:1;accent-color:var(--accent)">
+            <span id="dl-prog-val" style="font-size:12px;color:var(--accent);font-weight:700;width:32px">0%</span>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-m);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Status</label>
+          <select id="dl-status" class="fs-in" style="margin-top:5px">
+            <option value="on-track">On Track</option>
+            <option value="at-risk">At Risk</option>
+            <option value="ahead">Ahead of Schedule</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn-primary" style="width:100%;margin-top:16px" onclick="_saveDeadline()"><i class="fas fa-check"></i> Add Deadline</button>
+    </div>
+  `);
+}
+
+function _saveDeadline() {
+  const title = document.getElementById('dl-title')?.value?.trim();
+  const date = document.getElementById('dl-date')?.value;
+  const owner = document.getElementById('dl-owner')?.value?.trim() || 'Me';
+  const progress = parseInt(document.getElementById('dl-progress')?.value||'0');
+  const status = document.getElementById('dl-status')?.value || 'on-track';
+  if (!title || !date) { notify('Title and date are required','warning'); return; }
+  const entry = { id: 'dl_'+Date.now(), title, date, owner, progress, status, created: Date.now() };
+  _deadlines.push(entry);
+  localStorage.setItem('fs_deadlines', JSON.stringify(_deadlines));
+  closeModal();
+  notify('📅 Deadline added!','success');
+  const teamContent = document.getElementById('team-tab-content');
+  if (teamContent && state.team.activeTab === 'deadlines') renderDeadlines(teamContent);
+}
+
+function _editDeadline(id) {
+  const d = _deadlines.find(x => x.id === id);
+  if (!d) return;
+  openModal(`
+    <div>
+      <h2 style="margin-bottom:16px">✏️ Edit Deadline</h2>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <input class="fs-in" id="edl-title" value="${escHtml(d.title)}">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <input class="fs-in" type="date" id="edl-date" value="${d.date}">
+          <input class="fs-in" id="edl-owner" value="${escHtml(d.owner)}">
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <input id="edl-progress" type="range" min="0" max="100" value="${d.progress}" oninput="document.getElementById('edl-prog-val').textContent=this.value+'%'" style="flex:1;accent-color:var(--accent)">
+          <span id="edl-prog-val" style="font-size:12px;color:var(--accent);font-weight:700;width:32px">${d.progress}%</span>
+        </div>
+        <select id="edl-status" class="fs-in">
+          <option value="on-track" ${d.status==='on-track'?'selected':''}>On Track</option>
+          <option value="at-risk" ${d.status==='at-risk'?'selected':''}>At Risk</option>
+          <option value="ahead" ${d.status==='ahead'?'selected':''}>Ahead of Schedule</option>
+        </select>
+      </div>
+      <button class="btn-primary" style="width:100%;margin-top:14px" onclick="_updateDeadline('${id}')"><i class="fas fa-check"></i> Save Changes</button>
+    </div>
+  `);
+}
+
+function _updateDeadline(id) {
+  const idx = _deadlines.findIndex(x => x.id === id);
+  if (idx === -1) return;
+  _deadlines[idx] = { ..._deadlines[idx],
+    title: document.getElementById('edl-title')?.value?.trim() || _deadlines[idx].title,
+    date: document.getElementById('edl-date')?.value || _deadlines[idx].date,
+    owner: document.getElementById('edl-owner')?.value?.trim() || _deadlines[idx].owner,
+    progress: parseInt(document.getElementById('edl-progress')?.value||'0'),
+    status: document.getElementById('edl-status')?.value || _deadlines[idx].status,
+  };
+  localStorage.setItem('fs_deadlines', JSON.stringify(_deadlines));
+  closeModal(); notify('Deadline updated','success');
+  const teamContent = document.getElementById('team-tab-content');
+  if (teamContent && state.team.activeTab === 'deadlines') renderDeadlines(teamContent);
+}
+
+function _deleteDeadline(id) {
+  if (!confirm('Delete this deadline?')) return;
+  _deadlines = _deadlines.filter(x => x.id !== id);
+  localStorage.setItem('fs_deadlines', JSON.stringify(_deadlines));
+  notify('Deadline removed','info');
+  const teamContent = document.getElementById('team-tab-content');
+  if (teamContent && state.team.activeTab === 'deadlines') renderDeadlines(teamContent);
 }
 
 // ── Slack Modal ─────────────────────────────────────────────────────────────
@@ -4401,14 +5015,29 @@ async function checkReferralClaim() {
 
 function openSettingsModal() {
   const isSigned = !!FS_USER;
+  const cur = state.timer.focusMin || 25;
+  const presets = [25, 45, 90];
+  const isCustom = !presets.includes(cur);
   openModal(`<h2>⚙️ Settings</h2>
     <div style="margin:14px 0">
       <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">FOCUS DURATION</div>
-      <div style="display:flex;gap:8px">${[25,45,90].map(m=>`<button class="btn-sm ${state.timer.focusMin===m?'btn-primary':''}" onclick="updateFocusDur(${m})">${m}m</button>`).join('')}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        ${presets.map(m=>`<button class="btn-sm ${cur===m&&!isCustom?'btn-primary':''}" onclick="updateFocusDur(${m})">${m}m</button>`).join('')}
+        <div style="display:flex;align-items:center;gap:5px">
+          <input id="custom-dur-in" type="number" min="1" max="480" value="${isCustom?cur:''}" placeholder="Custom" 
+            style="width:72px;background:var(--bg-card);border:1px solid ${isCustom?'var(--accent)':'var(--border)'};border-radius:8px;padding:6px 8px;color:var(--text-p);font-size:13px;font-weight:700"
+            onkeydown="if(event.key==='Enter'){const v=parseInt(this.value);if(v>=1&&v<=480)updateFocusDur(v);}">
+          <button class="btn-sm ${isCustom?'btn-primary':''}" onclick="const v=parseInt(document.getElementById('custom-dur-in').value);if(v>=1&&v<=480)updateFocusDur(v);else notify('Enter 1–480 minutes','warning')">Set</button>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--text-s);margin-top:6px">Current: <strong style="color:var(--accent)">${cur} min</strong> · Custom range: 1–480 min</div>
     </div>
     <div style="margin:14px 0">
       <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">POMODORO MUSIC</div>
-      <button class="btn-sm" onclick="closeModal();openMusicModal()"><i class="fas fa-music"></i> Configure YouTube/Spotify</button>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button class="btn-sm" onclick="closeModal();openMusicModal()"><i class="fas fa-music"></i> Configure YouTube/Spotify</button>
+        ${_ytPlaylist.length>0?`<span style="font-size:11px;color:var(--accent)">${_ytPlaylist.length} track${_ytPlaylist.length!==1?'s':''} in playlist</span>`:''}
+      </div>
     </div>
     <div style="margin:14px 0">
       <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">INTEGRATIONS</div>
@@ -4677,29 +5306,49 @@ function startClawFlowCheckout(cycle) {
 let _tokenBalance = null;
 
 async function loadTokenBalance() {
+  // T5: Show guest fallback immediately so button never shows blank
+  const elInitial = document.getElementById('token-balance-display');
+  if (elInitial && !elInitial.textContent) {
+    elInitial.textContent = FS_USER ? '…' : '1.5k';
+  }
+  if (!FS_USER) {
+    // Guest: show 1,500 daily limit as a hint
+    _tokenBalance = { dailyUsed: 0, dailyLimit: 1500, purchased: 0, tier: 'free', remaining: 1500 };
+    const el = document.getElementById('token-balance-display');
+    if (el) el.textContent = '1.5k';
+    const btn = document.getElementById('btn-topup');
+    if (btn) btn.title = '1,500 free tokens/day — Sign in to track usage';
+    return;
+  }
   try {
     const r = await fetch('/api/billing/balance', { credentials: 'include' });
     if (!r.ok) return;
     const data = await r.json();
-    if (data.error) return; // not_authenticated or other error — skip update
+    if (data.error) return;
     _tokenBalance = data;
     const fmt = n => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+'M'
                    : n >= 1_000     ? Math.round(n/1_000)+'k'
                    : String(n);
-    // Update compact token counter on the buy-tokens button
     const el = document.getElementById('token-balance-display');
-    if (el && _tokenBalance) {
+    if (el) {
       const purchased = _tokenBalance.purchased || 0;
-      const dailyLeft = Math.max(0, (_tokenBalance.dailyLimit || 0) - (_tokenBalance.dailyUsed || 0));
-      const total = dailyLeft + purchased;
-      el.textContent = fmt(total);
+      const dailyLeft = Math.max(0, (_tokenBalance.dailyLimit || 1500) - (_tokenBalance.dailyUsed || 0));
+      const isPro = _tokenBalance.tier === 'pro' || _tokenBalance.tier === 'team';
+      // Show: daily remaining (not combined with purchased to avoid confusion)
+      el.textContent = fmt(dailyLeft);
       const btn = document.getElementById('btn-topup');
-      if (btn) btn.title = `${fmt(dailyLeft)} daily left · ${fmt(purchased)} purchased — Click to buy more`;
+      if (btn) {
+        const purchasedNote = purchased > 0 ? ` · ${purchased.toLocaleString()} purchased tokens` : '';
+        const tierNote = isPro ? ' · Pro plan' : ' · Free plan (1,500/day)';
+        btn.title = `${dailyLeft.toLocaleString()} daily tokens remaining${purchasedNote}${tierNote} — click to buy more`;
+        // Show coin icon different color when purchased tokens exist
+        const icon = btn.querySelector('i');
+        if (icon) icon.style.color = purchased > 0 ? '#f59e0b' : '#10b981';
+      }
     }
-    // Update the chat tab token usage meter (only for free tier)
     const isPro = _tokenBalance?.tier === 'pro' || _tokenBalance?.tier === 'team';
     const meter = document.getElementById('chat-token-meter');
-    if (meter && _tokenBalance && !isPro) {
+    if (meter && !isPro) {
       const used  = _tokenBalance.dailyUsed  || 0;
       const limit = _tokenBalance.dailyLimit || 1500;
       const pct   = Math.min(100, Math.round((used / limit) * 100));
@@ -4708,10 +5357,9 @@ async function loadTokenBalance() {
       const label = document.getElementById('chat-token-label');
       const bar   = document.getElementById('chat-token-bar');
       const sub   = document.getElementById('chat-token-sub');
-      if (label) label.textContent = `${used.toLocaleString()} / ${limit.toLocaleString()}`;
+      if (label) label.textContent = `${used.toLocaleString()} / ${limit.toLocaleString()} tokens used today`;
       if (bar)   { bar.style.width = pct + '%'; bar.style.background = pct > 80 ? 'linear-gradient(90deg,#f59e0b,#ef4444)' : 'linear-gradient(90deg,#a855f7,#ec4899)'; }
-      if (sub)   sub.textContent = left > 0 ? `${left.toLocaleString()} tokens left today` : '⚠️ Daily limit reached';
-      // P2A: trigger upgrade modal at 80% usage for free tier
+      if (sub)   sub.textContent = left > 0 ? `${left.toLocaleString()} tokens left today` : '⚠️ Daily limit reached — buy more or wait until midnight';
       if (!isPro) checkTokenUpgradeTrigger(used, limit);
     } else if (meter && isPro) {
       meter.style.display = 'none';
@@ -7368,6 +8016,40 @@ async function sendStreakEmailFallback() {
 let _coachData = null;
 let _coachLoading = false;
 
+// ── T6: Feature onboarding helpers ──────────────────────────────────────────
+function _showFeatureOnboarding(featureKey, steps, onComplete) {
+  const seen = localStorage.getItem('fs_onboard_' + featureKey);
+  if (seen) { onComplete(); return; }
+  let currentStep = 0;
+  function renderStep() {
+    const step = steps[currentStep];
+    const isLast = currentStep === steps.length - 1;
+    openModal(`
+      <div style="text-align:center;padding:8px 0">
+        <div style="font-size:48px;margin-bottom:10px">${step.icon}</div>
+        <div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Step ${currentStep+1} of ${steps.length}</div>
+        <h2 style="font-size:18px;font-weight:900;margin-bottom:8px;line-height:1.3">${step.title}</h2>
+        <p style="color:var(--text-s);font-size:13px;line-height:1.6;max-width:320px;margin:0 auto 20px">${step.desc}</p>
+        ${step.visual ? `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:20px;font-size:12px;color:var(--text-m);text-align:left">${step.visual}</div>` : ''}
+        <!-- Step dots -->
+        <div style="display:flex;justify-content:center;gap:6px;margin-bottom:20px">
+          ${steps.map((_,i)=>`<div style="width:7px;height:7px;border-radius:50%;background:${i<=currentStep?'var(--accent)':'rgba(255,255,255,.15)'};transition:.2s"></div>`).join('')}
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn-sm" onclick="closeModal();localStorage.setItem('fs_onboard_${featureKey}','1')" style="flex:1;justify-content:center;color:var(--text-s)">Skip</button>
+          <button class="btn-primary" style="flex:2;justify-content:center" id="onboard-next-btn"
+            onclick="${isLast ? `closeModal();localStorage.setItem('fs_onboard_${featureKey}','1');_onboardComplete_${featureKey}()` : `_onboardNext_${featureKey}()`}">
+            ${isLast ? 'Get Started <i class="fas fa-bolt"></i>' : 'Next <i class="fas fa-arrow-right"></i>'}
+          </button>
+        </div>
+      </div>
+    `);
+  }
+  window[`_onboardNext_${featureKey}`] = function() { currentStep++; renderStep(); };
+  window[`_onboardComplete_${featureKey}`] = onComplete;
+  renderStep();
+}
+
 async function openFlowCoach() {
   if (!FS_USER) { notify('Sign in to access your AI Flow Coach', 'info'); return; }
 
@@ -7480,6 +8162,20 @@ let _pairState = { status: 'none', partner: null, sessionId: null, endsAt: null,
 async function openPairingModal() {
   if (!FS_USER) { notify('Sign in to use accountability pairing', 'info'); return; }
 
+  // T6: First-use onboarding for pairing
+  if (!localStorage.getItem('fs_onboard_pairing')) {
+    _showFeatureOnboarding('pairing', [
+      { icon: '🤝', title: 'Accountability Pairing', desc: 'Get matched with another creator for a shared focus session. When you pair up, you both commit to the same work block — keeping each other on track.', visual: '<div style="display:flex;gap:12px;align-items:center"><div style="flex:1;text-align:center"><div style="font-size:24px">👤</div><div style="margin-top:4px">You</div></div><div style="font-size:20px">🤝</div><div style="flex:1;text-align:center"><div style="font-size:24px">👤</div><div style="margin-top:4px">Your Partner</div></div></div>' },
+      { icon: '⏱', title: 'Focus Together, Ship More', desc: 'Choose your session length (25, 45, or 90 mins). FlowState matches you with someone in the queue and starts a shared countdown. You can check in mid-session to stay accountable.', visual: '<div style="font-size:12px"><div style="margin-bottom:6px">🔍 <strong>Join Queue</strong> — enter the pool</div><div style="margin-bottom:6px">⚡ <strong>Get Matched</strong> — paired instantly</div><div style="margin-bottom:6px">✅ <strong>Check In</strong> — send a 👋 mid-session</div></div>' },
+      { icon: '🏁', title: 'Ready to Pair Up?', desc: "Click 'Get Started' to join the queue. You'll be matched with the next creator who joins. The session auto-ends when the timer runs out — or leave early anytime.", visual: '' },
+    ], () => { _openPairingModalCore(); });
+    return;
+  }
+
+  _openPairingModalCore();
+}
+
+async function _openPairingModalCore() {
   // Check current pairing status first
   try {
     const res = await fetch('/api/pair/status', { credentials: 'include' });
