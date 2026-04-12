@@ -1432,8 +1432,59 @@ function setupAmbientChips() {
   const area = document.getElementById('user-area');
   if (!area) return;
   if (FS_USER) {
-    const pic = FS_USER.picture ? `<img class="u-avatar" src="${FS_USER.picture}" alt="${escHtml(FS_USER.name)}">` : `<div class="u-avatar" style="display:flex;align-items:center;justify-content:center;font-size:14px">👤</div>`;
-    area.innerHTML = `<div class="u-pill" onclick="openSettingsModal()">${pic}<span class="u-name">${escHtml(FS_USER.name?.split(' ')[0]||'You')}</span></div>`;
+    const pic = FS_USER.picture
+      ? `<img class="u-avatar" id="u-avatar-img" src="${FS_USER.picture}" alt="${escHtml(FS_USER.name)}" onerror="this.style.display='none';document.getElementById('u-avatar-fallback').style.display='flex'">`
+      : '';
+    const fallbackDisplay = FS_USER.picture ? 'none' : 'flex';
+    const fallbackLetter = (FS_USER.name||'?')[0].toUpperCase();
+
+    area.innerHTML = `
+<div class="u-wrap" id="u-wrap">
+  <div class="u-pill">
+    ${pic}
+    <div class="u-avatar" id="u-avatar-fallback" style="display:${fallbackDisplay};align-items:center;justify-content:center;font-size:13px;font-weight:800;color:var(--accent)">${fallbackLetter}</div>
+    <span class="u-name">${escHtml(FS_USER.name?.split(' ')[0]||'You')}</span>
+    <i class="fas fa-chevron-down" style="font-size:9px;color:var(--text-m);margin-left:1px"></i>
+  </div>
+  <div class="u-dropdown" id="u-dropdown">
+    <button class="u-drop-item" id="u-drop-avatar-btn">
+      <i class="fas fa-camera"></i> Change Profile Picture
+    </button>
+    <div id="u-avatar-form-wrap" style="display:none">
+      <div class="u-avatar-form">
+        <input type="url" id="u-avatar-url-input" placeholder="Paste image URL (https://...)" autocomplete="off">
+        <button onclick="saveAvatarUrl()">Save Picture</button>
+      </div>
+    </div>
+    <div class="u-drop-divider"></div>
+    <button class="u-drop-item" onclick="switchToFocusAndStart()">
+      <i class="fas fa-play-circle"></i> Start Timer
+    </button>
+    <div class="u-drop-divider"></div>
+    <button class="u-drop-item" onclick="openSettingsModal()">
+      <i class="fas fa-gear"></i> Settings
+    </button>
+  </div>
+</div>`;
+
+    // Toggle avatar URL form
+    document.getElementById('u-drop-avatar-btn')?.addEventListener('click', function() {
+      const form = document.getElementById('u-avatar-form-wrap');
+      if (!form) return;
+      const open = form.style.display !== 'none';
+      form.style.display = open ? 'none' : 'block';
+      if (!open) setTimeout(() => document.getElementById('u-avatar-url-input')?.focus(), 50);
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function(e) {
+      const wrap = document.getElementById('u-wrap');
+      if (wrap && !wrap.contains(e.target)) {
+        const dd = document.getElementById('u-dropdown');
+        if (dd) { dd.style.opacity='0'; dd.style.visibility='hidden'; dd.style.transform='translateY(-4px)'; }
+      }
+    }, { capture: true });
+
     // FlowScore badge
     setTimeout(()=>{
       fetch('/api/flowscore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({focusMinutes:0,sessionCount:0})})
@@ -1446,6 +1497,62 @@ function setupAmbientChips() {
     area.innerHTML = `<button class="btn-signin" onclick="window.location.href='/api/auth/google'"><i class="fas fa-sign-in-alt"></i> Sign In</button>`;
   }
 })();
+
+// Save avatar URL — POSTs to /api/avatar, updates the visible img, and persists via cookie re-issue
+async function saveAvatarUrl() {
+  const input = document.getElementById('u-avatar-url-input');
+  const url = input?.value?.trim();
+  if (!url || !/^https?:\/\/.+\..+/.test(url)) {
+    notify('Please paste a valid image URL (starting with https://)', 'warning');
+    return;
+  }
+  try {
+    const res = await fetch('/api/avatar', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      // Update the visible avatar immediately
+      const img = document.getElementById('u-avatar-img');
+      const fallback = document.getElementById('u-avatar-fallback');
+      if (img) {
+        img.src = url;
+        img.style.display = 'block';
+        if (fallback) fallback.style.display = 'none';
+      } else {
+        // No img element yet — insert one
+        if (fallback) {
+          fallback.insertAdjacentHTML('beforebegin', `<img class="u-avatar" id="u-avatar-img" src="${url}" alt="avatar" onerror="this.style.display='none'">`);
+          fallback.style.display = 'none';
+        }
+      }
+      // Hide the form and close dropdown
+      const form = document.getElementById('u-avatar-form-wrap');
+      if (form) form.style.display = 'none';
+      if (input) input.value = '';
+      notify('Profile picture updated!', 'success');
+      // Update FS_USER.picture in memory so the session reflects the change
+      if (window.FS_USER) window.FS_USER.picture = url;
+    } else {
+      notify(data.error === 'invalid_url' ? 'Invalid URL — use a direct image link (https://...)' : 'Could not update picture. Try again.', 'warning');
+    }
+  } catch(e) {
+    notify('Network error — please try again.', 'warning');
+  }
+}
+
+// Switch to Focus tab and start the timer
+function switchToFocusAndStart() {
+  const focusTab = document.getElementById('tab-focus');
+  if (focusTab) focusTab.click();
+  setTimeout(() => {
+    const startBtn = document.getElementById('btn-start');
+    if (startBtn && !state.timer.running) startBtn.click();
+  }, 150);
+}
 
 // ── Timer ──────────────────────────────────────────────────────────────────
 function setupTimerUI() {

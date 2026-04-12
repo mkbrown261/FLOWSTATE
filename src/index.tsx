@@ -5705,6 +5705,10 @@ app.get('/', (c) => {
 [data-theme="light"] #pair-session-banner { background:rgba(5,150,105,.12) !important; border-color:rgba(5,150,105,.3) !important; color:var(--text-p) !important; }
 [data-theme="light"] .sprint-health, [data-theme="light"] .sh-stats { background:var(--bg-card); }
 [data-theme="light"] #theme-toggle-btn::after { content: "☀️"; }
+[data-theme="light"] .u-dropdown { background:var(--bg-panel);border-color:var(--border);box-shadow:0 8px 32px rgba(0,0,0,.12); }
+[data-theme="light"] .u-drop-item { color:var(--text-s); }
+[data-theme="light"] .u-drop-item:hover { background:rgba(124,58,237,.08);color:var(--text-p); }
+[data-theme="light"] .u-avatar-form input { background:var(--bg-card);color:var(--text-p);border-color:var(--border); }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
 body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg-base);color:var(--text-p);display:flex;flex-direction:column;transition:background .25s,color .25s}
@@ -5776,10 +5780,21 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .dt-widget:hover{border-color:var(--border);background:rgba(168,85,247,.05)}
 .dt-date{font-weight:600;color:var(--text-p)}
 .dt-time{font-weight:800;font-size:13px;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-variant-numeric:tabular-nums}
-.u-pill{display:flex;align-items:center;gap:7px;padding:4px 10px;border-radius:20px;border:1px solid var(--border);cursor:pointer;transition:.2s}
+.u-wrap{position:relative;display:inline-flex}
+.u-pill{display:flex;align-items:center;gap:7px;padding:4px 10px;border-radius:20px;border:1px solid var(--border);cursor:pointer;transition:.2s;user-select:none}
 .u-pill:hover{border-color:var(--accent)}
-.u-avatar{width:28px;height:28px;border-radius:50%;border:2px solid var(--accent);object-fit:cover;background:var(--bg-card)}
+.u-avatar{width:28px;height:28px;border-radius:50%;border:2px solid var(--accent);object-fit:cover;background:var(--bg-card);flex-shrink:0}
 .u-name{font-size:12px;font-weight:600;color:var(--text-s)}
+.u-dropdown{position:absolute;top:calc(100% + 6px);right:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:12px;padding:5px;min-width:190px;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,.45);opacity:0;visibility:hidden;transform:translateY(-4px);transition:opacity .15s,transform .15s,visibility .15s}
+.u-wrap:hover .u-dropdown,.u-dropdown:hover{opacity:1;visibility:visible;transform:translateY(0)}
+.u-drop-item{display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:8px;font-size:12px;font-weight:600;color:var(--text-s);cursor:pointer;transition:.15s;white-space:nowrap;border:none;background:transparent;width:100%;text-align:left}
+.u-drop-item:hover{background:rgba(168,85,247,.12);color:var(--text-p)}
+.u-drop-item i{width:14px;text-align:center;font-size:13px;color:var(--accent)}
+.u-drop-divider{height:1px;background:var(--border);margin:4px 6px}
+.u-avatar-form{padding:8px 11px}
+.u-avatar-form input{width:100%;background:var(--bg-card);border:1px solid var(--border);border-radius:7px;padding:6px 9px;font-size:11px;color:var(--text-p);outline:none;margin-bottom:6px}
+.u-avatar-form input:focus{border-color:var(--accent)}
+.u-avatar-form button{width:100%;padding:6px;border-radius:7px;background:var(--grad);border:none;color:#fff;font-size:11px;font-weight:700;cursor:pointer}
 .btn-signin{background:var(--grad);border:none;color:#fff;padding:7px 16px;border-radius:20px;font-size:12px;font-weight:700;cursor:pointer;transition:.2s}
 .tabs-bar{display:flex;align-items:center;gap:2px;padding:5px 16px;background:var(--bg-tabs);border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto;scrollbar-width:none}
 .tabs-bar::-webkit-scrollbar{display:none}
@@ -8129,6 +8144,39 @@ app.post('/api/profile/setup', async (c) => {
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
+})
+
+// POST /api/avatar — update the user's profile picture URL
+// Accepts { url: string } — validates it's a real URL, updates D1 + re-issues session cookie
+app.post('/api/avatar', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const db = c.env?.DB
+  if (!db) return c.json({ error: 'db_unavailable' }, 503)
+
+  const { url } = await c.req.json().catch(() => ({ url: '' }))
+  // Basic validation — must be http/https URL
+  if (!url || !/^https?:\/\/.+\..+/.test(url.trim())) {
+    return c.json({ error: 'invalid_url' }, 400)
+  }
+  const avatarUrl = url.trim()
+
+  // Update avatar_url in public_profiles (upsert — profile may not exist yet)
+  try {
+    const user = await db.prepare(`SELECT id FROM users WHERE email=?`).bind(session.email).first() as any
+    if (user) {
+      await db.prepare(`
+        INSERT INTO public_profiles (user_id, email, slug, display_name, avatar_url, updated_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(email) DO UPDATE SET avatar_url=excluded.avatar_url, updated_at=datetime('now')
+      `).bind(user.id, session.email, session.email.split('@')[0].replace(/[^a-z0-9]/gi,'-').toLowerCase().slice(0,30), session.name || '', avatarUrl).run()
+    }
+  } catch(_) { /* non-fatal — still update the cookie */ }
+
+  // Re-issue the session cookie with the new picture so the header updates immediately
+  const newSession = { ...session, picture: avatarUrl }
+  setCookie(c, 'fs_session', encodeSession(newSession), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 7*24*3600, path: '/' })
+  return c.json({ ok: true, url: avatarUrl })
 })
 
 // GET /api/profile/me — fetch own profile settings
