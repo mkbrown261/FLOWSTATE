@@ -439,10 +439,10 @@ function setupTabListeners() {
   document.getElementById('cal-prev')?.addEventListener('click', () => calNav(-1));
   document.getElementById('cal-next')?.addEventListener('click', () => calNav(1));
   document.getElementById('cal-add-btn')?.addEventListener('click', () => {
-    // Show sidebar and toggle the add form
-    const sidebar = document.getElementById('cal-sidebar');
-    if (sidebar) sidebar.style.display = 'block';
-    document.getElementById('add-ev-form').classList.toggle('show');
+    const form = document.getElementById('add-ev-form');
+    const detail = document.getElementById('cal-day-detail');
+    if (detail) detail.style.display = 'none';
+    if (form) form.classList.toggle('show');
   });
   document.getElementById('cal-refresh')?.addEventListener('click', loadCalEvents);
   document.getElementById('ev-save-btn')?.addEventListener('click', saveCalEvent);
@@ -1514,68 +1514,65 @@ function renderCalGrid() {
 function clickCalDay(dateStr) {
   const title = document.getElementById('cal-day-panel-title');
   const evContainer = document.getElementById('cal-day-panel-events');
-  const sidebar = document.getElementById('cal-sidebar');
-  if (!evContainer) return;
+  const detail = document.getElementById('cal-day-detail');
+  if (!evContainer || !detail) return;
 
-  // Highlight selected day in grid
+  // Highlight selected day
   document.querySelectorAll('.cal-day.selected').forEach(el => el.classList.remove('selected'));
   const clickedEl = document.querySelector(`.cal-day[onclick="clickCalDay('${dateStr}')"]`);
   if (clickedEl) clickedEl.classList.add('selected');
 
-  // Format date nicely in sidebar title
-  const d = new Date(dateStr + 'T12:00:00');
-  if (title) title.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' });
-
-  // Close add-event form when switching days
+  // Hide add-event form, show detail panel
   const form = document.getElementById('add-ev-form');
   if (form) form.classList.remove('show');
+  detail.style.display = 'block';
+
+  // Set title
+  const d = new Date(dateStr + 'T12:00:00');
+  if (title) title.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' });
 
   // Filter events for this day
-  const dayEvs = state.cal.events.filter(e => {
-    return String(e.start || '').slice(0, 10) === dateStr;
-  }).sort((a, b) => new Date(a.start || 0) - new Date(b.start || 0));
+  const dayEvs = state.cal.events.filter(e => String(e.start || '').slice(0, 10) === dateStr)
+    .sort((a, b) => new Date(a.start || 0) - new Date(b.start || 0));
 
   if (!dayEvs.length) {
-    evContainer.innerHTML = `<div style="color:#888;font-size:12px;padding:8px 0;text-align:center">
-      No events<br>
-      <button onclick="clickCalDayAdd('${dateStr}')" style="margin-top:8px;padding:5px 12px;border-radius:7px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:11px;cursor:pointer">+ Add event</button>
-    </div>`;
+    evContainer.innerHTML = `
+      <div style="color:#888;font-size:12px;padding:12px 0;text-align:center">
+        No events scheduled
+        <br><button onclick="clickCalDayAdd('${dateStr}')" style="margin-top:10px;padding:6px 14px;border-radius:7px;border:1px solid rgba(168,85,247,.5);background:transparent;color:#a855f7;font-size:12px;cursor:pointer;display:inline-block">+ Add event</button>
+      </div>`;
   } else {
+    const safeColor = c => (c && (c.startsWith('hsl') || c.startsWith('#') || c.startsWith('rgb'))) ? c : '#a855f7';
     evContainer.innerHTML = dayEvs.map(ev => {
+      const col = safeColor(ev.color);
       const start = ev.start || '';
-      const safeColor = (ev.color && (ev.color.startsWith('hsl') || ev.color.startsWith('#') || ev.color.startsWith('rgb'))) ? ev.color : '#a855f7';
       const timeLabel = (!ev.allDay && start.length > 10)
-        ? new Date(start).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+        ? new Date(start).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit', hour12:true })
         : 'All day';
       const endLabel = (!ev.allDay && ev.end && ev.end.length > 10)
-        ? ' – ' + new Date(ev.end).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+        ? ' – ' + new Date(ev.end).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit', hour12:true })
         : '';
-      return `<div class="ev-item" style="border-left:3px solid ${safeColor}">
+      return `<div class="ev-item" style="border-left:3px solid ${col};margin-bottom:6px">
         <div style="flex:1;min-width:0">
           <div class="ev-sum">${escHtml(ev.summary || '(no title)')}</div>
           <div class="ev-time">${timeLabel}${endLabel}</div>
         </div>
         <button class="btn-blk" onclick="blockAroundEvent('${ev.id}')">Block</button>
       </div>`;
-    }).join('') + `<button onclick="clickCalDayAdd('${dateStr}')" style="margin-top:8px;width:100%;padding:5px;border-radius:7px;border:1px dashed rgba(168,85,247,.4);background:transparent;color:#aaa;font-size:11px;cursor:pointer">+ Add event</button>`;
+    }).join('') +
+    `<button onclick="clickCalDayAdd('${dateStr}')" style="margin-top:8px;width:100%;padding:6px;border-radius:7px;border:1px dashed rgba(168,85,247,.35);background:transparent;color:#888;font-size:11px;cursor:pointer">+ Add event</button>`;
   }
-
-  // Ensure sidebar is visible
-  if (sidebar) sidebar.style.display = 'block';
 }
 
 function clickCalDayAdd(dateStr) {
   const form = document.getElementById('add-ev-form');
-  const startEl = document.getElementById('ev-start');
-  const endEl = document.getElementById('ev-end');
-  const sidebar = document.getElementById('cal-sidebar');
-  if (sidebar) sidebar.style.display = 'block';
+  const detail = document.getElementById('cal-day-detail');
+  if (!form) return;
+  if (detail) detail.style.display = 'none';
+  document.getElementById('ev-start').value = dateStr + 'T09:00';
+  document.getElementById('ev-end').value   = dateStr + 'T10:00';
   form.classList.add('show');
-  startEl.value = dateStr + 'T09:00';
-  endEl.value   = dateStr + 'T10:00';
-  document.getElementById('ev-title').focus();
-  // Scroll form into view inside sidebar
-  setTimeout(() => form.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
+  setTimeout(() => { document.getElementById('ev-title').focus(); form.scrollIntoView({ behavior:'smooth', block:'nearest' }); }, 50);
 }
 
 function _calDebug(msg, data, isError) {
@@ -1664,7 +1661,7 @@ function _showCalReconnectBanner() {
         Reconnect →
       </button>
     `;
-    // Insert before the cal-grid
+    // Insert before cal-grid inside calendar tab
     const calGrid = document.getElementById('cal-grid');
     if (calGrid) calGrid.parentNode.insertBefore(banner, calGrid);
     else document.getElementById('tab-pane-calendar')?.prepend(banner);
