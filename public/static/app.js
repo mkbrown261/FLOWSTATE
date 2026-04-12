@@ -1505,6 +1505,47 @@ function renderCalGrid() {
 }
 
 function clickCalDay(dateStr) {
+  // Show day detail panel with events for that day
+  const panel = document.getElementById('cal-day-panel');
+  const title = document.getElementById('cal-day-panel-title');
+  const evContainer = document.getElementById('cal-day-panel-events');
+  if (!panel || !title || !evContainer) return;
+
+  // Format the date nicely
+  const d = new Date(dateStr + 'T12:00:00');
+  title.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' });
+
+  // Get events for this day
+  const dayEvs = state.cal.events.filter(e => {
+    const s = e.start || '';
+    return typeof s === 'string' && s.startsWith(dateStr);
+  }).sort((a,b) => new Date(a.start||0) - new Date(b.start||0));
+
+  if (!dayEvs.length) {
+    evContainer.innerHTML = `<div style="color:#aaa;font-size:13px;padding:8px 0">No events — <button onclick="clickCalDayAdd('${dateStr}')" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:13px;text-decoration:underline">Add one?</button></div>`;
+  } else {
+    evContainer.innerHTML = dayEvs.map(ev => {
+      const start = ev.start || '';
+      const timeLabel = (!ev.allDay && start) ? new Date(start).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true}) : 'All day';
+      const endLabel  = (!ev.allDay && ev.end) ? ' – ' + new Date(ev.end).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true}) : '';
+      const safeColor = (ev.color && ev.color.startsWith('hsl')) ? ev.color : '#a855f7';
+      return `<div class="ev-item">
+        <div class="ev-dot" style="background:${safeColor}"></div>
+        <div style="flex:1;min-width:0">
+          <div class="ev-sum">${escHtml(ev.summary||'(no title)')}</div>
+          <div class="ev-time">${timeLabel}${endLabel}</div>
+        </div>
+        <button class="btn-blk" onclick="blockAroundEvent('${ev.id}')">Block</button>
+      </div>`;
+    }).join('');
+  }
+
+  panel.style.display = 'block';
+  // Scroll panel into view
+  setTimeout(() => panel.scrollIntoView({ behavior:'smooth', block:'nearest' }), 50);
+}
+
+function clickCalDayAdd(dateStr) {
   const form = document.getElementById('add-ev-form');
   const startEl = document.getElementById('ev-start');
   const endEl = document.getElementById('ev-end');

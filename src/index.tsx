@@ -5288,16 +5288,19 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .btn-send{width:42px;height:42px;border-radius:11px;background:var(--grad);border:none;color:#fff;font-size:15px;cursor:pointer;transition:.2s;flex-shrink:0;display:flex;align-items:center;justify-content:center}
 .chat-suggest-chip{background:var(--bg-panel);border:1px solid var(--border);color:var(--text-m);padding:7px 13px;border-radius:20px;font-size:12.5px;cursor:pointer;transition:.2s;white-space:nowrap}
 .chat-suggest-chip:hover{border-color:var(--accent);color:var(--accent);background:rgba(168,85,247,.07)}
-.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:14px}
-.cal-hd{text-align:center;font-size:10px;font-weight:700;color:#aaa;padding:6px 3px;text-transform:uppercase;letter-spacing:1px}
-.cal-day{min-height:80px;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;padding:6px 6px 4px;border-radius:8px;cursor:pointer;transition:.2s;position:relative;border:1px solid rgba(255,255,255,.05);overflow:hidden}
-.cal-day:hover{background:rgba(168,85,247,.08);border-color:rgba(168,85,247,.3)}
-.cal-day.today{background:transparent;border-color:rgba(168,85,247,.5)}
-.cal-day.today .cal-day-num{background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
-.cal-day-num{font-size:12px;font-weight:600;color:#e0e0e0;line-height:1;margin-bottom:4px;flex-shrink:0}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:0;margin-bottom:0;border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden}
+.cal-hd{text-align:center;font-size:11px;font-weight:700;color:#aaa;padding:8px 4px;text-transform:uppercase;letter-spacing:.5px;background:rgba(255,255,255,.03);border-bottom:1px solid rgba(255,255,255,.08)}
+.cal-day{min-height:100px;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;padding:7px 6px 5px;cursor:pointer;transition:.15s;position:relative;border-right:1px solid rgba(255,255,255,.06);border-bottom:1px solid rgba(255,255,255,.06);overflow:hidden}
+.cal-day:nth-child(7n){border-right:none}
+.cal-day:hover{background:rgba(168,85,247,.07)}
+.cal-day.today{background:rgba(168,85,247,.06)}
+.cal-day.today .cal-day-num{background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}
+.cal-day-num{font-size:13px;font-weight:600;color:#e0e0e0;line-height:1;margin-bottom:5px;flex-shrink:0}
 .cal-day-events{display:flex;flex-direction:column;gap:2px;width:100%}
-.cal-day-ev-chip{font-size:9px;font-weight:600;color:#fff;padding:2px 4px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;line-height:1.3}
-.cal-day.other{opacity:.2;cursor:default;pointer-events:none}
+.cal-day-ev-chip{font-size:10px;font-weight:600;color:#fff;padding:2px 5px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;line-height:1.4;cursor:pointer}
+.cal-day-ev-chip:hover{filter:brightness(1.2)}
+.cal-day.other{opacity:.25;cursor:default;pointer-events:none}
+.cal-day-more{font-size:10px;color:#aaa;padding:1px 4px;margin-top:1px}
 .ev-list{display:flex;flex-direction:column;gap:7px;margin-top:8px}
 .ev-item{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--bg-panel);border:1px solid var(--border);border-radius:11px;cursor:pointer;transition:.2s}
 .ev-item:hover{border-color:var(--border-h)}
@@ -5822,7 +5825,15 @@ em{color:var(--accent);font-style:italic}
   </div>
   <div id="cal-debug-panel" style="display:none;background:#0f0f1a;border:1px solid #ef4444;border-radius:8px;padding:10px 12px;font-size:11px;font-family:monospace;color:#ef4444;margin-bottom:10px;white-space:pre-wrap;word-break:break-all"></div>
   <div class="cal-grid" id="cal-grid"></div>
-  <div class="ev-list" id="ev-list"></div>
+  <!-- Day detail panel — shown when user clicks a date -->
+  <div id="cal-day-panel" style="display:none;margin-top:14px;background:var(--bg-panel);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div id="cal-day-panel-title" style="font-size:14px;font-weight:700;color:#f0f0f0"></div>
+      <button onclick="document.getElementById('cal-day-panel').style.display='none'" style="background:none;border:none;color:#aaa;font-size:16px;cursor:pointer">✕</button>
+    </div>
+    <div id="cal-day-panel-events" class="ev-list"></div>
+  </div>
+  <div class="ev-list" id="ev-list" style="display:none"></div>
 </div>
 
 <!-- METRICS TAB -->
