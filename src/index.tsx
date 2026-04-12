@@ -477,6 +477,167 @@ app.post('/api/calendar/block', async (c) => {
   } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
+// ─── Smart Scheduling ─────────────────────────────────────────────────────────
+// Analyzes today + tomorrow calendar events and suggests optimal focus windows
+app.get('/api/smart/suggest-focus', async (c) => {
+  const token = await getValidAccessToken(c)
+  if (!token) return c.json({ error: 'not_authenticated', suggestions: [] }, 401)
+  try {
+    const now = new Date()
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0)
+    const tomorrowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2, 23, 59, 59)
+    const params = new URLSearchParams({
+      timeMin: todayStart.toISOString(),
+      timeMax: tomorrowEnd.toISOString(),
+      maxResults: '50',
+      singleEvents: 'true',
+      orderBy: 'startTime',
+    })
+    const calRes = await fetch(
+      'https://www.googleapis.com/calendar/v3/calendars/primary/events?' + params,
+      { headers: { Authorization: 'Bearer ' + token } }
+    )
+    const data: any = await calRes.json()
+    if (data.error) return c.json({ error: 'google_error', suggestions: [] }, 500)
+
+    // Build busy blocks from events
+    type Block = { start: number; end: number }
+    const busy: Block[] = (data.items || [])
+      .filter((e: any) => e.start?.dateTime) // only timed events
+      .map((e: any) => ({ start: new Date(e.start.dateTime).getTime(), end: new Date(e.end.dateTime).getTime() }))
+      .sort((a: Block, b: Block) => a.start - b.start)
+
+    // Find free gaps >= 25 min in working hours (8am–10pm)
+    const suggestions: any[] = []
+    const WORK_START_H = 8, WORK_END_H = 22
+    const MIN_FOCUS = 25 * 60 * 1000 // 25 min
+    const SLOT_LABELS = [25, 45, 90] // minutes
+
+    for (let dayOffset = 0; dayOffset <= 1; dayOffset++) {
+      const base = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset)
+      const dayLabel = dayOffset === 0 ? 'Today' : 'Tomorrow'
+      const workStart = new Date(base); workStart.setHours(WORK_START_H, 0, 0, 0)
+      const workEnd   = new Date(base); workEnd.setHours(WORK_END_H, 0, 0, 0)
+      // Don't suggest times in the past
+      const windowStart = dayOffset === 0 ? Math.max(workStart.getTime(), now.getTime() + 5 * 60 * 1000) : workStart.getTime()
+
+      const dayBusy = busy.filter((b: Block) => b.start >= workStart.getTime() && b.start < workEnd.getTime())
+
+      // Walk through the day finding free gaps
+      let cursor = windowStart
+      for (const b of dayBusy) {
+        if (b.start > cursor + MIN_FOCUS) {
+          // Free gap: cursor → b.start
+          const gapMs = Math.min(b.start, workEnd.getTime()) - cursor
+          for (const slotMin of SLOT_LABELS) {
+            if (gapMs >= slotMin * 60 * 1000) {
+              const startD = new Date(cursor)
+              const endD   = new Date(cursor + slotMin * 60 * 1000)
+              suggestions.push({
+                day: dayLabel,
+                date: base.toISOString().slice(0, 10),
+                startTime: startD.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+                endTime:   endD.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+                startISO:  startD.toISOString(),
+                endISO:    endD.toISOString(),
+                durationMin: slotMin,
+                label: slotMin === 25 ? '🍅 Pomodoro' : slotMin === 45 ? '⚡ Deep Work' : '🌊 Flow State',
+                score: gapMs >= 90 * 60 * 1000 ? 'ideal' : gapMs >= 45 * 60 * 1000 ? 'good' : 'short',
+              })
+              break // only suggest best slot per gap
+            }
+          }
+        }
+        cursor = Math.max(cursor, b.end)
+      }
+      // After last event
+      if (workEnd.getTime() - cursor >= MIN_FOCUS) {
+        const gapMs = workEnd.getTime() - cursor
+        for (const slotMin of SLOT_LABELS) {
+          if (gapMs >= slotMin * 60 * 1000) {
+            const startD = new Date(cursor)
+            const endD   = new Date(cursor + slotMin * 60 * 1000)
+            suggestions.push({
+              day: dayLabel,
+              date: base.toISOString().slice(0, 10),
+              startTime: startD.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+              endTime:   endD.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+              startISO:  startD.toISOString(),
+              endISO:    endD.toISOString(),
+              durationMin: slotMin,
+              label: slotMin === 25 ? '🍅 Pomodoro' : slotMin === 45 ? '⚡ Deep Work' : '🌊 Flow State',
+              score: gapMs >= 90 * 60 * 1000 ? 'ideal' : gapMs >= 45 * 60 * 1000 ? 'good' : 'short',
+            })
+            break
+          }
+        }
+      }
+    }
+
+    return c.json({ suggestions: suggestions.slice(0, 6), busy_count: busy.length })
+  } catch (err: any) { return c.json({ error: err.message, suggestions: [] }, 500) }
+})
+
+// ─── Weekly Review ─────────────────────────────────────────────────────────────
+app.get('/api/weekly-review', async (c) => {
+  const token = await getValidAccessToken(c)
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  // Accept stats from query params (sent by frontend from localStorage)
+  const q = c.req.query() as any
+  const focusMin   = parseInt(q.focusMin   || '0')
+  const sessions   = parseInt(q.sessions   || '0')
+  const streak     = parseInt(q.streak     || '0')
+  const topTask    = q.topTask || ''
+
+  let calEvents: any[] = []
+  if (token) {
+    try {
+      const now = new Date()
+      const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+      const params = new URLSearchParams({ timeMin: weekAgo.toISOString(), timeMax: now.toISOString(), maxResults: '100', singleEvents: 'true', orderBy: 'startTime' })
+      const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events?' + params, { headers: { Authorization: 'Bearer ' + token } })
+      const data: any = await res.json()
+      calEvents = (data.items || []).map((e: any) => ({ summary: e.summary, start: e.start?.dateTime || e.start?.date }))
+    } catch (_) {}
+  }
+
+  const meetingCount = calEvents.filter(e => !e.summary?.toLowerCase().includes('focus') && !e.summary?.toLowerCase().includes('block')).length
+  const focusBlocks  = calEvents.filter(e => e.summary?.toLowerCase().includes('focus') || e.summary?.toLowerCase().includes('block')).length
+
+  // Simple rule-based review (no AI cost)
+  const flowScore = Math.min(100, Math.round((focusMin / 120) * 40 + (sessions / 5) * 30 + Math.min(streak, 7) * 4 + (sessions > 0 ? 15 : 0)))
+  const wins = []
+  const improve = []
+
+  if (sessions >= 5) wins.push(`${sessions} focus sessions completed`)
+  else improve.push(`Only ${sessions} sessions — aim for 5+ per week`)
+
+  if (streak >= 3) wins.push(`${streak}-day streak 🔥 — consistency is your superpower`)
+  else improve.push(`Build your streak — even 1 session/day compounds fast`)
+
+  if (focusMin >= 120) wins.push(`${focusMin}m of deep focus — that's ${Math.round(focusMin/60 * 10)/10}h of real output`)
+  else improve.push(`${focusMin}m focus time — try blocking 2h/day minimum`)
+
+  if (meetingCount > 10) improve.push(`${meetingCount} meetings this week — protect your deep work time`)
+  else if (meetingCount > 0) wins.push(`Calendar was manageable — ${meetingCount} meetings`)
+
+  if (focusBlocks > 0) wins.push(`${focusBlocks} focus blocks in your calendar — pro habit`)
+
+  return c.json({
+    week: `${new Date(Date.now() - 7*24*60*60*1000).toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'})}`,
+    flowScore,
+    focusMin,
+    sessions,
+    streak,
+    meetingCount,
+    focusBlocks,
+    wins: wins.slice(0, 3),
+    improve: improve.slice(0, 2),
+    topTask: topTask || null,
+    name: session?.name?.split(' ')[0] || 'Creator',
+  })
+})
+
 // ─── Notion Board ─────────────────────────────────────────────────────────────
 app.get('/api/notion/databases', async (c) => {
   const ns = decodeSession(getCookie(c, 'fs_notion') || '')
@@ -5503,6 +5664,44 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .celeb-title{font-size:22px;font-weight:900;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:5px}
 .celeb-sub{font-size:13px;color:var(--text-s)}
 .confetti-p{position:fixed;width:8px;height:8px;border-radius:2px;pointer-events:none;animation:cFall linear forwards}
+/* ── Smart Schedule ── */
+.ss-card{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--bg-panel);border:1px solid var(--border);border-radius:11px;cursor:pointer;transition:.18s}
+.ss-card:hover{border-color:var(--accent);background:rgba(168,85,247,.07)}
+.ss-card.ideal{border-color:rgba(168,85,247,.35)}
+.ss-card.good{border-color:rgba(16,185,129,.25)}
+.ss-day{font-size:10px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.6px;min-width:42px}
+.ss-time{font-size:12px;font-weight:700;color:#f0f0f0;flex:1}
+.ss-label{font-size:11px;color:var(--text-s)}
+.ss-dur{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;background:rgba(168,85,247,.15);color:var(--accent);white-space:nowrap}
+.ss-btn{padding:4px 10px;border-radius:7px;border:none;background:var(--grad);color:#fff;font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap;transition:.15s}
+.ss-btn:hover{opacity:.85}
+/* ── Weekly Review ── */
+.weekly-review-card{background:var(--bg-panel);border:1px solid rgba(168,85,247,.3);border-radius:16px;padding:18px;margin-bottom:14px;animation:fadeUp .35s ease}
+.wr-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.wr-title{font-size:15px;font-weight:800;color:#f0f0f0}
+.wr-dates{font-size:11px;color:#888;margin-top:2px}
+.wr-score-wrap{position:relative;width:64px;height:64px;flex-shrink:0}
+.wr-score-inner{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.wr-score-num{font-size:18px;font-weight:900;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1}
+.wr-score-lbl{font-size:8px;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-top:1px}
+.wr-stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}
+.wr-stat{text-align:center}
+.wr-stat-val{font-size:17px;font-weight:800;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.wr-stat-lbl{font-size:10px;color:#888;margin-top:2px}
+.wr-cols{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.wr-col{padding:10px 12px;border-radius:10px}
+.wr-col.wins{background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.2)}
+.wr-col.improve{background:rgba(168,85,247,.05);border:1px solid rgba(168,85,247,.2)}
+.wr-col-title{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.7px;margin-bottom:7px}
+.wr-col.wins .wr-col-title{color:#10b981}
+.wr-col.improve .wr-col-title{color:var(--accent)}
+.wr-item{font-size:11px;color:var(--text-s);padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04);line-height:1.45}
+.wr-item:last-child{border-bottom:none}
+/* ── Focus-to-Calendar prompt ── */
+.focus-cal-prompt{position:fixed;bottom:20px;right:20px;max-width:300px;background:var(--bg-panel);border:1px solid rgba(168,85,247,.4);border-radius:14px;padding:14px 16px;box-shadow:0 8px 30px rgba(0,0,0,.45);z-index:1500;animation:slideR .3s ease;display:none}
+.fcp-title{font-size:13px;font-weight:800;color:#f0f0f0;margin-bottom:4px}
+.fcp-sub{font-size:11px;color:#888;margin-bottom:10px}
+.fcp-btns{display:flex;gap:7px}
 @keyframes cFall{0%{opacity:1;transform:translate(0,0) rotate(0deg)}100%{opacity:0;transform:translate(var(--tx),var(--ty)) rotate(720deg)}}
 @keyframes celebIn{0%{opacity:0;transform:scale(.6)}100%{opacity:1;transform:scale(1)}}
 @keyframes slideR{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:translateX(0)}}
@@ -5786,6 +5985,16 @@ em{color:var(--accent);font-style:italic}
       <i class="fas fa-calendar-exclamation"></i>&nbsp; <span id="block-msg"></span>
     </div>
   </div>
+  <!-- Smart Schedule Suggestions -->
+  <div id="smart-schedule-wrap" style="margin-top:14px;width:100%;max-width:480px;margin-left:auto;margin-right:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.8px"><i class="fas fa-bolt" style="color:#a855f7;margin-right:5px"></i>Smart Schedule</span>
+      <button onclick="loadSmartSuggestions()" style="background:none;border:none;color:#666;font-size:11px;cursor:pointer;padding:2px 6px;border-radius:5px;transition:.2s" onmouseover="this.style.color='#a855f7'" onmouseout="this.style.color='#666'"><i class="fas fa-sync-alt"></i></button>
+    </div>
+    <div id="smart-suggestions" style="display:flex;flex-direction:column;gap:7px">
+      <div style="font-size:12px;color:#555;text-align:center;padding:10px">Sign in with Google to see your optimal focus windows</div>
+    </div>
+  </div>
 </div>
 
 <!-- CHAT TAB -->
@@ -5875,6 +6084,44 @@ em{color:var(--accent);font-style:italic}
 
 <!-- METRICS TAB -->
 <div class="tab-pane" id="tab-pane-metrics" style="display:none">
+  <!-- Weekly Review Card -->
+  <div id="weekly-review-card" class="weekly-review-card" style="display:none">
+    <div class="wr-header">
+      <div>
+        <div class="wr-title">Weekly Review</div>
+        <div class="wr-dates" id="wr-dates"></div>
+      </div>
+      <div class="wr-score-wrap">
+        <svg width="64" height="64" viewBox="0 0 64 64">
+          <circle cx="32" cy="32" r="26" fill="none" stroke="rgba(168,85,247,.15)" stroke-width="6"/>
+          <circle cx="32" cy="32" r="26" fill="none" stroke="url(#wrg)" stroke-width="6"
+            stroke-dasharray="163.4" id="wr-ring" stroke-dashoffset="163.4"
+            stroke-linecap="round" transform="rotate(-90 32 32)"/>
+          <defs><linearGradient id="wrg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#a855f7"/><stop offset="100%" stop-color="#ec4899"/></linearGradient></defs>
+        </svg>
+        <div class="wr-score-inner">
+          <div class="wr-score-num" id="wr-score-num">–</div>
+          <div class="wr-score-lbl">FlowScore</div>
+        </div>
+      </div>
+    </div>
+    <div class="wr-stats-row">
+      <div class="wr-stat"><div class="wr-stat-val" id="wr-focus-min">–</div><div class="wr-stat-lbl">Focus min</div></div>
+      <div class="wr-stat"><div class="wr-stat-val" id="wr-sessions">–</div><div class="wr-stat-lbl">Sessions</div></div>
+      <div class="wr-stat"><div class="wr-stat-val" id="wr-streak">–</div><div class="wr-stat-lbl">Day streak</div></div>
+      <div class="wr-stat"><div class="wr-stat-val" id="wr-meetings">–</div><div class="wr-stat-lbl">Meetings</div></div>
+    </div>
+    <div class="wr-cols">
+      <div class="wr-col wins">
+        <div class="wr-col-title"><i class="fas fa-trophy"></i> Wins</div>
+        <div id="wr-wins"></div>
+      </div>
+      <div class="wr-col improve">
+        <div class="wr-col-title"><i class="fas fa-arrow-trend-up"></i> Level Up</div>
+        <div id="wr-improve"></div>
+      </div>
+    </div>
+  </div>
   <div class="insight-box" id="insight-box">
     <div class="ins-hl" id="ins-hl">Loading insight&#8230;</div>
     <div id="ins-detail" style="font-size:13px;color:var(--text-s);margin-bottom:5px"></div>
@@ -6765,6 +7012,37 @@ em{color:var(--accent);font-style:italic}
   </div>
 </div>
 
+<!-- Focus → Calendar prompt (shown after a focus session completes) -->
+<div class="focus-cal-prompt" id="focus-cal-prompt">
+  <button onclick="document.getElementById('focus-cal-prompt').style.display='none'" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#666;font-size:16px;cursor:pointer">&#x2715;</button>
+  <div class="fcp-title">🍅 Session logged!</div>
+  <div class="fcp-sub" id="fcp-sub">Add this to your Google Calendar?</div>
+  <div class="fcp-btns">
+    <button class="btn-primary" id="fcp-yes" style="flex:1;padding:7px;font-size:12px">Add to Calendar</button>
+    <button class="btn-sm" id="fcp-no" style="padding:7px 12px;font-size:12px">Skip</button>
+  </div>
+</div>
+<!-- Keyboard shortcuts hint overlay -->
+<div id="kb-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:4000;align-items:center;justify-content:center;backdrop-filter:blur(8px)">
+  <div style="background:var(--bg-panel);border:1px solid var(--border-h);border-radius:18px;padding:28px 32px;max-width:420px;width:100%">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+      <div style="font-size:16px;font-weight:800">⌨️ Keyboard Shortcuts</div>
+      <button onclick="document.getElementById('kb-overlay').style.display='none'" style="background:none;border:none;color:#666;font-size:18px;cursor:pointer">&#x2715;</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
+      <div style="color:#888">Space</div><div>Start / Pause timer</div>
+      <div style="color:#888">R</div><div>Reset timer</div>
+      <div style="color:#888">S</div><div>Skip phase</div>
+      <div style="color:#888">1–9</div><div>Switch tabs</div>
+      <div style="color:#888">C</div><div>Open Calendar</div>
+      <div style="color:#888">F</div><div>Open Focus</div>
+      <div style="color:#888">M</div><div>Open Metrics</div>
+      <div style="color:#888">N</div><div>New event (in Calendar)</div>
+      <div style="color:#888">?</div><div>Show this help</div>
+      <div style="color:#888">Esc</div><div>Close panels</div>
+    </div>
+  </div>
+</div>
 <script>
 // Server-injected session data
 const FS_USER     = ${userJson};

@@ -369,9 +369,13 @@ function showMainApp(isDemo=false) {
   setupAmbientChips();
   maybeShowTip();
   loadTokenBalance();
+  initKeyboardShortcuts();         // PILLAR 3c — keyboard shortcuts
+  requestNotificationPermission(); // PILLAR 3b — ask for notification permission
   // Check URL params FIRST to determine which tab to open
   const _startTab = checkBillingReturn();
   switchTab(_startTab || 'focus');
+  // Load smart suggestions after a short delay on focus tab
+  setTimeout(loadSmartSuggestions, 1200);
 }
 
 function checkBillingReturn() {
@@ -478,7 +482,8 @@ function switchTab(id) {
   if (pane) { pane.style.display='flex'; pane.classList.add('active'); }
   // Tab-specific init
   if (id==='calendar') loadCalEvents();
-  if (id==='metrics')  buildMetrics();
+  if (id==='focus')    setTimeout(loadSmartSuggestions, 400); // slight delay so DOM is ready
+  if (id==='metrics')  { buildMetrics(); loadWeeklyReview(); }
   if (id==='board')    buildBoard();
   if (id==='team')     buildTeam();
   if (id==='learn')    loadLearnCards();
@@ -918,6 +923,10 @@ function toggleTimer() {
 }
 
 function startTimer() {
+  // Record session start time for calendar logging
+  if (state.timer.phase === 'focus' && !state.timer._sessionStartISO) {
+    state.timer._sessionStartISO = new Date().toISOString();
+  }
   // Resume or start ambient sound
   if (state.timer.soundType && state.timer.soundType!=='off') {
     playAmbient(AMBIENT_SOUNDS[state.timer.soundType]?.type||'noise');
@@ -970,20 +979,28 @@ function completePhase(skipped=false) {
   document.body.classList.remove('amb-active');
 
   if (state.timer.phase==='focus' && !skipped) {
+    const sessionStartISO = state.timer._sessionStartISO || new Date(Date.now() - state.timer.focusMin * 60 * 1000).toISOString();
     state.timer.sessions++;
     state.timer.streak++;
     saveLocalState();
     triggerCelebration('Focus Session Complete! 🎉', `${state.timer.sessions} sessions today — ${Math.round(state.timer.totalFocusSec/60)}m total`);
     updateFlowScore();
     maybeShowTip();
+    // PILLAR 2: prompt to log to calendar
+    setTimeout(() => showFocusCalPrompt(state.timer.focusMin, sessionStartISO), 1200);
+    // PILLAR 3b: browser notification
+    sendNotification('🍅 Focus Session Complete!', `${state.timer.focusMin}m done — take a well-earned break.`);
+    state.timer._sessionStartISO = null;
   }
   // Auto-switch phase
   if (state.timer.phase==='focus') {
     setPhase(state.timer.sessions%4===0?'long':'short');
     notify('Break time! Step away from the screen 🧘','info');
+    sendNotification('☕ Break time!', 'Step away from the screen for a few minutes.');
   } else {
     setPhase('focus');
     notify('Break done! Ready to focus? 💪','success');
+    sendNotification('⚡ Break done!', 'Ready to focus? Your next session awaits.');
   }
   updateTimerDisplay();
 }
@@ -1762,6 +1779,212 @@ function colorIdFromHex(hex) {
   // Map hex to Google Calendar colorId (1-11)
   const colorMap = {'#ef4444':'11','#f59e0b':'5','#10b981':'10','#3b82f6':'9','#a855f7':'3','#ec4899':'4','#06b6d4':'7'};
   return colorMap[hex] || '1';
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PILLAR 1 — Smart Scheduling
+// ══════════════════════════════════════════════════════════════════
+function loadSmartSuggestions() {
+  const wrap = document.getElementById('smart-suggestions');
+  if (!wrap) return;
+  if (!FS_USER) {
+    wrap.innerHTML = '<div style="font-size:12px;color:#555;text-align:center;padding:10px">Sign in with Google to see your optimal focus windows</div>';
+    return;
+  }
+  wrap.innerHTML = '<div style="font-size:12px;color:#666;text-align:center;padding:10px"><i class="fas fa-spinner fa-spin"></i> Analyzing your calendar...</div>';
+  fetch('/api/smart/suggest-focus', { credentials: 'include' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error || !d.suggestions?.length) {
+        wrap.innerHTML = '<div style="font-size:12px;color:#555;text-align:center;padding:10px">No open windows found for today/tomorrow — your schedule is packed! 💪</div>';
+        return;
+      }
+      wrap.innerHTML = d.suggestions.map(s => `
+        <div class="ss-card ${s.score}" onclick="startFocusFromSuggestion('${s.startISO}','${s.endISO}',${s.durationMin})">
+          <div class="ss-day">${s.day}</div>
+          <div style="flex:1;min-width:0">
+            <div class="ss-time">${s.startTime} → ${s.endTime}</div>
+            <div class="ss-label">${s.label}</div>
+          </div>
+          <div class="ss-dur">${s.durationMin}m</div>
+          <button class="ss-btn" onclick="event.stopPropagation();blockSuggestion('${s.startISO}','${s.endISO}',${s.durationMin})">Block</button>
+        </div>
+      `).join('');
+    })
+    .catch(() => {
+      wrap.innerHTML = '<div style="font-size:12px;color:#555;text-align:center;padding:10px">Couldn\'t load suggestions — check your connection</div>';
+    });
+}
+
+function startFocusFromSuggestion(startISO, endISO, durationMin) {
+  // Set the timer duration and switch to focus tab
+  state.timer.focusMin = durationMin;
+  state.timer.elapsed = 0;
+  setPhase('focus');
+  updateTimerDisplay();
+  switchTab('focus');
+  // Store suggestion context for cal logging
+  state.timer._suggestedStart = startISO;
+  state.timer._suggestedEnd   = endISO;
+  notify(`⚡ Timer set to ${durationMin}m — hit play to start your focus block!`, 'success');
+}
+
+function blockSuggestion(startISO, endISO, durationMin) {
+  if (!FS_USER) { notify('Sign in to block time on Google Calendar', 'info'); return; }
+  fetch('/api/calendar/block', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: `⚡ Focus Block — FlowState`, start: startISO, end: endISO })
+  }).then(r => r.json()).then(d => {
+    if (d.ok || d.event?.id) {
+      notify(`✅ ${durationMin}m focus block added to your calendar!`, 'success');
+      loadSmartSuggestions(); // refresh
+      loadCalEvents();
+    } else {
+      notify('Could not block time — reconnect Google Calendar', 'error');
+    }
+  }).catch(() => notify('Network error', 'error'));
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PILLAR 2 — Focus → Calendar Integration
+// ══════════════════════════════════════════════════════════════════
+
+// Called at the end of a completed focus phase
+function showFocusCalPrompt(durationMin, startISO) {
+  if (!FS_USER) return; // only for signed-in users
+  const prompt = document.getElementById('focus-cal-prompt');
+  const sub    = document.getElementById('fcp-sub');
+  const yesBtn = document.getElementById('fcp-yes');
+  const noBtn  = document.getElementById('fcp-no');
+  if (!prompt || !yesBtn || !noBtn) return;
+
+  const endISO = new Date().toISOString();
+  if (sub) sub.textContent = `Log ${durationMin}m focus block to Google Calendar?`;
+  prompt.style.display = 'block';
+
+  // Replace listeners each time
+  const yes = yesBtn.cloneNode(true);
+  const no  = noBtn.cloneNode(true);
+  yesBtn.parentNode.replaceChild(yes, yesBtn);
+  noBtn.parentNode.replaceChild(no, noBtn);
+
+  yes.addEventListener('click', () => {
+    prompt.style.display = 'none';
+    fetch('/api/calendar/block', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: `🍅 Focus Session — FlowState`,
+        start: startISO || new Date(Date.now() - durationMin * 60 * 1000).toISOString(),
+        end:   endISO,
+      })
+    }).then(r => r.json()).then(d => {
+      if (d.ok || d.event?.id) {
+        notify('✅ Focus session logged to Google Calendar!', 'success');
+        loadCalEvents();
+      } else {
+        notify('Could not log session — reconnect Google Calendar', 'error');
+      }
+    }).catch(() => notify('Network error', 'error'));
+  });
+  no.addEventListener('click', () => { prompt.style.display = 'none'; });
+
+  // Auto-dismiss after 12s
+  setTimeout(() => { if (prompt.style.display !== 'none') prompt.style.display = 'none'; }, 12000);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PILLAR 3a — Weekly Review
+// ══════════════════════════════════════════════════════════════════
+function loadWeeklyReview() {
+  const card = document.getElementById('weekly-review-card');
+  if (!card) return;
+  const params = new URLSearchParams({
+    focusMin: Math.round(state.timer.totalFocusSec / 60),
+    sessions: state.timer.sessions,
+    streak:   state.timer.streak,
+  });
+  fetch(`/api/weekly-review?${params}`, { credentials: 'include' })
+    .then(r => r.json())
+    .then(d => {
+      card.style.display = 'block';
+      const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+      setEl('wr-dates', d.week);
+      setEl('wr-score-num', d.flowScore);
+      setEl('wr-focus-min', d.focusMin + 'm');
+      setEl('wr-sessions', d.sessions);
+      setEl('wr-streak', d.streak + '🔥');
+      setEl('wr-meetings', d.meetingCount);
+      // Animate ring
+      const ring = document.getElementById('wr-ring');
+      if (ring) {
+        const circ = 163.4;
+        ring.style.strokeDashoffset = circ - (d.flowScore / 100) * circ;
+      }
+      // Wins
+      const winsEl = document.getElementById('wr-wins');
+      if (winsEl) winsEl.innerHTML = (d.wins || []).map(w => `<div class="wr-item">✓ ${escHtml(w)}</div>`).join('') || '<div class="wr-item" style="color:#555">Keep going — your wins are coming!</div>';
+      // Improve
+      const impEl = document.getElementById('wr-improve');
+      if (impEl) impEl.innerHTML = (d.improve || []).map(i => `<div class="wr-item">→ ${escHtml(i)}</div>`).join('') || '<div class="wr-item" style="color:#555">Looking great this week!</div>';
+    })
+    .catch(() => { /* silent fail — card stays hidden */ });
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PILLAR 3b — Browser Notifications
+// ══════════════════════════════════════════════════════════════════
+function requestNotificationPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+function sendNotification(title, body, icon) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification(title, { body, icon: icon || '/static/favicon.svg' });
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PILLAR 3c — Keyboard Shortcuts
+// ══════════════════════════════════════════════════════════════════
+const TAB_SHORTCUTS = { '1':'focus','2':'chat','3':'calendar','4':'metrics','5':'board','6':'team','7':'learn','8':'restore','9':'generate','c':'calendar','f':'focus','m':'metrics' };
+
+function initKeyboardShortcuts() {
+  document.addEventListener('keydown', e => {
+    // Don't fire when typing in inputs/textareas
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+    const key = e.key.toLowerCase();
+
+    // Show shortcuts help
+    if (key === '?') {
+      const ov = document.getElementById('kb-overlay');
+      if (ov) ov.style.display = ov.style.display === 'flex' ? 'none' : 'flex';
+      return;
+    }
+    // Close overlays
+    if (e.key === 'Escape') {
+      document.getElementById('kb-overlay')?.style && (document.getElementById('kb-overlay').style.display = 'none');
+      document.getElementById('focus-cal-prompt')?.style && (document.getElementById('focus-cal-prompt').style.display = 'none');
+      calClosePanel();
+      return;
+    }
+    // Timer controls (focus tab only)
+    if (key === ' ' && document.getElementById('tab-pane-focus')?.style.display !== 'none') {
+      e.preventDefault();
+      toggleTimer();
+      return;
+    }
+    if (key === 'r' && document.getElementById('tab-pane-focus')?.style.display !== 'none') { resetTimer(); return; }
+    if (key === 's' && document.getElementById('tab-pane-focus')?.style.display !== 'none') { skipPhase(); return; }
+    // New calendar event (calendar tab)
+    if (key === 'n' && document.getElementById('tab-pane-calendar')?.style.display !== 'none') {
+      calShowAddForm();
+      return;
+    }
+    // Tab switching
+    if (TAB_SHORTCUTS[key]) { switchTab(TAB_SHORTCUTS[key]); return; }
+  });
 }
 
 function blockAroundEvent(evId) {
