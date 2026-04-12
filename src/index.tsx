@@ -767,7 +767,7 @@ async function checkAntiAbuse(c: any, userId: string): Promise<Response | null> 
 
   const isPaid   = tier === 'pro' || tier === 'team'
   const isTeam   = tier === 'team'
-  const limit    = isPaid ? 100_000 : 5_000
+  const limit    = isPaid ? 100_000 : 1_500
   const used     = parseInt(dayUsed || '0')
   const velocity = parseInt(velCount || '0')
 
@@ -795,14 +795,14 @@ async function checkAntiAbuse(c: any, userId: string): Promise<Response | null> 
 
     const msg = isPaid
       ? `Daily ${isTeam ? 'Team' : 'Pro'} limit reached (100k tokens). Buy a token pack or wait for reset at midnight UTC.`
-      : 'Free daily limit reached (5k tokens). Upgrade to Pro or buy a token pack.'
+      : 'Free daily limit reached (1,500 tokens). Upgrade to Pro or buy a token pack.'
     return c.json({ error: msg, code: 'DAILY_LIMIT', used, limit, isPaid, canTopUp: true }, 429)
   }
 
   // Soft warning at 80% budget for free users
   const newUsed = used + 500
   if (!isPaid && newUsed >= limit * 0.8) {
-    c.header('X-Budget-Warning', `${limit - newUsed} tokens left today — buy a token pack to continue`)
+    c.header('X-Budget-Warning', `${Math.max(0, limit - newUsed)} tokens left today — upgrade to Pro for unlimited tokens`)
   }
 
   return null // allow through
@@ -833,7 +833,18 @@ app.post('/api/chat/stream', async (c) => {
     applyOrchestrationHeaders(c, plan)
   }
 
-  const intent = declareModelRouting(message, preferredModel)
+  // ── Free-tier model restriction: silently downgrade to cheap model ──────────
+  const FREE_TIER_MODELS = ['gpt-4o-mini', 'gemini-2-flash', 'claude-haiku', 'grok-3-mini', 'llama-4-scout', 'llama-4-maverick', 'llama-3-3', 'deepseek-v3']
+  const sessionTier = session?.tier || 'free'
+  const isTierPaid  = sessionTier === 'pro' || sessionTier === 'team'
+  let effectiveModel = preferredModel
+  if (!isTierPaid && effectiveModel && !FREE_TIER_MODELS.includes(effectiveModel)) {
+    effectiveModel = 'gpt-4o-mini' // silently downgrade
+    c.header('X-Model-Downgraded', 'gpt-4o-mini')
+    c.header('X-Downgrade-Reason', 'free-tier-restriction')
+  }
+
+  const intent = declareModelRouting(message, effectiveModel)
   const spec = MODEL_REGISTRY[intent.routedModel]
   if (!spec) return c.json({ error: 'Unknown model' }, 400)
 
@@ -5078,7 +5089,7 @@ app.get('/api/billing/balance', async (c) => {
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
   const url   = c.env?.UPSTASH_REDIS_URL
   const token = c.env?.UPSTASH_REDIS_TOKEN
-  if (!url || !token) return c.json({ dailyUsed: 0, dailyLimit: 5000, purchased: 0, tier: 'free' })
+  if (!url || !token) return c.json({ dailyUsed: 0, dailyLimit: 1500, purchased: 0, tier: 'free' })
 
   const email = session.email
   const date  = new Date().toISOString().slice(0, 10)
@@ -5092,7 +5103,7 @@ app.get('/api/billing/balance', async (c) => {
   const isPaid    = tier === 'pro' || tier === 'team'
   const dailyUsed = parseInt(results[2] as string || '0')
   const purchased = parseInt(results[3] as string || '0')
-  const dailyLimit = isPaid ? 100_000 : 5_000
+  const dailyLimit = isPaid ? 100_000 : 1_500
   return c.json({ dailyUsed, dailyLimit, purchased, tier, remaining: Math.max(0, dailyLimit - dailyUsed) })
 })
 

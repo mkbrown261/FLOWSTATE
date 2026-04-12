@@ -1409,7 +1409,7 @@ async function sendMessage() {
         const isPro = err.isPro;
         appendMsg('ai', isPro
           ? '📊 **Daily Pro limit reached** (100,000 tokens). Your quota resets at midnight UTC.'
-          : '📊 **Free daily limit reached** (5,000 tokens). [Upgrade to Pro](/upgrade) for 20× more tokens per day.', 'Usage limit');
+          : '📊 **Free daily limit reached** (1,500 tokens). [Upgrade to Pro](/upgrade) for unlimited tokens per day.', 'Usage limit');
       } else {
         appendMsg('ai','⚠️ Request blocked. ' + (err.error || 'Try again later.'),'Blocked');
       }
@@ -3042,7 +3042,7 @@ function _renderPricingModal() {
       badge: '',
       color: 'var(--text-s)',
       feats: [
-        '7 AI models (5k tokens/day)',
+        '7 AI models (1,500 tokens/day)',
         '25-min Pomodoro timer',
         'Basic Kanban board',
         'Focus metrics',
@@ -3061,7 +3061,7 @@ function _renderPricingModal() {
       hi: true,
       feats: [
         'All AI models (GPT-5, Claude, Gemini, Grok)',
-        '100k tokens/day',
+        'Unlimited tokens (smart routing)',
         'Google Calendar sync',
         'Notion + Slack integration',
         'Advanced metrics & insights',
@@ -3078,7 +3078,7 @@ function _renderPricingModal() {
       badge: '',
       color: 'var(--blue)',
       feats: [
-        'Everything in Pro',
+        'Everything in Pro (unlimited tokens)',
         'Sprint Health & velocity',
         'Burnout Monitor',
         'Team Pulse & standups',
@@ -3094,6 +3094,7 @@ function _renderPricingModal() {
       badge: '',
       color: 'var(--warn)',
       feats: [
+        'Unlimited tokens (custom limits)',
         'SSO / SAML',
         'Audit logs',
         'Custom AI models',
