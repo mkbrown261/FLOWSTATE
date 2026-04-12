@@ -480,6 +480,10 @@ function switchTab(id) {
   const pane = document.getElementById('tab-pane-'+id);
   if (btn) btn.classList.add('active');
   if (pane) { pane.style.display='flex'; pane.classList.add('active'); }
+  // Sync mobile drawer active state
+  document.querySelectorAll('.mob-tab-btn').forEach(b => b.classList.remove('active'));
+  const mBtn = document.getElementById('mdtab-'+id);
+  if (mBtn) mBtn.classList.add('active');
   // Tab-specific init
   if (id==='calendar') loadCalEvents();
   if (id==='focus')    setTimeout(loadSmartSuggestions, 400); // slight delay so DOM is ready
@@ -499,6 +503,29 @@ function switchTab(id) {
       if (!document.querySelector('.gen-sub-pane.active')) switchGenSub('imggen');
     }, 50);
   }
+}
+
+// ── Mobile drawer ─────────────────────────────────────────────────────────────
+function openMobDrawer() {
+  const d = document.getElementById('mob-drawer');
+  if (d) d.style.display = 'block';
+  document.body.style.overflow = 'hidden';
+}
+function closeMobDrawer(e) {
+  if (e && e.target !== document.getElementById('mob-drawer')) return; // only close on backdrop click
+  const d = document.getElementById('mob-drawer');
+  if (d) d.style.display = 'none';
+  document.body.style.overflow = '';
+}
+function mobSwitchTab(id) {
+  // Close drawer first, then switch
+  const d = document.getElementById('mob-drawer');
+  if (d) d.style.display = 'none';
+  document.body.style.overflow = '';
+  switchTab(id);
+  // Scroll active tab button into view on the tab bar (for tablet width)
+  const btn = document.getElementById('tab-'+id);
+  if (btn) btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
 }
 
 // ── Generate sub-tab switching ────────────────────────────────────────────────
@@ -1784,35 +1811,109 @@ function colorIdFromHex(hex) {
 // ══════════════════════════════════════════════════════════════════
 // PILLAR 1 — Smart Scheduling
 // ══════════════════════════════════════════════════════════════════
+// ── Local smart scheduling — works for ALL users, no Google needed ─────────────
+function getLocalSmartSuggestions() {
+  const now = new Date();
+  const hour = now.getHours();
+  const minute = now.getMinutes();
+  const todayStr = now.toLocaleDateString('en-US', { weekday: 'short' });
+  const tomorrowStr = new Date(now.getTime() + 86400000).toLocaleDateString('en-US', { weekday: 'short' });
+
+  // Time-of-day focus windows with productivity science backing
+  const WINDOWS = [
+    { startH: 5,  startM: 30, label: '🌅 Early Bird Deep Work',  dur: 90,  score: 'ideal',  note: 'Peak cognitive clarity before distractions' },
+    { startH: 8,  startM: 0,  label: '⚡ Morning Power Block',    dur: 90,  score: 'ideal',  note: 'Peak executive function window' },
+    { startH: 9,  startM: 30, label: '🍅 Morning Pomodoro',       dur: 25,  score: 'ideal',  note: 'High alertness, low interruptions' },
+    { startH: 10, startM: 0,  label: '⚡ Deep Work Sprint',       dur: 45,  score: 'ideal',  note: 'Optimal for complex problem-solving' },
+    { startH: 11, startM: 0,  label: '🌊 Pre-Lunch Flow',         dur: 25,  score: 'good',   note: 'Last push before midday break' },
+    { startH: 13, startM: 30, label: '🍅 Post-Lunch Pomodoro',    dur: 25,  score: 'good',   note: 'Energy recovery window' },
+    { startH: 14, startM: 30, label: '⚡ Afternoon Focus',        dur: 45,  score: 'good',   note: 'Second wind — good for execution tasks' },
+    { startH: 16, startM: 0,  label: '🌊 Late Afternoon Flow',    dur: 45,  score: 'good',   note: 'Wrap-up and creative synthesis' },
+    { startH: 19, startM: 0,  label: '🌙 Evening Deep Work',      dur: 90,  score: 'good',   note: 'Quiet time, high focus potential' },
+    { startH: 20, startM: 30, label: '🍅 Night Pomodoro',         dur: 25,  score: 'short',  note: 'Quick focused sprint before wind-down' },
+  ];
+
+  const suggestions = [];
+  // Today: find next 3 windows that haven't started yet (or started within last 15 min)
+  const nowMins = hour * 60 + minute;
+  for (const w of WINDOWS) {
+    if (suggestions.filter(s => s.day === todayStr).length >= 3) break;
+    const wMins = w.startH * 60 + w.startM;
+    if (wMins + 15 < nowMins) continue; // already passed
+    const start = new Date(now); start.setHours(w.startH, w.startM, 0, 0);
+    const end   = new Date(start.getTime() + w.dur * 60000);
+    suggestions.push({
+      day: todayStr, date: now.toLocaleDateString('en-US',{month:'short',day:'numeric'}),
+      startTime: start.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true}),
+      endTime:   end.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true}),
+      startISO: start.toISOString(), endISO: end.toISOString(),
+      durationMin: w.dur, label: w.label, score: w.score, note: w.note, local: true,
+    });
+  }
+  // Tomorrow: first 3 morning windows
+  const tomorrow = new Date(now.getTime() + 86400000);
+  for (const w of WINDOWS) {
+    if (suggestions.filter(s => s.day === tomorrowStr).length >= 3) break;
+    if (w.startH < 7) continue; // skip very early tomorrow
+    const start = new Date(tomorrow); start.setHours(w.startH, w.startM, 0, 0);
+    const end   = new Date(start.getTime() + w.dur * 60000);
+    suggestions.push({
+      day: tomorrowStr, date: tomorrow.toLocaleDateString('en-US',{month:'short',day:'numeric'}),
+      startTime: start.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true}),
+      endTime:   end.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true}),
+      startISO: start.toISOString(), endISO: end.toISOString(),
+      durationMin: w.dur, label: w.label, score: w.score, note: w.note, local: true,
+    });
+  }
+  return suggestions.slice(0, 6);
+}
+
+function renderSmartSuggestions(suggestions, isLocal) {
+  const wrap = document.getElementById('smart-suggestions');
+  if (!wrap) return;
+  const localBadge = isLocal
+    ? '<div style="font-size:10px;color:#888;margin-bottom:8px;padding:5px 10px;background:rgba(168,85,247,.07);border-radius:8px;border:1px solid rgba(168,85,247,.15)">📍 Smart windows based on time-of-day patterns · <a href="#" onclick="openAuthPopup(\'/api/auth/google\');return false" style="color:var(--accent);text-decoration:none">Connect Google Calendar</a> for calendar-aware suggestions</div>'
+    : '';
+  wrap.innerHTML = localBadge + suggestions.map(s => `
+    <div class="ss-card ${s.score}" onclick="startFocusFromSuggestion('${s.startISO}','${s.endISO}',${s.durationMin})">
+      <div class="ss-day">${s.day}</div>
+      <div style="flex:1;min-width:0">
+        <div class="ss-time">${s.startTime} → ${s.endTime}</div>
+        <div class="ss-label">${s.label}${s.note ? '<span style="display:block;font-size:10px;color:#666;font-weight:400;margin-top:1px">'+s.note+'</span>' : ''}</div>
+      </div>
+      <div class="ss-dur">${s.durationMin}m</div>
+      ${!s.local ? `<button class="ss-btn" onclick="event.stopPropagation();blockSuggestion('${s.startISO}','${s.endISO}',${s.durationMin})">Block</button>` : `<button class="ss-btn" onclick="event.stopPropagation();startFocusFromSuggestion('${s.startISO}','${s.endISO}',${s.durationMin})">Start</button>`}
+    </div>
+  `).join('');
+}
+
 function loadSmartSuggestions() {
   const wrap = document.getElementById('smart-suggestions');
   if (!wrap) return;
+
+  // Non-Google users: show local time-of-day suggestions immediately
   if (!FS_USER) {
-    wrap.innerHTML = '<div style="font-size:12px;color:#555;text-align:center;padding:10px">Sign in with Google to see your optimal focus windows</div>';
+    const local = getLocalSmartSuggestions();
+    renderSmartSuggestions(local, true);
     return;
   }
+
   wrap.innerHTML = '<div style="font-size:12px;color:#666;text-align:center;padding:10px"><i class="fas fa-spinner fa-spin"></i> Analyzing your calendar...</div>';
   fetch('/api/smart/suggest-focus', { credentials: 'include' })
     .then(r => r.json())
     .then(d => {
       if (d.error || !d.suggestions?.length) {
-        wrap.innerHTML = '<div style="font-size:12px;color:#555;text-align:center;padding:10px">No open windows found for today/tomorrow — your schedule is packed! 💪</div>';
+        // Google user but no calendar events — fall back to local suggestions
+        const local = getLocalSmartSuggestions();
+        renderSmartSuggestions(local, false);
         return;
       }
-      wrap.innerHTML = d.suggestions.map(s => `
-        <div class="ss-card ${s.score}" onclick="startFocusFromSuggestion('${s.startISO}','${s.endISO}',${s.durationMin})">
-          <div class="ss-day">${s.day}</div>
-          <div style="flex:1;min-width:0">
-            <div class="ss-time">${s.startTime} → ${s.endTime}</div>
-            <div class="ss-label">${s.label}</div>
-          </div>
-          <div class="ss-dur">${s.durationMin}m</div>
-          <button class="ss-btn" onclick="event.stopPropagation();blockSuggestion('${s.startISO}','${s.endISO}',${s.durationMin})">Block</button>
-        </div>
-      `).join('');
+      renderSmartSuggestions(d.suggestions, false);
     })
     .catch(() => {
-      wrap.innerHTML = '<div style="font-size:12px;color:#555;text-align:center;padding:10px">Couldn\'t load suggestions — check your connection</div>';
+      // Network error — fall back to local
+      const local = getLocalSmartSuggestions();
+      renderSmartSuggestions(local, true);
     });
 }
 
@@ -1965,41 +2066,116 @@ function _addSessionToCalendar(durationMin, startISO) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// PILLAR 3a — Weekly Review
+// PILLAR 3a — Weekly Review (hybrid: D1 for signed-in, localStorage for guests)
 // ══════════════════════════════════════════════════════════════════
+
+function _computeLocalWeeklyReview() {
+  // Pull sessions from localStorage
+  const history = JSON.parse(localStorage.getItem('fs_session_history') || '[]');
+  const now = new Date();
+  const weekAgo = new Date(now.getTime() - 7 * 86400000);
+  const weekStart = weekAgo.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  const weekEnd   = now.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+
+  // Include current-session data from state too
+  const liveFocusMin = Math.round((state.timer?.totalFocusSec || 0) / 60);
+  const liveSessions = state.timer?.sessions || 0;
+  const liveStreak   = state.timer?.streak   || 0;
+
+  // Filter to this week
+  const thisWeek = history.filter(s => {
+    try { return new Date(s.date || s.created_at) >= weekAgo; } catch { return false; }
+  });
+
+  const storedFocusMin = thisWeek.reduce((t, s) => t + (s.durationMins || 0), 0);
+  const focusMin  = storedFocusMin + liveFocusMin;
+  const sessions  = thisWeek.length + liveSessions;
+  const streak    = liveStreak || (thisWeek.length > 0 ? Math.min(thisWeek.length, 7) : 0);
+
+  // FlowScore formula matching backend
+  const sessionScore = Math.min(sessions * 8, 40);
+  const timeScore    = Math.min(focusMin / 3, 30);
+  const streakScore  = Math.min(streak * 5, 20);
+  const flowScore    = Math.min(100, Math.round(sessionScore + timeScore + streakScore + 10));
+
+  // Output breakdown
+  const outputCounts = {};
+  thisWeek.forEach(s => { if (s.outputType) outputCounts[s.outputType] = (outputCounts[s.outputType] || 0) + 1; });
+  const topOutput = Object.entries(outputCounts).sort((a,b) => b[1]-a[1])[0]?.[0];
+
+  // Generate wins and improvements
+  const wins = [];
+  const improve = [];
+  if (sessions >= 5) wins.push(`${sessions} focus sessions completed this week`);
+  else if (sessions > 0) wins.push(`${sessions} focus session${sessions > 1 ? 's' : ''} completed — building momentum`);
+  if (focusMin >= 120) wins.push(`${focusMin}m of deep work — strong output`);
+  if (streak >= 3) wins.push(`${streak}-day streak — consistency is building`);
+  if (topOutput) wins.push(`Most productive output: ${topOutput}`);
+  if (sessions === 0) improve.push('Start your first focus session to begin tracking your FlowScore');
+  else if (sessions < 5) improve.push(`Aim for ${5 - sessions} more sessions to hit your weekly goal`);
+  if (focusMin < 90) improve.push('Try to hit 90 minutes of deep work this week');
+  if (streak < 3) improve.push('Build a 3-day streak for a consistency boost');
+  if (!topOutput && sessions > 0) improve.push('Log what you produce after each session for better insights');
+
+  return {
+    week: `${weekStart} – ${weekEnd}`,
+    flowScore: flowScore || 10,
+    focusMin,
+    sessions,
+    streak,
+    meetingCount: 0,
+    wins: wins.length ? wins : ['Keep going — your wins are coming!'],
+    improve: improve.length ? improve : ['You\'re doing great — keep the momentum!'],
+    isLocal: true,
+  };
+}
+
+function _renderWeeklyReview(d) {
+  const card = document.getElementById('weekly-review-card');
+  if (!card) return;
+  card.style.display = 'block';
+  const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  setEl('wr-dates', d.week);
+  setEl('wr-score-num', d.flowScore);
+  setEl('wr-focus-min', d.focusMin + 'm');
+  setEl('wr-sessions', d.sessions);
+  setEl('wr-streak', d.streak + '🔥');
+  setEl('wr-meetings', d.meetingCount !== undefined ? d.meetingCount : '—');
+  const ring = document.getElementById('wr-ring');
+  if (ring) { const c = 163.4; ring.style.strokeDashoffset = c - (d.flowScore / 100) * c; }
+  const winsEl = document.getElementById('wr-wins');
+  if (winsEl) winsEl.innerHTML = (d.wins || []).map(w => `<div class="wr-item">✓ ${escHtml(String(w))}</div>`).join('') || '<div class="wr-item" style="color:#555">Keep going — your wins are coming!</div>';
+  const impEl = document.getElementById('wr-improve');
+  if (impEl) impEl.innerHTML = (d.improve || []).map(i => `<div class="wr-item">→ ${escHtml(String(i))}</div>`).join('') || '<div class="wr-item" style="color:#555">Looking great this week!</div>';
+  // Local badge
+  if (d.isLocal) {
+    const badge = document.getElementById('wr-local-badge');
+    if (badge) badge.style.display = 'flex';
+  }
+}
+
 function loadWeeklyReview() {
   const card = document.getElementById('weekly-review-card');
   if (!card) return;
+
+  // Non-Google users: compute locally from localStorage + live state
+  if (!FS_USER) {
+    _renderWeeklyReview(_computeLocalWeeklyReview());
+    return;
+  }
+
   const params = new URLSearchParams({
-    focusMin: Math.round(state.timer.totalFocusSec / 60),
-    sessions: state.timer.sessions,
-    streak:   state.timer.streak,
+    focusMin: Math.round((state.timer?.totalFocusSec || 0) / 60),
+    sessions: state.timer?.sessions || 0,
+    streak:   state.timer?.streak   || 0,
   });
   fetch(`/api/weekly-review?${params}`, { credentials: 'include' })
     .then(r => r.json())
     .then(d => {
-      card.style.display = 'block';
-      const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-      setEl('wr-dates', d.week);
-      setEl('wr-score-num', d.flowScore);
-      setEl('wr-focus-min', d.focusMin + 'm');
-      setEl('wr-sessions', d.sessions);
-      setEl('wr-streak', d.streak + '🔥');
-      setEl('wr-meetings', d.meetingCount);
-      // Animate ring
-      const ring = document.getElementById('wr-ring');
-      if (ring) {
-        const circ = 163.4;
-        ring.style.strokeDashoffset = circ - (d.flowScore / 100) * circ;
-      }
-      // Wins
-      const winsEl = document.getElementById('wr-wins');
-      if (winsEl) winsEl.innerHTML = (d.wins || []).map(w => `<div class="wr-item">✓ ${escHtml(w)}</div>`).join('') || '<div class="wr-item" style="color:#555">Keep going — your wins are coming!</div>';
-      // Improve
-      const impEl = document.getElementById('wr-improve');
-      if (impEl) impEl.innerHTML = (d.improve || []).map(i => `<div class="wr-item">→ ${escHtml(i)}</div>`).join('') || '<div class="wr-item" style="color:#555">Looking great this week!</div>';
+      if (d.error) { _renderWeeklyReview(_computeLocalWeeklyReview()); return; }
+      _renderWeeklyReview(d);
     })
-    .catch(() => { /* silent fail — card stays hidden */ });
+    .catch(() => _renderWeeklyReview(_computeLocalWeeklyReview()));
 }
 
 // ══════════════════════════════════════════════════════════════════

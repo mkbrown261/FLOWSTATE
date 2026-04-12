@@ -5492,6 +5492,64 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg-base);co
 .orb2{width:400px;height:400px;bottom:-100px;right:-100px;background:radial-gradient(circle,rgba(236,72,153,.18),transparent 70%)}
 .amb-active .orb1,.amb-active .orb2{opacity:1}
 header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba(26,26,46,.9);border-bottom:1px solid var(--border);backdrop-filter:blur(20px);flex-shrink:0;z-index:100}
+/* ── Mobile hamburger ── */
+.mob-menu-btn{display:none;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--border);border-radius:9px;background:transparent;color:var(--text-p);cursor:pointer;font-size:16px;flex-shrink:0}
+.mob-drawer{display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);backdrop-filter:blur(6px)}
+.mob-drawer-inner{position:absolute;top:0;left:0;bottom:0;width:260px;background:#0f0f1a;border-right:1px solid var(--border-h);padding:16px 12px;overflow-y:auto;animation:slideDrawer .22s ease}
+@keyframes slideDrawer{from{transform:translateX(-100%)}to{transform:translateX(0)}}
+.mob-drawer-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+.mob-drawer-title{font-size:15px;font-weight:900;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.mob-close{width:30px;height:30px;border:none;background:transparent;color:var(--text-s);cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;border-radius:7px}
+.mob-close:hover{background:rgba(255,255,255,.07);color:var(--text-p)}
+.mob-tab-btn{display:flex;align-items:center;gap:10px;width:100%;padding:10px 12px;border-radius:10px;border:none;background:transparent;color:var(--text-s);cursor:pointer;font-size:13px;font-weight:600;text-align:left;transition:.15s}
+.mob-tab-btn:hover{background:rgba(168,85,247,.08);color:var(--text-p)}
+.mob-tab-btn.active{background:rgba(168,85,247,.13);color:var(--accent);border-left:3px solid var(--accent);padding-left:9px}
+.mob-tab-btn i{width:18px;text-align:center;font-size:13px;flex-shrink:0}
+.mob-tab-btn .mob-badge{font-size:9px;font-weight:800;padding:2px 6px;border-radius:99px;background:linear-gradient(135deg,#ec4899,#f59e0b);color:#fff;margin-left:auto}
+.mob-tab-btn .mob-badge-teal{font-size:9px;font-weight:800;padding:2px 6px;border-radius:99px;background:linear-gradient(135deg,#10b981,#06b6d4);color:#fff;margin-left:auto}
+.mob-tab-btn .mob-badge-cyan{font-size:9px;font-weight:800;padding:2px 6px;border-radius:99px;background:linear-gradient(135deg,#a855f7,#06b6d4);color:#fff;margin-left:auto}
+.mob-drawer-section{font-size:10px;font-weight:700;color:#444;text-transform:uppercase;letter-spacing:.8px;padding:8px 12px 4px;margin-top:4px}
+.mob-drawer-actions{display:flex;gap:6px;flex-wrap:wrap;padding:10px 12px;border-top:1px solid var(--border);margin-top:8px}
+.mob-action-btn{flex:1;min-width:60px;padding:7px 10px;border-radius:9px;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;font-size:11px;font-weight:600;text-align:center;transition:.15s}
+.mob-action-btn:hover{border-color:var(--border-h);color:var(--text-p)}
+@media(max-width:640px){
+  .mob-menu-btn{display:flex}
+  .tabs-bar .tab-btn{display:none}
+  .tabs-bar .tab-btn.active{display:flex}
+  .tabs-bar>div[style*="margin-left:auto"]{display:none!important}
+  header .dt-widget{display:none}
+  header #fs-score-badge{display:none!important}
+  .tabs-bar{padding:4px 10px;gap:4px;justify-content:space-between}
+  .tab-pane{padding:10px 8px}
+  /* Timer */
+  .timer-display{font-size:56px!important}
+  .timer-wrap{gap:12px!important}
+  .phase-btns{flex-wrap:wrap;gap:4px}
+  /* Chat */
+  .msg-bub{max-width:92%!important}
+  .chat-input-row{flex-wrap:wrap;gap:6px}
+  /* Calendar */
+  .cal-wrap{flex-direction:column}
+  .cal-panel.open{width:100%!important}
+  .cal-toolbar{flex-wrap:wrap;gap:6px}
+  /* Focus prompt */
+  .focus-cal-prompt{bottom:10px!important;right:8px!important;left:8px!important;max-width:none!important}
+  /* Metrics */
+  .wr-stats-row{gap:6px!important}
+  .wr-cols{flex-direction:column!important}
+  /* Modal */
+  .modal-card{padding:18px!important;margin:8px!important;width:calc(100vw - 16px)!important;max-width:none!important}
+  /* Board */
+  .kanban-board{flex-direction:column!important}
+  .kanban-col{min-width:0!important;width:100%!important}
+  /* Smart suggestions */
+  .ss-card{flex-wrap:wrap;gap:4px}
+}
+@media(min-width:641px) and (max-width:900px){
+  .tabs-bar{gap:1px;padding:4px 8px}
+  .tab-btn{padding:5px 9px;font-size:11px}
+  .tab-pane{padding:14px}
+}
 .logo{font-size:17px;font-weight:900;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:-.5px;cursor:pointer}
 .dt-widget{margin-left:auto;font-size:12px;color:var(--text-s);cursor:pointer;display:flex;align-items:center;gap:7px;padding:5px 11px;border-radius:8px;border:1px solid transparent;transition:.2s}
 .dt-widget:hover{border-color:var(--border);background:rgba(168,85,247,.05)}
@@ -5796,6 +5854,7 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .ss-btn:hover{opacity:.85}
 /* ── Weekly Review ── */
 .weekly-review-card{background:var(--bg-panel);border:1px solid rgba(168,85,247,.3);border-radius:16px;padding:18px;margin-bottom:14px;animation:fadeUp .35s ease}
+#wr-local-badge a:hover{text-decoration:underline!important}
 .wr-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
 .wr-title{font-size:15px;font-weight:800;color:#f0f0f0}
 .wr-dates{font-size:11px;color:#888;margin-top:2px}
@@ -5909,9 +5968,9 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .empty{text-align:center;padding:36px 18px;color:#888}
 .empty i{font-size:34px;margin-bottom:11px;display:block;opacity:.4}
 .empty p{font-size:13px;margin-bottom:14px;line-height:1.6}
-.auth-banner{background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(236,72,153,.05));border:1px solid rgba(168,85,247,.2);border-radius:13px;padding:18px;text-align:center;margin-bottom:14px}
-.auth-banner h3{font-size:15px;font-weight:800;margin-bottom:5px}
-.auth-banner p{font-size:13px;color:var(--text-s);margin-bottom:13px}
+.auth-banner{background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(236,72,153,.05));border:1px solid rgba(168,85,247,.2);border-radius:13px;padding:14px 16px;margin-bottom:14px}
+.auth-banner h3{font-size:14px;font-weight:800;margin-bottom:4px}
+.auth-banner p{font-size:12px;color:var(--text-s);margin-bottom:10px}
 .demo-banner{background:linear-gradient(135deg,rgba(245,158,11,.08),rgba(239,68,68,.05));border:1px solid rgba(245,158,11,.3);border-radius:11px;padding:11px 16px;font-size:12px;color:var(--warn);margin-bottom:14px;display:flex;align-items:center;gap:8px}
 .spinner{width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;display:inline-block}
 /* select.fs-sel removed — all dropdowns now use gs-model-pill pickers */
@@ -6023,8 +6082,40 @@ em{color:var(--accent);font-style:italic}
   <div class="ob-card" id="ob-card"></div>
 </div>
 
+<!-- MOBILE DRAWER -->
+<div class="mob-drawer" id="mob-drawer" onclick="closeMobDrawer(event)">
+  <div class="mob-drawer-inner" id="mob-drawer-inner">
+    <div class="mob-drawer-header">
+      <span class="mob-drawer-title">⚡ FLOWSTATE</span>
+      <button class="mob-close" onclick="closeMobDrawer()">✕</button>
+    </div>
+    <div class="mob-drawer-section">Main</div>
+    <button class="mob-tab-btn active" id="mdtab-focus"     onclick="mobSwitchTab('focus')"><i class="fas fa-bullseye"></i>Focus</button>
+    <button class="mob-tab-btn"        id="mdtab-chat"      onclick="mobSwitchTab('chat')"><i class="fas fa-comments"></i>Chat</button>
+    <button class="mob-tab-btn"        id="mdtab-calendar"  onclick="mobSwitchTab('calendar')"><i class="fas fa-calendar-alt"></i>Calendar</button>
+    <button class="mob-tab-btn"        id="mdtab-metrics"   onclick="mobSwitchTab('metrics')"><i class="fas fa-chart-line"></i>Metrics</button>
+    <button class="mob-tab-btn"        id="mdtab-board"     onclick="mobSwitchTab('board')"><i class="fas fa-columns"></i>Board</button>
+    <div class="mob-drawer-section">Tools</div>
+    <button class="mob-tab-btn"        id="mdtab-generate"  onclick="mobSwitchTab('generate')"><i class="fas fa-magic"></i>Generate</button>
+    <button class="mob-tab-btn"        id="mdtab-audio"     onclick="mobSwitchTab('audio')"><i class="fas fa-music" style="color:#10b981"></i>Audio <span class="mob-badge-teal">Studio</span></button>
+    <button class="mob-tab-btn"        id="mdtab-264"       onclick="mobSwitchTab('264')"><i class="fas fa-film" style="color:#ec4899"></i>264 Pro <span class="mob-badge">PRO</span></button>
+    <button class="mob-tab-btn"        id="mdtab-clawbot"   onclick="mobSwitchTab('clawbot')"><i class="fas fa-robot" style="color:#06b6d4"></i>ClawFlow <span class="mob-badge-cyan">AI</span></button>
+    <div class="mob-drawer-section">Growth</div>
+    <button class="mob-tab-btn"        id="mdtab-learn"     onclick="mobSwitchTab('learn')"><i class="fas fa-graduation-cap"></i>Learn</button>
+    <button class="mob-tab-btn"        id="mdtab-restore"   onclick="mobSwitchTab('restore')"><i class="fas fa-leaf"></i>Restore</button>
+    <button class="mob-tab-btn"        id="mdtab-team"      onclick="mobSwitchTab('team')"><i class="fas fa-users"></i>Team</button>
+    <div class="mob-drawer-actions">
+      <button class="mob-action-btn" onclick="openCredsModal();closeMobDrawer()"><i class="fas fa-key"></i> Keys</button>
+      <button class="mob-action-btn" onclick="openTopupModal();closeMobDrawer()"><i class="fas fa-coins"></i> Tokens</button>
+      <button class="mob-action-btn" onclick="openPricingModal();closeMobDrawer()"><i class="fas fa-star"></i> Pro</button>
+      <button class="mob-action-btn" onclick="openSettingsModal();closeMobDrawer()"><i class="fas fa-gear"></i> Settings</button>
+    </div>
+  </div>
+</div>
+
 <!-- HEADER -->
 <header id="main-header" style="display:none">
+  <button class="mob-menu-btn" id="mob-menu-btn" onclick="openMobDrawer()"><i class="fas fa-bars"></i></button>
   <div class="logo" id="logo-home">&#9889; FLOWSTATE</div>
   <div class="dt-widget" id="dt-widget">
     <i class="fas fa-calendar" style="font-size:10px;color:var(--text-m)"></i>
@@ -6156,9 +6247,17 @@ em{color:var(--accent);font-style:italic}
 <!-- CALENDAR TAB -->
 <div class="tab-pane" id="tab-pane-calendar" style="display:none">
   <div id="cal-auth-banner" class="auth-banner" style="display:none">
-    <h3>&#128197; Connect Google Calendar</h3>
-    <p>See upcoming events, block focus time, and create events directly from FlowState.</p>
-    <button class="btn-primary" id="cal-connect-btn"><i class="fas fa-google"></i>&nbsp; Connect Google</button>
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <h3 style="margin:0 0 4px">&#128197; Connect Google Calendar</h3>
+        <p style="margin:0 0 10px">See real events, block focus time, and log sessions automatically.</p>
+        <button class="btn-primary" id="cal-connect-btn" style="font-size:12px;padding:7px 16px"><i class="fas fa-google"></i>&nbsp; Connect Google</button>
+      </div>
+      <div style="font-size:11px;color:#666;min-width:160px">
+        <div style="font-weight:700;color:#888;margin-bottom:4px">Without Google you can still:</div>
+        <div style="line-height:1.8">✓ Track focus sessions<br>✓ View your FlowScore<br>✓ Use Smart Scheduling<br>✓ Log outputs &amp; wins</div>
+      </div>
+    </div>
   </div>
   <div id="cal-debug-panel" style="display:none;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.4);border-radius:8px;padding:10px 12px;font-size:12px;font-family:monospace;color:#fca5a5;margin-bottom:10px"></div>
   <!-- Toolbar -->
@@ -6226,6 +6325,10 @@ em{color:var(--accent);font-style:italic}
           <div class="wr-score-lbl">FlowScore</div>
         </div>
       </div>
+    </div>
+    <div id="wr-local-badge" style="display:none;align-items:center;gap:6px;font-size:10px;color:#888;background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.15);border-radius:8px;padding:5px 10px;margin-bottom:10px">
+      <i class="fas fa-database" style="color:var(--accent);font-size:9px"></i>
+      Local data · <a href="#" onclick="openAuthPopup('/api/auth/google');return false" style="color:var(--accent);text-decoration:none">Connect Google</a> for calendar-aware review
     </div>
     <div class="wr-stats-row">
       <div class="wr-stat"><div class="wr-stat-val" id="wr-focus-min">–</div><div class="wr-stat-lbl">Focus min</div></div>
