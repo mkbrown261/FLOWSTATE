@@ -8169,13 +8169,14 @@ app.post('/api/avatar', async (c) => {
   const buf     = await file.arrayBuffer()
 
   await r2.put(r2Key, buf, {
-    httpMetadata: { contentType: file.type, cacheControl: 'public, max-age=31536000' },
+    httpMetadata: { contentType: file.type, cacheControl: 'public, max-age=86400' },
     customMetadata: { email: session.email, uploadedAt: new Date().toISOString() },
   })
 
-  // Public URL served via GET /api/avatar/:key
+  // Encode the full key as base64url so slashes don't break the route
+  const keyB64    = btoa(r2Key).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'')
   const origin    = new URL(c.req.url).origin
-  const avatarUrl = `${origin}/api/avatar/img/${encodeURIComponent(r2Key)}?v=${Date.now()}`
+  const avatarUrl = `${origin}/api/avatar/img/${keyB64}?v=${Date.now()}`
 
   // Upsert avatar_url into public_profiles (non-fatal)
   try {
@@ -8202,10 +8203,18 @@ app.post('/api/avatar', async (c) => {
 })
 
 // GET /api/avatar/img/:key — serve avatar image publicly from R2
-app.get('/api/avatar/img/:key{.+}', async (c) => {
+// :key is base64url-encoded to avoid slash issues in URL routing
+app.get('/api/avatar/img/:key', async (c) => {
   const r2 = c.env?.R2
   if (!r2) return c.json({ error: 'storage_unavailable' }, 503)
-  const key = decodeURIComponent(c.req.param('key'))
+  // Decode base64url back to the original R2 key
+  let key: string
+  try {
+    const b64 = c.req.param('key').replace(/-/g,'+').replace(/_/g,'/')
+    key = atob(b64)
+  } catch(_) {
+    return c.json({ error: 'invalid_key' }, 400)
+  }
   // Only serve files under the avatars/ namespace
   if (!key.startsWith('avatars/')) return c.json({ error: 'forbidden' }, 403)
   const obj = await r2.get(key)

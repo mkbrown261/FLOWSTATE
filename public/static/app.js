@@ -1447,10 +1447,10 @@ function setupAmbientChips() {
     <i class="fas fa-chevron-down" style="font-size:9px;color:var(--text-m);margin-left:1px"></i>
   </div>
   <div class="u-dropdown" id="u-dropdown">
-    <button class="u-drop-item" id="u-drop-avatar-btn" onclick="document.getElementById('u-avatar-file-input').click()">
+    <button class="u-drop-item" id="u-drop-avatar-btn">
       <i class="fas fa-camera"></i> Change Profile Picture
     </button>
-    <input type="file" id="u-avatar-file-input" accept="image/jpeg,image/png,image/gif,image/webp" capture="user" style="display:none">
+    <input type="file" id="u-avatar-file-input" accept="image/*" style="display:none">
     <div id="u-avatar-upload-progress" style="display:none">
       <div class="u-avatar-form" style="padding-top:4px">
         <div style="font-size:11px;color:var(--text-s);text-align:center;padding:4px 0" id="u-avatar-progress-text">Uploading…</div>
@@ -1470,15 +1470,25 @@ function setupAmbientChips() {
   </div>
 </div>`;
 
+    // Open file picker — use a dedicated click handler that stops propagation
+    // so the "click outside" listener doesn't immediately close the dropdown
+    document.getElementById('u-drop-avatar-btn')?.addEventListener('click', function(e) {
+      e.stopPropagation();
+      document.getElementById('u-avatar-file-input')?.click();
+    });
+
     // File input change — auto-upload when user picks a file
     document.getElementById('u-avatar-file-input')?.addEventListener('change', function(e) {
       const file = e.target.files?.[0];
       if (file) uploadAvatarFile(file);
     });
 
-    // Close dropdown when clicking outside
+    // Close dropdown when clicking outside — but NOT when interacting with file picker
     document.addEventListener('click', function(e) {
       const wrap = document.getElementById('u-wrap');
+      const fileInput = document.getElementById('u-avatar-file-input');
+      // Ignore clicks that are part of the file-picker flow
+      if (fileInput && (e.target === fileInput)) return;
       if (wrap && !wrap.contains(e.target)) {
         const dd = document.getElementById('u-dropdown');
         if (dd) { dd.style.opacity='0'; dd.style.visibility='hidden'; dd.style.transform='translateY(-4px)'; }
@@ -1500,69 +1510,88 @@ function setupAmbientChips() {
 
 // Upload avatar file — multipart POST to /api/avatar, updates the visible img + session cookie
 async function uploadAvatarFile(file) {
-  const allowed = ['image/jpeg','image/png','image/gif','image/webp'];
-  if (!allowed.includes(file.type)) { notify('Please choose a JPEG, PNG, GIF, or WebP image.', 'warning'); return; }
-  if (file.size > 5 * 1024 * 1024) { notify('Image must be under 5 MB.', 'warning'); return; }
+  // Basic client-side checks
+  if (!file.type.startsWith('image/')) { notify('Please choose an image file.', 'warning'); return; }
+  if (file.size > 5 * 1024 * 1024)    { notify('Image must be under 5 MB.', 'warning'); return; }
 
-  // Show progress bar inside dropdown
-  const progress  = document.getElementById('u-avatar-upload-progress');
-  const progText  = document.getElementById('u-avatar-progress-text');
-  const progBar   = document.getElementById('u-avatar-progress-bar');
+  // ── Step 1: show preview INSTANTLY from local file using FileReader ──────
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const localUrl = ev.target.result;
+    _applyAvatarToUI(localUrl);
+  };
+  reader.readAsDataURL(file);
+
+  // ── Step 2: show progress bar ─────────────────────────────────────────────
+  const progress = document.getElementById('u-avatar-upload-progress');
+  const progText = document.getElementById('u-avatar-progress-text');
+  const progBar  = document.getElementById('u-avatar-progress-bar');
   if (progress) progress.style.display = 'block';
-  if (progText)  progText.textContent  = 'Uploading…';
-  if (progBar)   progBar.style.width   = '30%';
+  if (progText)  progText.textContent  = 'Saving…';
+  if (progBar)   progBar.style.width   = '40%';
 
+  // ── Step 3: upload to server ──────────────────────────────────────────────
   try {
-    const form = new FormData();
-    form.append('file', file);
+    const formData = new FormData();
+    formData.append('file', file);
 
-    if (progBar) progBar.style.width = '60%';
-    const res  = await fetch('/api/avatar', { method: 'POST', credentials: 'include', body: form });
-    if (progBar) progBar.style.width = '90%';
+    if (progBar) progBar.style.width = '70%';
+    const res  = await fetch('/api/avatar', { method: 'POST', credentials: 'include', body: formData });
+    if (progBar) progBar.style.width = '95%';
     const data = await res.json();
 
     if (data.ok) {
-      if (progBar) progBar.style.width = '100%';
-      if (progText) progText.textContent = 'Done!';
+      // Replace the temporary local blob URL with the permanent server URL
+      _applyAvatarToUI(data.url);
+      if (window.FS_USER) window.FS_USER.picture = data.url;
 
-      // Update the visible avatar immediately using the returned URL
-      const url      = data.url;
-      const imgEl    = document.getElementById('u-avatar-img');
-      const fallback = document.getElementById('u-avatar-fallback');
-      if (imgEl) {
-        imgEl.src          = url;
-        imgEl.style.display = 'block';
-        if (fallback) fallback.style.display = 'none';
-      } else if (fallback) {
-        fallback.insertAdjacentHTML('beforebegin',
-          `<img class="u-avatar" id="u-avatar-img" src="${url}" alt="avatar" onerror="this.style.display='none'">`);
-        fallback.style.display = 'none';
-      }
-
-      if (window.FS_USER) window.FS_USER.picture = url;
+      if (progBar)  progBar.style.width   = '100%';
+      if (progText) progText.textContent  = 'Done!';
       notify('Profile picture updated!', 'success');
 
-      // Hide progress after brief pause and reset file input
       setTimeout(() => {
         if (progress) progress.style.display = 'none';
         if (progBar)  progBar.style.width    = '0%';
         const fi = document.getElementById('u-avatar-file-input');
         if (fi) fi.value = '';
-      }, 1200);
+      }, 1000);
     } else {
       if (progress) progress.style.display = 'none';
-      const msg = {
-        no_file:     'No file received — please try again.',
-        invalid_type:'Only JPEG, PNG, GIF, or WebP images are allowed.',
-        too_large:   'Image must be under 5 MB.',
+      const msgs = {
+        no_file:             'No file received — please try again.',
+        invalid_type:        'Only image files are allowed.',
+        too_large:           'Image must be under 5 MB.',
         storage_unavailable: 'Storage unavailable — try again shortly.',
-      }[data.error] || 'Upload failed — please try again.';
-      notify(msg, 'warning');
+      };
+      notify(msgs[data.error] || 'Upload failed — please try again.', 'warning');
     }
   } catch(e) {
     if (progress) progress.style.display = 'none';
     notify('Network error — please try again.', 'warning');
   }
+}
+
+// Apply a URL (local blob or remote) to the avatar img element in the header
+function _applyAvatarToUI(url) {
+  let imgEl    = document.getElementById('u-avatar-img');
+  const fallback = document.getElementById('u-avatar-fallback');
+  if (!imgEl) {
+    // First time — no img exists yet, insert one before the fallback div
+    const pill = document.querySelector('.u-pill');
+    if (pill) {
+      const newImg = document.createElement('img');
+      newImg.className = 'u-avatar';
+      newImg.id        = 'u-avatar-img';
+      newImg.alt       = 'avatar';
+      pill.insertBefore(newImg, pill.firstChild);
+      imgEl = newImg;
+    }
+  }
+  if (imgEl) {
+    imgEl.src           = url;
+    imgEl.style.display = 'block';
+  }
+  if (fallback) fallback.style.display = 'none';
 }
 
 // Switch to Focus tab and start the timer
