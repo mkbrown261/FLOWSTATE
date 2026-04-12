@@ -604,6 +604,13 @@ async function _restorePairSession() {
     const res = await fetch('/api/pair/status', { credentials: 'include' });
     const data = await res.json();
     if (data.status === 'paired' && data.data?.partnerEmail) {
+      // Only restore if session hasn't ended yet (endsAt is in the future)
+      const endsAt = data.data?.endsAt;
+      if (endsAt && Date.now() > endsAt) {
+        // Session expired — silently clear it on the server
+        fetch('/api/pair/leave', { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: '{}' }).catch(()=>{});
+        return;
+      }
       _pairState = { ...data.data, status: 'paired', pollTimer: null, pingTimer: null, msgTimer: null, countdownInterval: null };
       // Silently restore — show banner but don't pop the modal
       _updatePairBanner();
@@ -613,7 +620,7 @@ async function _restorePairSession() {
       notify(`🤝 Resuming pair session with ${escHtml(_pairState.partnerName || 'your partner')}`, 'info');
     }
   } catch(e) {}
-
+}
 
 // ── Load real session history from D1, seed state + update UI ─────────────
 async function loadD1History() {
