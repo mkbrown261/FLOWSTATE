@@ -3223,7 +3223,8 @@ function renderTeamLeaderboardFull(el, members, period) {
       </div>
       <div style="padding:10px 0">
         ${sorted.map((m,i) => renderLeaderboardRow({
-          rank: i+1, av: m.avatar || m.name[0].toUpperCase(),
+          rank: i+1,
+          av: m.avatar || String(m.name||'?')[0].toUpperCase(),
           name: m.name, score: m.flowScore, streak: m.streak,
           mins: m.focusMin, medal: medals[i] || `#${i+1}`,
           isMe: m.email === FS_USER?.email,
@@ -3238,10 +3239,19 @@ function renderTeamLeaderboardFull(el, members, period) {
 
 function renderLeaderboardRow(m, isPreview) {
   const scoreColor = m.score >= 70 ? '#10b981' : m.score >= 40 ? '#a855f7' : '#f59e0b';
+  // av can be a photo URL, an emoji, or a single initial letter — render accordingly
+  const isUrl = typeof m.av === 'string' && (m.av.startsWith('http') || m.av.startsWith('/'));
+  const avatarInner = isUrl
+    ? `<img src="${m.av}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;display:block" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+       <span style="display:none;width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#ec4899);align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;position:absolute;top:0;left:0">${String(m.name||'?')[0].toUpperCase()}</span>`
+    : m.av;
+  const avatarWrap = isUrl
+    ? `position:relative;width:32px;height:32px;border-radius:50%;overflow:hidden;flex-shrink:0`
+    : `width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#ec4899);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex-shrink:0`;
   return `
     <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;${m.isMe ? 'background:rgba(168,85,247,.06);border-left:3px solid var(--accent)' : ''}${isPreview ? 'opacity:.6' : ''}">
-      <div style="font-size:16px;width:24px;text-align:center">${m.medal}</div>
-      <div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#ec4899);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex-shrink:0">${m.av}</div>
+      <div style="font-size:16px;width:24px;text-align:center;flex-shrink:0">${m.medal}</div>
+      <div style="${avatarWrap}">${avatarInner}</div>
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.name}${m.isMe ? ' <span style="font-size:10px;color:var(--accent)">(you)</span>' : ''}</div>
         <div style="font-size:11px;color:#666">${m.mins || 0}m focus · ${m.streak || 0}🔥 streak</div>
