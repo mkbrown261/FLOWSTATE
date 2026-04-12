@@ -442,8 +442,9 @@ function setupTabListeners() {
   document.getElementById('cal-refresh')?.addEventListener('click', loadCalEvents);
   document.getElementById('ev-save-btn')?.addEventListener('click', saveCalEvent);
   document.getElementById('ev-cancel-btn')?.addEventListener('click', () => {
-    document.getElementById('add-ev-form')?.classList.remove('show');
-    const detail = document.getElementById('cal-day-detail');
+    const form = document.getElementById('add-ev-form');
+    if (form) { form.style.display = 'none'; form.classList.remove('show'); }
+    const detail = document.getElementById('cal-day-card');
     if (detail) detail.style.display = 'block';
   });
   document.getElementById('btn-gen-img')?.addEventListener('click', generateImage);
@@ -1528,10 +1529,10 @@ function calClosePanel() {
 function calShowAddForm(dateStr) {
   calOpenPanel();
   // Hide day detail, show add form
-  const detail = document.getElementById('cal-day-detail');
+  const detail = document.getElementById('cal-day-card');
   const form = document.getElementById('add-ev-form');
   if (detail) detail.style.display = 'none';
-  if (form) form.classList.add('show');
+  if (form) { form.style.display = 'block'; form.classList.add('show'); }
   if (dateStr) {
     document.getElementById('ev-start').value = dateStr + 'T09:00';
     document.getElementById('ev-end').value   = dateStr + 'T10:00';
@@ -1540,9 +1541,9 @@ function calShowAddForm(dateStr) {
 }
 
 function clickCalDay(dateStr) {
-  const title = document.getElementById('cal-day-panel-title');
-  const evContainer = document.getElementById('cal-day-panel-events');
-  const detail = document.getElementById('cal-day-detail');
+  const title = document.getElementById('cal-day-title');
+  const evContainer = document.getElementById('cal-day-events');
+  const detail = document.getElementById('cal-day-card');
   const addLink = document.getElementById('cal-add-link');
   if (!evContainer) return;
 
@@ -1554,7 +1555,8 @@ function clickCalDay(dateStr) {
   // Open panel, show detail, hide add form
   calOpenPanel();
   if (detail) detail.style.display = 'block';
-  document.getElementById('add-ev-form')?.classList.remove('show');
+  const addEvForm = document.getElementById('add-ev-form');
+  if (addEvForm) { addEvForm.style.display = 'none'; addEvForm.classList.remove('show'); }
 
   // Set title
   const d = new Date(dateStr + 'T12:00:00');
@@ -1716,7 +1718,8 @@ function saveCalEvent() {
     state.cal.events.push(localEv);
     renderCalGrid();
     renderEvents(state.cal.events);
-    document.getElementById('add-ev-form').classList.remove('show');
+    const f0 = document.getElementById('add-ev-form'); if(f0){f0.style.display='none';f0.classList.remove('show');}
+    const dc0 = document.getElementById('cal-day-card'); if(dc0) dc0.style.display='block';
     document.getElementById('ev-title').value='';
     notify('Event added locally (sign in to sync with Google Calendar)','info');
     return;
@@ -1729,7 +1732,8 @@ function saveCalEvent() {
   }).then(r=>r.json()).then(d=>{
     if (d.ok || d.event?.id) {
       notify('Event created! ✓','success');
-      document.getElementById('add-ev-form').classList.remove('show');
+      const f1 = document.getElementById('add-ev-form'); if(f1){f1.style.display='none';f1.classList.remove('show');}
+      const dc1 = document.getElementById('cal-day-card'); if(dc1) dc1.style.display='block';
       document.getElementById('ev-title').value='';
       document.getElementById('ev-desc').value='';
       loadCalEvents();
@@ -1741,7 +1745,8 @@ function saveCalEvent() {
       }).then(r=>r.json()).then(d2=>{
         if (d2.ok||d2.id||d2.event?.id) {
           notify('Event created! ✓','success');
-          document.getElementById('add-ev-form').classList.remove('show');
+          const f2 = document.getElementById('add-ev-form'); if(f2){f2.style.display='none';f2.classList.remove('show');}
+          const dc2 = document.getElementById('cal-day-card'); if(dc2) dc2.style.display='block';
           document.getElementById('ev-title').value='';
           loadCalEvents();
         } else {
