@@ -3761,7 +3761,7 @@ function renderTeamTabs() {
         <button class="btn-sm" id="btn-refresh-team"><i class="fas fa-refresh"></i></button>
       </div>
     </div>
-    <div class="team-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+    <div class="team-tabs" style="display:flex;gap:6px;overflow-x:auto;overflow-y:hidden;margin-bottom:14px;padding-bottom:4px;scrollbar-width:none;-ms-overflow-style:none">
       ${tabs.map(t=>`<button class="team-tab-btn ${state.team.activeTab===t.id?'active':''}" onclick="switchTeamTab('${t.id}')"><i class="fas ${t.icon}"></i> ${t.label}</button>`).join('')}
     </div>
     <div id="team-tab-content"></div>
@@ -4126,13 +4126,16 @@ let _deadlines = JSON.parse(localStorage.getItem('fs_deadlines') || '[]');
 function renderDeadlines(el) {
   const now = new Date();
   const isPro = _tokenBalance?.tier === 'pro' || _tokenBalance?.tier === 'team' || FS_USER?.tier === 'pro' || FS_USER?.tier === 'team';
+  const isLoggedIn = !!FS_USER;
 
-  const allDeadlines = _deadlines.length > 0 ? _deadlines : [
+  // All users can add basic deadlines; Pro gets AI risk analysis
+  const showDemo = _deadlines.length === 0;
+  const allDeadlines = showDemo ? [
     { id:'d1', title:'Q2 Feature Launch', date: new Date(now.getTime()+3*86400000).toISOString().slice(0,10), owner:'Alex Chen', status:'on-track', progress:75, priority:'high' },
     { id:'d2', title:'API Documentation', date: new Date(now.getTime()+7*86400000).toISOString().slice(0,10), owner:'Jordan Lee', status:'at-risk', progress:45, priority:'medium' },
     { id:'d3', title:'Security Audit', date: new Date(now.getTime()+14*86400000).toISOString().slice(0,10), owner:'Sam Rivera', status:'on-track', progress:30, priority:'medium' },
     { id:'d4', title:'Performance Review', date: new Date(now.getTime()+21*86400000).toISOString().slice(0,10), owner:'Taylor Kim', status:'ahead', progress:90, priority:'low' },
-  ];
+  ] : _deadlines;
 
   const sorted = [...allDeadlines].sort((a,b) => new Date(a.date) - new Date(b.date));
 
@@ -4141,14 +4144,15 @@ function renderDeadlines(el) {
     const isOverdue = daysLeft < 0;
     const statusColor = d.status==='ahead'?'var(--blue)':d.status==='on-track'?'var(--green)':isOverdue?'#ff4444':'var(--danger)';
     const urgency = isOverdue?'🔴':daysLeft<=3?'🔴':daysLeft<=7?'🟡':'🟢';
-    const aiRisk = isPro && d.status==='at-risk' ? `<div style="font-size:11px;color:#f59e0b;margin-top:6px;padding:6px 8px;background:rgba(245,158,11,.08);border-radius:6px;border-left:2px solid #f59e0b">⚡ AI: ${daysLeft<=3?'Critical — escalate now':'Progress at '+d.progress+'% with '+daysLeft+'d left — needs daily check-ins'}</div>` : '';
-    const isDemo = !_deadlines.length;
-    return `<div class="deadline-item" style="border:1px solid var(--border);position:relative${isDemo?';opacity:.6':''}">
-      ${isPro && !isDemo ? `<div style="position:absolute;top:8px;right:8px;display:flex;gap:6px">
+    // AI risk analysis is Pro-only
+    const aiRisk = isPro && d.status==='at-risk' ? `<div style="font-size:11px;color:#f59e0b;margin-top:6px;padding:6px 8px;background:rgba(245,158,11,.08);border-radius:6px;border-left:2px solid #f59e0b">⚡ AI Risk: ${daysLeft<=3?'Critical — escalate now':'Progress at '+d.progress+'% with '+daysLeft+'d left — needs daily check-ins'}</div>` : '';
+    const canEdit = !showDemo; // any logged-in user can edit their own deadlines
+    return `<div class="deadline-item" style="border:1px solid var(--border);position:relative${showDemo?';opacity:.6':''}">
+      ${canEdit ? `<div style="position:absolute;top:8px;right:8px;display:flex;gap:6px">
         <button onclick="_editDeadline('${d.id}')" style="background:none;border:none;cursor:pointer;color:var(--text-s);font-size:12px;padding:2px 5px" title="Edit"><i class="fas fa-pencil"></i></button>
         <button onclick="_deleteDeadline('${d.id}')" style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:12px;padding:2px 5px" title="Delete"><i class="fas fa-trash"></i></button>
       </div>` : ''}
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;padding-right:${isPro&&!isDemo?'48px':'0'}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;padding-right:${canEdit?'48px':'0'}">
         <div style="font-weight:700;font-size:13px">${urgency} ${escHtml(d.title)}</div>
         <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;background:${d.status==='ahead'?'rgba(59,130,246,.15)':d.status==='on-track'?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)'};color:${statusColor}">${isOverdue?'OVERDUE':d.status.toUpperCase()}</span>
       </div>
@@ -4162,21 +4166,22 @@ function renderDeadlines(el) {
   el.innerHTML = `
     <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-        <div class="sh-title" style="margin:0"><i class="fas fa-clock" style="color:var(--warn)"></i> Smart Deadlines${isPro?'':' <span style="font-size:10px;padding:1px 6px;background:rgba(245,158,11,.15);color:#f59e0b;border-radius:4px;font-weight:700">PRO</span>'}</div>
-        ${isPro ? `<button class="btn-primary" style="padding:5px 12px;font-size:12px" onclick="addDeadline()"><i class="fas fa-plus"></i> Add</button>` : ''}
+        <div class="sh-title" style="margin:0"><i class="fas fa-clock" style="color:var(--warn)"></i> Team Deadlines${isPro?' <span style="font-size:10px;padding:1px 6px;background:rgba(168,85,247,.15);color:var(--accent);border-radius:4px;font-weight:700">✦ AI RISK</span>':''}</div>
+        ${isLoggedIn ? `<button class="btn-primary" style="padding:5px 12px;font-size:12px" onclick="addDeadline()"><i class="fas fa-plus"></i> Add</button>` : `<button class="btn-sm" onclick="openAuthPopup('/api/auth/google')"><i class="fab fa-google"></i> Sign in to add</button>`}
       </div>
-      ${!isPro ? `<div style="background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#f59e0b"><i class="fas fa-star" style="margin-right:6px"></i>Upgrade to Pro to add real deadlines with AI risk analysis</div>` : ''}
+      ${showDemo ? `<div style="background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--text-m)"><i class="fas fa-circle-info" style="margin-right:6px;color:var(--accent)"></i>Showing sample data. Sign in and add your first deadline to get started.</div>` : ''}
+      ${!isPro && isLoggedIn ? `<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:#f59e0b;display:flex;align-items:center;justify-content:space-between"><span><i class="fas fa-wand-magic-sparkles" style="margin-right:5px"></i>Upgrade to Pro for AI risk analysis on at-risk deadlines</span><button onclick="openPricingModal()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;color:#f59e0b;cursor:pointer;font-size:10px;padding:2px 8px;font-weight:700">Upgrade</button></div>` : ''}
       <div style="display:flex;flex-direction:column;gap:10px">${rows}</div>
-      ${!isPro ? `<button class="btn-primary" style="width:100%;margin-top:12px" onclick="openPricingModal()">🚀 Upgrade to Pro — Unlock Smart Deadlines</button>` : ''}
     </div>
   `;
 }
 
 function addDeadline() {
+  const isPro = _tokenBalance?.tier === 'pro' || _tokenBalance?.tier === 'team' || FS_USER?.tier === 'pro' || FS_USER?.tier === 'team';
   openModal(`
     <div>
-      <h2 style="margin-bottom:4px">➕ Add Smart Deadline</h2>
-      <p style="font-size:12px;color:var(--text-s);margin-bottom:16px">AI will flag at-risk deadlines and suggest escalation</p>
+      <h2 style="margin-bottom:4px">➕ Add ${isPro ? 'Smart ' : ''}Deadline</h2>
+      <p style="font-size:12px;color:var(--text-s);margin-bottom:16px">${isPro ? 'AI will flag at-risk deadlines and suggest escalation' : 'Track your team deadlines. Upgrade to Pro for AI risk analysis.'}</p>
       <div style="display:flex;flex-direction:column;gap:10px">
         <div>
           <label style="font-size:11px;color:var(--text-m);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Title</label>
@@ -8508,6 +8513,12 @@ function _renderPairLobbyUI() {
         <i class="fas fa-search"></i> Find a Focus Partner
       </button>
       <p style="color:var(--text-s);font-size:11px;margin-top:12px">Matched users see each other's first name only. Sessions are private.</p>
+      <div style="border-top:1px solid var(--border);margin-top:18px;padding-top:16px">
+        <button class="btn-sm" style="width:100%;gap:8px;padding:10px;font-size:13px;color:#a855f7;border-color:rgba(168,85,247,.4);background:rgba(168,85,247,.06)" onclick="openGroupFlowModal()">
+          <i class="fas fa-users"></i> GroupFlow — Create or Join a Group
+        </button>
+        <p style="color:var(--text-s);font-size:11px;margin-top:8px">Persistent groups with chat, reactions &amp; shared focus sessions.</p>
+      </div>
     </div>
   `);
   window._pairSelectedDuration = 25;
@@ -8855,9 +8866,511 @@ async function _leavePair() {
   notify('Session ended', 'info');
 }
 
+// ══════════════════════════════════════════════════════════════════
+// GROUPFLOW — Persistent accountability groups
+// ══════════════════════════════════════════════════════════════════
+let _gfState = { groups: [], activeGroup: null, messages: [], pollTimer: null, lastTs: 0 };
+
+async function openGroupFlowModal() {
+  if (!FS_USER) { notify('Sign in to use GroupFlow', 'info'); return; }
+  closeModal();
+  _renderGroupFlowLobby();
+}
+
+async function _renderGroupFlowLobby() {
+  // Show loading state
+  openModal(`<div style="text-align:center;padding:40px 20px"><i class="fas fa-spinner fa-spin" style="font-size:24px;color:var(--accent)"></i><div style="margin-top:12px;color:var(--text-s);font-size:13px">Loading your groups…</div></div>`);
+
+  try {
+    const r = await fetch('/api/groupflow/list', { credentials: 'include' });
+    const d = await r.json();
+    _gfState.groups = d.groups || [];
+  } catch(e) { _gfState.groups = []; }
+
+  const groups = _gfState.groups;
+  const groupCards = groups.length ? groups.map(g => `
+    <div onclick="_gfOpenGroup('${g.id}')" style="background:var(--bg-card);border:1px solid rgba(168,85,247,.2);border-radius:12px;padding:12px 14px;cursor:pointer;transition:.2s;display:flex;align-items:center;gap:12px;margin-bottom:8px" onmouseover="this.style.borderColor='rgba(168,85,247,.5)'" onmouseout="this.style.borderColor='rgba(168,85,247,.2)'">
+      <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#a855f7,#ec4899);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">👥</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(g.name)}</div>
+        <div style="font-size:11px;color:var(--text-m)">${g.memberCount || 1} member${g.memberCount!==1?'s':''} · by ${escHtml(g.ownerName)}</div>
+      </div>
+      <i class="fas fa-chevron-right" style="color:var(--text-s);font-size:12px;flex-shrink:0"></i>
+    </div>`).join('') : `<div style="text-align:center;padding:24px 0;color:var(--text-s);font-size:13px"><div style="font-size:32px;margin-bottom:8px">👥</div>No groups yet — create one or join with an invite code.</div>`;
+
+  openModal(`
+    <div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
+        <div style="font-size:28px">👥</div>
+        <div>
+          <h2 style="font-weight:900;margin-bottom:2px">GroupFlow</h2>
+          <p style="color:var(--text-s);font-size:12px">Accountability groups with shared focus &amp; group chat</p>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:18px">
+        <button class="btn-primary" style="flex:1;gap:6px" onclick="_gfShowCreate()"><i class="fas fa-plus"></i> Create Group</button>
+        <button class="btn-sm" style="flex:1;gap:6px" onclick="_gfShowJoin()"><i class="fas fa-link"></i> Join with Code</button>
+      </div>
+      <div id="gf-groups-list">${groupCards}</div>
+    </div>
+  `);
+}
+
+function _gfShowCreate() {
+  openModal(`
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <button onclick="_renderGroupFlowLobby()" style="background:none;border:none;cursor:pointer;color:var(--text-s);font-size:14px;padding:4px"><i class="fas fa-arrow-left"></i></button>
+        <h2 style="font-weight:900">Create a Group</h2>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div>
+          <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-m)">Group Name</label>
+          <input class="fs-in" id="gf-create-name" placeholder="e.g. Indie Hackers Cohort 3" style="margin-top:5px">
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-m)">Description (optional)</label>
+          <input class="fs-in" id="gf-create-desc" placeholder="What does your group work on?" style="margin-top:5px">
+        </div>
+      </div>
+      <button class="btn-primary" style="width:100%;margin-top:18px;gap:8px" onclick="_gfCreateGroup()"><i class="fas fa-users"></i> Create Group</button>
+    </div>
+  `);
+}
+
+function _gfShowJoin() {
+  openModal(`
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <button onclick="_renderGroupFlowLobby()" style="background:none;border:none;cursor:pointer;color:var(--text-s);font-size:14px;padding:4px"><i class="fas fa-arrow-left"></i></button>
+        <h2 style="font-weight:900">Join a Group</h2>
+      </div>
+      <p style="font-size:13px;color:var(--text-m);margin-bottom:16px">Enter the invite code shared by your group creator.</p>
+      <input class="fs-in" id="gf-join-code" placeholder="e.g. A3BX92KP" style="font-size:18px;text-align:center;letter-spacing:3px;text-transform:uppercase">
+      <button class="btn-primary" style="width:100%;margin-top:16px;gap:8px" onclick="_gfJoinGroup()"><i class="fas fa-door-open"></i> Join Group</button>
+    </div>
+  `);
+}
+
+async function _gfCreateGroup() {
+  const name = document.getElementById('gf-create-name')?.value?.trim();
+  const desc = document.getElementById('gf-create-desc')?.value?.trim();
+  if (!name) { notify('Group name is required', 'warning'); return; }
+
+  const btn = document.querySelector('#gf-create-name')?.closest('div')?.parentElement?.nextElementSibling;
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating…'; }
+
+  try {
+    const r = await fetch('/api/groupflow/create', { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, description: desc }) });
+    const d = await r.json();
+    if (!d.ok) { notify(d.error || 'Failed to create group', 'error'); return; }
+    _gfState.groups.push(d.group);
+    notify(`✅ "${d.group.name}" created! Invite code: ${d.inviteCode}`, 'success');
+    _gfOpenGroup(d.group.id, d.group, d.inviteCode);
+  } catch(e) { notify('Network error', 'error'); }
+}
+
+async function _gfJoinGroup() {
+  const code = document.getElementById('gf-join-code')?.value?.trim().toUpperCase();
+  if (!code) { notify('Invite code is required', 'warning'); return; }
+
+  const btn = document.getElementById('gf-join-code')?.nextElementSibling;
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Joining…'; }
+
+  try {
+    const r = await fetch('/api/groupflow/join', { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ code }) });
+    const d = await r.json();
+    if (!d.ok) { notify(d.error || 'Invalid invite code', 'error'); if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-door-open"></i> Join Group'; } return; }
+    if (!_gfState.groups.find(g => g.id === d.group.id)) _gfState.groups.push(d.group);
+    notify(d.alreadyMember ? 'Already a member!' : `✅ Joined "${d.group.name}"!`, 'success');
+    _gfOpenGroup(d.group.id, d.group);
+  } catch(e) { notify('Network error', 'error'); }
+}
+
+async function _gfOpenGroup(groupId, groupObj, showInviteCode) {
+  // Get group info from cache or fetch
+  const group = groupObj || _gfState.groups.find(g => g.id === groupId);
+  if (!group) { notify('Group not found', 'error'); return; }
+
+  _gfState.activeGroup = group;
+  clearInterval(_gfState.pollTimer);
+  _gfState.lastTs = 0;
+
+  // Fetch messages
+  let messages = [];
+  try {
+    const r = await fetch(`/api/groupflow/${groupId}/messages`, { credentials: 'include' });
+    const d = await r.json();
+    messages = d.messages || [];
+    _gfState.messages = messages;
+    _gfState.lastTs = messages.length ? Math.max(...messages.map(m => m.ts)) : 0;
+  } catch(e) {}
+
+  _renderGroupChat(group, messages, showInviteCode);
+
+  // Poll for new messages every 4 seconds
+  _gfState.pollTimer = setInterval(async () => {
+    try {
+      const r = await fetch(`/api/groupflow/${groupId}/messages?since=${_gfState.lastTs}`, { credentials: 'include' });
+      const d = await r.json();
+      const newMsgs = d.messages || [];
+      if (newMsgs.length) {
+        _gfState.messages = [..._gfState.messages, ...newMsgs];
+        _gfState.lastTs = Math.max(..._gfState.messages.map(m => m.ts));
+        _gfAppendMessages(newMsgs);
+      }
+    } catch(e) {}
+  }, 4000);
+}
+
+function _renderGroupChat(group, messages, showInviteCode) {
+  const inviteBanner = showInviteCode ? `
+    <div style="background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.3);border-radius:10px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--accent)">🎉 Group created! Share your invite code:</div>
+        <div style="font-size:20px;font-weight:900;letter-spacing:4px;font-family:monospace;margin-top:2px">${showInviteCode}</div>
+      </div>
+      <button onclick="navigator.clipboard.writeText('${showInviteCode}').then(()=>notify('📋 Invite code copied!','success'))" class="btn-sm" style="gap:6px;color:var(--accent);border-color:rgba(168,85,247,.4)"><i class="fas fa-copy"></i> Copy</button>
+    </div>` : '';
+
+  const msgsHtml = messages.length ? messages.map(m => _gfRenderMsg(m)).join('') : `<div style="text-align:center;padding:32px 0;color:var(--text-s);font-size:13px">No messages yet. Say hi! 👋</div>`;
+
+  openModal(`
+    <div style="display:flex;flex-direction:column;height:580px;max-height:80vh">
+      <!-- Header -->
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+        <button onclick="clearInterval(_gfState.pollTimer);_renderGroupFlowLobby()" style="background:none;border:none;cursor:pointer;color:var(--text-s);font-size:14px;padding:4px 6px"><i class="fas fa-arrow-left"></i></button>
+        <div style="width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,#a855f7,#ec4899);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">👥</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:800;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(group.name)}</div>
+          <div style="font-size:11px;color:var(--text-s)">${group.memberCount || '?'} members</div>
+        </div>
+        <button onclick="_gfShowGroupInfo('${group.id}')" style="background:none;border:none;cursor:pointer;color:var(--text-s);font-size:14px;padding:4px 6px" title="Group info &amp; invite"><i class="fas fa-ellipsis-v"></i></button>
+      </div>
+      ${inviteBanner}
+      <!-- Messages -->
+      <div id="gf-messages" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding-right:4px;scrollbar-width:thin">
+        ${msgsHtml}
+      </div>
+      <!-- Input -->
+      <div style="padding-top:10px;border-top:1px solid var(--border);margin-top:10px">
+        <div style="display:flex;gap:8px;align-items:flex-end">
+          <div style="flex:1;position:relative">
+            <textarea id="gf-msg-input" class="fs-in" placeholder="Message the group…" rows="1" style="resize:none;padding-right:36px;min-height:38px;max-height:100px;overflow-y:auto" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();_gfSendMessage()}" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button onclick="_gfShowEmojiPicker()" class="btn-sm" title="Emoji" style="padding:8px 10px"><i class="fas fa-face-smile"></i></button>
+            <button onclick="_gfTriggerMediaUpload()" class="btn-sm" title="Share image or video link" style="padding:8px 10px"><i class="fas fa-image"></i></button>
+            <button onclick="_gfSendMessage()" class="btn-primary" style="padding:8px 16px;gap:6px"><i class="fas fa-paper-plane"></i></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `);
+
+  // Scroll to bottom
+  setTimeout(() => { const el = document.getElementById('gf-messages'); if(el) el.scrollTop = el.scrollHeight; }, 50);
+}
+
+function _gfRenderMsg(m) {
+  if (m.type === 'system') {
+    return `<div style="text-align:center;font-size:11px;color:var(--text-s);padding:4px 0">${escHtml(m.text)}</div>`;
+  }
+  const isMe = m.mine;
+  const avatar = m.fromAvatar ? `<img src="${m.fromAvatar}" style="width:28px;height:28px;border-radius:50%;object-fit:cover;flex-shrink:0" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+    <div style="display:none;width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#ec4899);align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">${(m.fromName||'?')[0].toUpperCase()}</div>` :
+    `<div style="width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#ec4899);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">${(m.fromName||'?')[0].toUpperCase()}</div>`;
+
+  const mediaHtml = m.mediaUrl ? _gfRenderMedia(m.mediaUrl, m.type) : '';
+
+  const reactionsHtml = Object.keys(m.reactions||{}).length ? `
+    <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px">
+      ${Object.entries(m.reactions||{}).map(([emoji, users]) => users.length ? `
+        <button onclick="_gfReact('${m.id}','${emoji}')" style="background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.25);border-radius:99px;padding:2px 7px;cursor:pointer;font-size:12px;color:var(--text-p);display:flex;align-items:center;gap:3px">
+          ${emoji} <span style="font-size:10px;font-weight:700">${users.length}</span>
+        </button>` : '').join('')}
+    </div>` : '';
+
+  const addReactionBtn = `<button onclick="_gfShowReactionPicker('${m.id}')" style="background:none;border:none;cursor:pointer;opacity:0;transition:.15s;font-size:13px;padding:2px 5px;color:var(--text-s)" class="gf-react-btn" title="React">😀</button>`;
+
+  const timestamp = new Date(m.ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+
+  return `<div class="gf-msg" style="display:flex;gap:8px;align-items:flex-start;${isMe?'flex-direction:row-reverse':''}" onmouseover="this.querySelector('.gf-react-btn').style.opacity='1'" onmouseout="this.querySelector('.gf-react-btn').style.opacity='0'">
+    ${!isMe ? `<div style="display:flex;flex-direction:column;align-items:center">${avatar}</div>` : ''}
+    <div style="max-width:75%;min-width:0">
+      ${!isMe ? `<div style="font-size:10px;font-weight:700;color:var(--accent);margin-bottom:3px">${escHtml(m.fromName)}</div>` : ''}
+      <div style="background:${isMe?'rgba(168,85,247,.18)':'var(--bg-card)'};border:1px solid ${isMe?'rgba(168,85,247,.3)':'var(--border)'};border-radius:${isMe?'14px 4px 14px 14px':'4px 14px 14px 14px'};padding:8px 12px;word-break:break-word">
+        ${m.text ? `<div style="font-size:13px;line-height:1.5">${escHtml(m.text)}</div>` : ''}
+        ${mediaHtml}
+      </div>
+      ${reactionsHtml}
+      <div style="display:flex;align-items:center;gap:4px;margin-top:3px;${isMe?'justify-content:flex-end':''}">
+        <span style="font-size:9px;color:var(--text-s)">${timestamp}</span>
+        ${addReactionBtn}
+      </div>
+    </div>
+  </div>`;
+}
+
+function _gfRenderMedia(url, type) {
+  // Detect YouTube
+  const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\s]+)/);
+  if (ytMatch) {
+    return `<div style="margin-top:6px;border-radius:8px;overflow:hidden;aspect-ratio:16/9;max-width:280px">
+      <iframe src="https://www.youtube.com/embed/${ytMatch[1]}" style="width:100%;height:100%;border:none" allowfullscreen></iframe>
+    </div>`;
+  }
+  // Detect Loom
+  if (url.includes('loom.com/share/')) {
+    const loomId = url.split('loom.com/share/')[1].split('?')[0];
+    return `<div style="margin-top:6px;border-radius:8px;overflow:hidden;aspect-ratio:16/9;max-width:280px">
+      <iframe src="https://www.loom.com/embed/${loomId}" style="width:100%;height:100%;border:none" allowfullscreen></iframe>
+    </div>`;
+  }
+  // Image
+  if (type === 'image' || /\.(png|jpg|jpeg|gif|webp|svg)(\?|$)/i.test(url)) {
+    return `<div style="margin-top:6px"><img src="${url}" style="max-width:240px;max-height:200px;border-radius:8px;display:block;cursor:pointer" onclick="window.open('${url}','_blank')" onerror="this.parentElement.innerHTML='<a href=${url} target=_blank style=color:var(--accent);font-size:12px>${escHtml(url)}</a>'"></div>`;
+  }
+  // Generic link
+  return `<div style="margin-top:4px"><a href="${url}" target="_blank" rel="noopener" style="color:var(--accent);font-size:12px;word-break:break-all">${escHtml(url)}</a></div>`;
+}
+
+function _gfAppendMessages(newMsgs) {
+  const container = document.getElementById('gf-messages');
+  if (!container) return;
+  // Remove "no messages" placeholder if present
+  const empty = container.querySelector('div[style*="text-align:center"]');
+  if (empty && empty.textContent.includes('No messages yet')) empty.remove();
+
+  newMsgs.forEach(m => {
+    const div = document.createElement('div');
+    div.innerHTML = _gfRenderMsg(m);
+    container.appendChild(div.firstElementChild);
+  });
+  container.scrollTop = container.scrollHeight;
+}
+
+async function _gfSendMessage() {
+  const input = document.getElementById('gf-msg-input');
+  if (!input) return;
+  const text = input.value.trim();
+  if (!text) return;
+  if (!_gfState.activeGroup) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+
+  try {
+    const r = await fetch(`/api/groupflow/${_gfState.activeGroup.id}/messages`, {
+      method: 'POST', credentials: 'include',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text })
+    });
+    const d = await r.json();
+    if (d.ok && d.message) {
+      _gfState.messages.push(d.message);
+      _gfState.lastTs = d.message.ts;
+      _gfAppendMessages([d.message]);
+    }
+  } catch(e) { notify('Failed to send message', 'error'); }
+}
+
+function _gfShowReactionPicker(messageId) {
+  const emojis = ['👍','❤️','🔥','💯','🎉','😂','🚀','👏','💪','✅','🤝','⚡'];
+  const picker = document.createElement('div');
+  picker.id = 'gf-reaction-picker';
+  picker.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-panel);border:1px solid var(--border);border-radius:12px;padding:8px;display:flex;flex-wrap:wrap;gap:4px;max-width:200px;box-shadow:0 8px 32px rgba(0,0,0,.4)';
+  picker.innerHTML = emojis.map(e => `<button onclick="_gfReact('${messageId}','${e}');document.getElementById('gf-reaction-picker')?.remove()" style="background:none;border:none;cursor:pointer;font-size:18px;padding:4px;border-radius:6px;transition:.15s" onmouseover="this.style.background='rgba(168,85,247,.2)'" onmouseout="this.style.background='none'">${e}</button>`).join('');
+  // Position near cursor
+  document.body.appendChild(picker);
+  const rect = picker.getBoundingClientRect();
+  picker.style.left = `${Math.min(window.event?.clientX || 200, window.innerWidth - rect.width - 10)}px`;
+  picker.style.top = `${Math.min(window.event?.clientY || 200, window.innerHeight - rect.height - 10)}px`;
+  setTimeout(() => document.addEventListener('click', function rem(e) { if(!picker.contains(e.target)){picker.remove();document.removeEventListener('click',rem);} }), 50);
+}
+
+async function _gfReact(messageId, emoji) {
+  if (!_gfState.activeGroup) return;
+  try {
+    await fetch(`/api/groupflow/${_gfState.activeGroup.id}/react`, {
+      method: 'POST', credentials: 'include',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ messageId, emoji })
+    });
+    // Refresh messages to show updated reactions
+    const r = await fetch(`/api/groupflow/${_gfState.activeGroup.id}/messages`, { credentials: 'include' });
+    const d = await r.json();
+    _gfState.messages = d.messages || [];
+    // Re-render messages in container
+    const container = document.getElementById('gf-messages');
+    if (container) {
+      const scroll = container.scrollTop;
+      container.innerHTML = _gfState.messages.map(m => _gfRenderMsg(m)).join('');
+      container.scrollTop = scroll;
+    }
+  } catch(e) {}
+}
+
+function _gfShowEmojiPicker() {
+  const input = document.getElementById('gf-msg-input');
+  if (!input) return;
+  const emojis = ['😀','😂','🔥','💯','🎉','❤️','🚀','👏','💪','🤝','⚡','✅','🎯','💡','🎵','📝'];
+  const picker = document.createElement('div');
+  picker.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-panel);border:1px solid var(--border);border-radius:12px;padding:8px;display:flex;flex-wrap:wrap;gap:4px;max-width:200px;box-shadow:0 8px 32px rgba(0,0,0,.4)';
+  picker.innerHTML = emojis.map(e => `<button onclick="document.getElementById('gf-msg-input').value+=('${e}');this.parentElement.remove()" style="background:none;border:none;cursor:pointer;font-size:18px;padding:4px;border-radius:6px" onmouseover="this.style.background='rgba(168,85,247,.2)'" onmouseout="this.style.background='none'">${e}</button>`).join('');
+  document.body.appendChild(picker);
+  const inputRect = input.getBoundingClientRect();
+  picker.style.left = `${inputRect.left}px`;
+  picker.style.bottom = `${window.innerHeight - inputRect.top + 8}px`;
+  setTimeout(() => document.addEventListener('click', function rem(e) { if(!picker.contains(e.target)){picker.remove();document.removeEventListener('click',rem);} }), 50);
+}
+
+function _gfTriggerMediaUpload() {
+  openModal(`
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <button onclick="_renderGroupChat(_gfState.activeGroup,_gfState.messages)" style="background:none;border:none;cursor:pointer;color:var(--text-s);font-size:14px;padding:4px"><i class="fas fa-arrow-left"></i></button>
+        <h2 style="font-weight:900">Share Media</h2>
+      </div>
+      <p style="font-size:13px;color:var(--text-m);margin-bottom:16px">Paste an image URL, YouTube video, or Loom link to share it with your group.</p>
+      <input class="fs-in" id="gf-media-url" placeholder="https://youtube.com/watch?v=... or image URL" style="margin-bottom:12px">
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" style="flex:1;gap:6px" onclick="_gfSendMedia('image')"><i class="fas fa-image"></i> Share Image</button>
+        <button class="btn-sm" style="flex:1;gap:6px" onclick="_gfSendMedia('video')"><i class="fas fa-video"></i> Share Video</button>
+      </div>
+      <div style="margin-top:12px;padding:10px;background:rgba(168,85,247,.06);border-radius:8px;font-size:11px;color:var(--text-m)">
+        <div style="font-weight:700;margin-bottom:4px">Supported formats:</div>
+        <div>📺 YouTube — auto-embeds the video player</div>
+        <div>🎥 Loom — auto-embeds the Loom viewer</div>
+        <div>🖼️ Direct image URLs (.png, .jpg, .gif, .webp)</div>
+        <div>🔗 Any URL — shows as a clickable link</div>
+      </div>
+    </div>
+  `);
+}
+
+async function _gfSendMedia(type) {
+  const url = document.getElementById('gf-media-url')?.value?.trim();
+  if (!url) { notify('Please enter a URL', 'warning'); return; }
+  if (!_gfState.activeGroup) return;
+
+  try {
+    const r = await fetch(`/api/groupflow/${_gfState.activeGroup.id}/messages`, {
+      method: 'POST', credentials: 'include',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text: '', mediaUrl: url, mediaType: type })
+    });
+    const d = await r.json();
+    if (d.ok && d.message) {
+      _gfState.messages.push(d.message);
+      _gfState.lastTs = d.message.ts;
+      _renderGroupChat(_gfState.activeGroup, _gfState.messages);
+    }
+  } catch(e) { notify('Failed to share media', 'error'); }
+}
+
+async function _gfShowGroupInfo(groupId) {
+  const group = _gfState.activeGroup;
+  if (!group) return;
+
+  let members = [];
+  try {
+    const r = await fetch(`/api/groupflow/${groupId}/members`, { credentials: 'include' });
+    const d = await r.json();
+    members = d.members || [];
+  } catch(e) {}
+
+  const inviteUrl = `https://flowst8.cc/?gfinvite=${group.inviteCode}`;
+
+  openModal(`
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <button onclick="_renderGroupChat(_gfState.activeGroup,_gfState.messages)" style="background:none;border:none;cursor:pointer;color:var(--text-s);font-size:14px;padding:4px"><i class="fas fa-arrow-left"></i></button>
+        <h2 style="font-weight:900">${escHtml(group.name)}</h2>
+      </div>
+      ${group.description ? `<p style="font-size:13px;color:var(--text-m);margin-bottom:14px">${escHtml(group.description)}</p>` : ''}
+      <!-- Invite -->
+      <div style="background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.25);border-radius:10px;padding:12px;margin-bottom:16px">
+        <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:6px"><i class="fas fa-link"></i> Invite Code</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="font-size:22px;font-weight:900;letter-spacing:4px;font-family:monospace;color:var(--text-p)">${group.inviteCode}</div>
+          <button onclick="navigator.clipboard.writeText('${group.inviteCode}').then(()=>notify('📋 Copied!','success'))" class="btn-sm" style="gap:5px"><i class="fas fa-copy"></i></button>
+          <button onclick="if(navigator.share){navigator.share({title:'Join ${escHtml(group.name)} on FlowState',text:'Join our GroupFlow accountability group!',url:'${inviteUrl}'}).catch(()=>{});}else{navigator.clipboard.writeText('${inviteUrl}').then(()=>notify('📋 Link copied!','success'));}" class="btn-sm" style="gap:5px"><i class="fas fa-share"></i></button>
+        </div>
+      </div>
+      <!-- Members -->
+      <div style="font-size:12px;font-weight:700;color:var(--text-m);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Members (${members.length})</div>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+        ${members.map(m => `
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg-card);border-radius:8px">
+            <div style="width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#ec4899);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0">${(m.name||'?')[0].toUpperCase()}</div>
+            <div style="flex:1">
+              <div style="font-size:13px;font-weight:600">${escHtml(m.name)}</div>
+            </div>
+            ${m.role==='owner'?`<span style="font-size:10px;padding:1px 6px;background:rgba(168,85,247,.15);color:var(--accent);border-radius:4px;font-weight:700">Owner</span>`:''}
+          </div>`).join('')}
+      </div>
+      <button onclick="_gfLeaveGroup('${groupId}')" class="btn-sm" style="width:100%;color:#ef4444;border-color:rgba(239,68,68,.3);gap:6px"><i class="fas fa-right-from-bracket"></i> Leave Group</button>
+    </div>
+  `);
+}
+
+async function _gfLeaveGroup(groupId) {
+  if (!confirm('Leave this group? You can rejoin with an invite code.')) return;
+  try {
+    await fetch(`/api/groupflow/${groupId}/leave`, { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: '{}' });
+    _gfState.groups = _gfState.groups.filter(g => g.id !== groupId);
+    clearInterval(_gfState.pollTimer);
+    notify('Left group', 'info');
+    _renderGroupFlowLobby();
+  } catch(e) { notify('Failed to leave group', 'error'); }
+}
+
+// Handle invite code from URL on page load
+(function _checkGroupFlowInviteUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('gfinvite');
+  if (code && !sessionStorage.getItem('gf_invite_handled')) {
+    sessionStorage.setItem('gf_invite_handled', '1');
+    setTimeout(async () => {
+      if (!FS_USER) { notify('Sign in to join the FlowState group!', 'info'); return; }
+      // Preview group
+      try {
+        const r = await fetch(`/api/groupflow/invite/${code}`);
+        const d = await r.json();
+        if (d.group) {
+          openModal(`
+            <div style="text-align:center;padding:12px 0">
+              <div style="font-size:40px;margin-bottom:8px">👥</div>
+              <h2 style="font-weight:900;margin-bottom:4px">You're invited!</h2>
+              <p style="color:var(--text-s);font-size:14px;margin-bottom:4px">Join <strong>${escHtml(d.group.name)}</strong></p>
+              <p style="color:var(--text-s);font-size:12px;margin-bottom:20px">${d.group.memberCount} member${d.group.memberCount!==1?'s':''} · by ${escHtml(d.group.ownerName)}</p>
+              <button class="btn-primary" style="width:100%;gap:8px;margin-bottom:8px" onclick="document.getElementById('gf-invite-code-hidden').value='${code}';_gfJoinFromUrl()"><i class="fas fa-door-open"></i> Join Group</button>
+              <input id="gf-invite-code-hidden" type="hidden" value="${code}">
+              <button onclick="closeModal()" class="btn-sm" style="width:100%">Maybe later</button>
+            </div>
+          `);
+        }
+      } catch(e) {}
+    }, 2000);
+  }
+})();
+
+async function _gfJoinFromUrl() {
+  const code = document.getElementById('gf-invite-code-hidden')?.value;
+  if (!code) return;
+  try {
+    const r = await fetch('/api/groupflow/join', { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ code }) });
+    const d = await r.json();
+    if (d.ok) { notify(d.alreadyMember ? 'Already a member!' : `✅ Joined "${d.group.name}"!`, 'success'); _gfOpenGroup(d.group.id, d.group); }
+    else notify(d.error || 'Could not join', 'error');
+  } catch(e) { notify('Network error', 'error'); }
+}
+
 // ── Add Flow Coach + Pair buttons to settings modal (patch) ──────────────────
 const _origOpenSettingsModal = openSettingsModal;
 // Expose helpers globally
 window.openFlowCoach = openFlowCoach;
 window.openPairingModal = openPairingModal;
+window.openGroupFlowModal = openGroupFlowModal;
 

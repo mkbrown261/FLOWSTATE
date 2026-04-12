@@ -6219,9 +6219,15 @@ em{color:var(--accent);font-style:italic}
 .clawbot-quick-btn{padding:5px 12px;border-radius:18px;font-size:12px;font-weight:600;border:1px solid rgba(168,85,247,.25);background:rgba(168,85,247,.06);color:var(--text-s);cursor:pointer;transition:.2s}
 .clawbot-quick-btn:hover{border-color:var(--accent);color:var(--accent)}
 /* ── Team Tabs ────────────────────────────────────────────────── */
-.team-tab-btn{padding:6px 13px;border-radius:9px;font-size:12px;font-weight:600;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;transition:.2s;display:flex;align-items:center;gap:5px;white-space:nowrap}
+.team-tab-btn{padding:6px 13px;border-radius:9px;font-size:12px;font-weight:600;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;transition:.2s;display:flex;align-items:center;gap:5px;white-space:nowrap;flex-shrink:0}
 .team-tab-btn:hover{border-color:var(--border-h);color:var(--text-p)}
 .team-tab-btn.active{background:rgba(168,85,247,.12);border-color:rgba(168,85,247,.35);color:var(--accent)}
+.team-tabs::-webkit-scrollbar{display:none}
+/* ── GroupFlow Chat ───────────────────────────────────────────── */
+.gf-msg:hover .gf-react-btn{opacity:1!important}
+#gf-messages::-webkit-scrollbar{width:4px}
+#gf-messages::-webkit-scrollbar-track{background:transparent}
+#gf-messages::-webkit-scrollbar-thumb{background:rgba(168,85,247,.3);border-radius:2px}
 /* ── Image Upload ─────────────────────────────────────────────── */
 .file-drop{border:2px dashed rgba(168,85,247,.35);border-radius:14px;padding:32px 20px;text-align:center;cursor:pointer;transition:.2s;background:rgba(168,85,247,.04);display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:140px}
 .file-drop:hover{border-color:var(--accent);background:rgba(168,85,247,.09)}
@@ -8656,6 +8662,281 @@ app.get('/api/pair/messages', async (c) => {
   const messages = rawMsgs.map((m: string) => { try { return JSON.parse(m) } catch { return null } }).filter(Boolean)
   // Mark which messages are "mine" for the frontend
   return c.json({ messages: messages.map((m: any) => ({ ...m, mine: m.fromEmail === session.email })) })
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// GROUPFLOW — Persistent accountability groups with group chat, reactions, media
+// ══════════════════════════════════════════════════════════════════════════════
+// Data model (Redis KV):
+//   gf_group:{groupId}      → { id, name, description, ownerId, ownerName, created, memberCount, inviteCode }
+//   gf_members:{groupId}    → Redis SET of member emails
+//   gf_memberdata:{groupId}:{email} → { email, name, avatar, joinedAt, role }
+//   gf_invite:{code}        → { groupId, createdBy, createdAt }  (TTL 7d)
+//   gf_msgs:{groupId}       → Redis LIST of JSON message strings (cap 500)
+//   gf_user_groups:{email}  → Redis SET of groupIds the user belongs to
+
+// POST /api/groupflow/create  — create a new group
+app.post('/api/groupflow/create', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ error: 'redis_unavailable' }, 503)
+
+  const { name, description } = await c.req.json()
+  if (!name?.trim()) return c.json({ error: 'Name is required' }, 400)
+
+  const groupId = `gf_${Date.now()}_${Math.random().toString(36).slice(2,7)}`
+  const inviteCode = Math.random().toString(36).slice(2,10).toUpperCase()
+
+  const group = {
+    id: groupId,
+    name: name.trim().slice(0, 60),
+    description: (description || '').trim().slice(0, 200),
+    ownerId: session.email,
+    ownerName: session.name || session.email.split('@')[0],
+    created: Date.now(),
+    memberCount: 1,
+    inviteCode,
+  }
+
+  const memberData = { email: session.email, name: session.name || session.email.split('@')[0], avatar: session.picture || '', joinedAt: Date.now(), role: 'owner' }
+
+  // Store group info, add member, store invite, link user→group
+  await Promise.all([
+    fetch(`${url}/set/gf_group:${groupId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ value: JSON.stringify(group) }) }),
+    fetch(`${url}/sadd/gf_members:${groupId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ members: [session.email] }) }),
+    fetch(`${url}/set/gf_memberdata:${groupId}:${encodeURIComponent(session.email)}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ value: JSON.stringify(memberData), ex: 60*60*24*365 }) }),
+    fetch(`${url}/set/gf_invite:${inviteCode}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ value: JSON.stringify({ groupId, createdBy: session.email, createdAt: Date.now() }), ex: 60*60*24*7 }) }),
+    fetch(`${url}/sadd/gf_user_groups:${encodeURIComponent(session.email)}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ members: [groupId] }) }),
+  ])
+
+  return c.json({ ok: true, group, inviteCode, inviteUrl: `https://flowst8.cc/?gfinvite=${inviteCode}` })
+})
+
+// POST /api/groupflow/join  — join via invite code
+app.post('/api/groupflow/join', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ error: 'redis_unavailable' }, 503)
+
+  const { code } = await c.req.json()
+  if (!code) return c.json({ error: 'Invite code required' }, 400)
+
+  const inviteRes = await fetch(`${url}/get/gf_invite:${code.toUpperCase()}`, { headers: { Authorization: `Bearer ${token}` } })
+  const inviteData: any = await inviteRes.json()
+  if (!inviteData?.result) return c.json({ error: 'Invalid or expired invite code' }, 404)
+  const invite = typeof inviteData.result === 'string' ? JSON.parse(inviteData.result) : inviteData.result
+
+  const groupRes = await fetch(`${url}/get/gf_group:${invite.groupId}`, { headers: { Authorization: `Bearer ${token}` } })
+  const groupData: any = await groupRes.json()
+  if (!groupData?.result) return c.json({ error: 'Group not found' }, 404)
+  const group = typeof groupData.result === 'string' ? JSON.parse(groupData.result) : groupData.result
+
+  // Check if already a member
+  const isMemberRes = await fetch(`${url}/sismember/gf_members:${invite.groupId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ member: session.email }) })
+  const isMemberData: any = await isMemberRes.json()
+  if (isMemberData?.result === 1) return c.json({ ok: true, group, alreadyMember: true })
+
+  const memberData = { email: session.email, name: session.name || session.email.split('@')[0], avatar: session.picture || '', joinedAt: Date.now(), role: 'member' }
+
+  // Add member, update group memberCount, link user→group
+  group.memberCount = (group.memberCount || 1) + 1
+  await Promise.all([
+    fetch(`${url}/sadd/gf_members:${invite.groupId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ members: [session.email] }) }),
+    fetch(`${url}/set/gf_memberdata:${invite.groupId}:${encodeURIComponent(session.email)}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ value: JSON.stringify(memberData), ex: 60*60*24*365 }) }),
+    fetch(`${url}/set/gf_group:${invite.groupId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ value: JSON.stringify(group) }) }),
+    fetch(`${url}/sadd/gf_user_groups:${encodeURIComponent(session.email)}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ members: [invite.groupId] }) }),
+  ])
+
+  // Post a system message to the group
+  const sysMsg = { id: `msg_${Date.now()}`, type: 'system', text: `${memberData.name} joined the group 🎉`, ts: Date.now() }
+  await fetch(`${url}/lpush/gf_msgs:${invite.groupId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ elements: [JSON.stringify(sysMsg)] }) })
+  await fetch(`${url}/ltrim/gf_msgs:${invite.groupId}/0/499`, { headers: { Authorization: `Bearer ${token}` } })
+
+  return c.json({ ok: true, group })
+})
+
+// GET /api/groupflow/list  — list all groups the user belongs to
+app.get('/api/groupflow/list', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ groups: [] })
+
+  const groupIdsRes = await fetch(`${url}/smembers/gf_user_groups:${encodeURIComponent(session.email)}`, { headers: { Authorization: `Bearer ${token}` } })
+  const groupIdsData: any = await groupIdsRes.json()
+  const groupIds: string[] = groupIdsData?.result || []
+  if (!groupIds.length) return c.json({ groups: [] })
+
+  const groups = await Promise.all(groupIds.map(async (gid: string) => {
+    const r = await fetch(`${url}/get/gf_group:${gid}`, { headers: { Authorization: `Bearer ${token}` } })
+    const d: any = await r.json()
+    if (!d?.result) return null
+    return typeof d.result === 'string' ? JSON.parse(d.result) : d.result
+  }))
+
+  return c.json({ groups: groups.filter(Boolean) })
+})
+
+// GET /api/groupflow/:groupId/messages  — get messages (last 100)
+app.get('/api/groupflow/:groupId/messages', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ messages: [] })
+
+  const groupId = c.req.param('groupId')
+  const since = parseInt(c.req.query('since') || '0')
+
+  // Verify member
+  const isMemberRes = await fetch(`${url}/sismember/gf_members:${groupId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ member: session.email }) })
+  const isMemberData: any = await isMemberRes.json()
+  if (isMemberData?.result !== 1) return c.json({ error: 'not_member' }, 403)
+
+  const listRes = await fetch(`${url}/lrange/gf_msgs:${groupId}/0/99`, { headers: { Authorization: `Bearer ${token}` } })
+  const listData: any = await listRes.json()
+  const rawMsgs: string[] = (listData?.result || []).reverse() // newest first from lpush, reverse for chronological
+  const messages = rawMsgs.map((m: string) => { try { return JSON.parse(m) } catch { return null } }).filter(Boolean)
+  const filtered = since > 0 ? messages.filter((m: any) => m.ts > since) : messages
+  return c.json({ messages: filtered.map((m: any) => ({ ...m, mine: m.fromEmail === session.email })) })
+})
+
+// POST /api/groupflow/:groupId/messages  — send a message to the group
+app.post('/api/groupflow/:groupId/messages', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ error: 'redis_unavailable' }, 503)
+
+  const groupId = c.req.param('groupId')
+
+  // Verify member
+  const isMemberRes = await fetch(`${url}/sismember/gf_members:${groupId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ member: session.email }) })
+  const isMemberData: any = await isMemberRes.json()
+  if (isMemberData?.result !== 1) return c.json({ error: 'not_member' }, 403)
+
+  const { text, mediaUrl, mediaType } = await c.req.json()
+  if (!text?.trim() && !mediaUrl) return c.json({ error: 'Message or media required' }, 400)
+
+  const msg = {
+    id: `msg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+    type: mediaUrl ? mediaType || 'image' : 'text',
+    text: (text || '').trim().slice(0, 2000),
+    mediaUrl: mediaUrl || null,
+    fromEmail: session.email,
+    fromName: session.name || session.email.split('@')[0],
+    fromAvatar: session.picture || '',
+    ts: Date.now(),
+    reactions: {},
+  }
+
+  await fetch(`${url}/lpush/gf_msgs:${groupId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ elements: [JSON.stringify(msg)] }) })
+  await fetch(`${url}/ltrim/gf_msgs:${groupId}/0/499`, { headers: { Authorization: `Bearer ${token}` } })
+
+  return c.json({ ok: true, message: { ...msg, mine: true } })
+})
+
+// POST /api/groupflow/:groupId/react  — toggle emoji reaction on a message
+app.post('/api/groupflow/:groupId/react', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ error: 'redis_unavailable' }, 503)
+
+  const groupId = c.req.param('groupId')
+  const { messageId, emoji } = await c.req.json()
+
+  // Get all messages, update the specific one
+  const listRes = await fetch(`${url}/lrange/gf_msgs:${groupId}/0/99`, { headers: { Authorization: `Bearer ${token}` } })
+  const listData: any = await listRes.json()
+  const rawMsgs: string[] = listData?.result || []
+  const messages = rawMsgs.map((m: string) => { try { return JSON.parse(m) } catch { return null } }).filter(Boolean)
+
+  const msgIdx = messages.findIndex((m: any) => m.id === messageId)
+  if (msgIdx === -1) return c.json({ error: 'message_not_found' }, 404)
+
+  const msg = messages[msgIdx]
+  if (!msg.reactions) msg.reactions = {}
+  if (!msg.reactions[emoji]) msg.reactions[emoji] = []
+  const reactors: string[] = msg.reactions[emoji]
+  const uidx = reactors.indexOf(session.email)
+  if (uidx === -1) { reactors.push(session.email) } else { reactors.splice(uidx, 1) }
+
+  // Write back updated message
+  await fetch(`${url}/lset/gf_msgs:${groupId}/${msgIdx}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ element: JSON.stringify(msg) }) })
+
+  return c.json({ ok: true, reactions: msg.reactions })
+})
+
+// GET /api/groupflow/:groupId/members  — list group members
+app.get('/api/groupflow/:groupId/members', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ members: [] })
+
+  const groupId = c.req.param('groupId')
+
+  const membersRes = await fetch(`${url}/smembers/gf_members:${groupId}`, { headers: { Authorization: `Bearer ${token}` } })
+  const membersData: any = await membersRes.json()
+  const memberEmails: string[] = membersData?.result || []
+
+  const members = await Promise.all(memberEmails.map(async (email: string) => {
+    const r = await fetch(`${url}/get/gf_memberdata:${groupId}:${encodeURIComponent(email)}`, { headers: { Authorization: `Bearer ${token}` } })
+    const d: any = await r.json()
+    if (!d?.result) return { email, name: email.split('@')[0], role: 'member' }
+    return typeof d.result === 'string' ? JSON.parse(d.result) : d.result
+  }))
+
+  return c.json({ members: members.filter(Boolean) })
+})
+
+// GET /api/groupflow/invite/:code  — preview an invite (group name, member count)
+app.get('/api/groupflow/invite/:code', async (c) => {
+  const url = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ error: 'unavailable' }, 503)
+
+  const code = c.req.param('code').toUpperCase()
+  const inviteRes = await fetch(`${url}/get/gf_invite:${code}`, { headers: { Authorization: `Bearer ${token}` } })
+  const inviteData: any = await inviteRes.json()
+  if (!inviteData?.result) return c.json({ error: 'Invalid or expired invite' }, 404)
+  const invite = typeof inviteData.result === 'string' ? JSON.parse(inviteData.result) : inviteData.result
+
+  const groupRes = await fetch(`${url}/get/gf_group:${invite.groupId}`, { headers: { Authorization: `Bearer ${token}` } })
+  const groupData: any = await groupRes.json()
+  if (!groupData?.result) return c.json({ error: 'Group not found' }, 404)
+  const group = typeof groupData.result === 'string' ? JSON.parse(groupData.result) : groupData.result
+
+  return c.json({ group: { id: group.id, name: group.name, description: group.description, memberCount: group.memberCount, ownerName: group.ownerName } })
+})
+
+// POST /api/groupflow/:groupId/leave  — leave a group
+app.post('/api/groupflow/:groupId/leave', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return c.json({ error: 'redis_unavailable' }, 503)
+
+  const groupId = c.req.param('groupId')
+  await Promise.all([
+    fetch(`${url}/srem/gf_members:${groupId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ members: [session.email] }) }),
+    fetch(`${url}/del/gf_memberdata:${groupId}:${encodeURIComponent(session.email)}`, { headers: { Authorization: `Bearer ${token}` } }),
+    fetch(`${url}/srem/gf_user_groups:${encodeURIComponent(session.email)}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ members: [groupId] }) }),
+  ])
+
+  const sysMsg = { id: `msg_${Date.now()}`, type: 'system', text: `${session.name || session.email.split('@')[0]} left the group`, ts: Date.now() }
+  await fetch(`${url}/lpush/gf_msgs:${groupId}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ elements: [JSON.stringify(sysMsg)] }) })
+  return c.json({ ok: true })
 })
 
 // ══════════════════════════════════════════════════════════════════════════════
