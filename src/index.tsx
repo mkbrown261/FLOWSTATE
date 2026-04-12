@@ -1188,6 +1188,107 @@ app.post('/api/flowscore', async (c) => {
   return c.json(declareFlowScore(data))
 })
 
+// ─── Session Complete — saves to D1 + output tracking ────────────────────────
+app.post('/api/session/complete', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ ok: false, error: 'not_authenticated' }, 401)
+  const db = c.env?.DB
+  const { durationMins, focusScore, outputType, outputNote, appContext = 'hub' } = await c.req.json()
+  if (!durationMins || durationMins < 1) return c.json({ ok: false, error: 'invalid_duration' }, 400)
+
+  try {
+    if (db) {
+      // Upsert user so we always have a record
+      await (await import('./db-helpers')).upsertUser(db, session.email, session.name || '', session.picture || '', 'google').catch(() => {})
+      const user = await (await import('./db-helpers')).getUserByEmail(db, session.email)
+      if (user) {
+        const sessionDate = new Date().toISOString().slice(0, 10)
+        // Insert into sessions
+        const result = await db.prepare(`
+          INSERT INTO sessions (user_id, email, phase, duration_mins, completed, focus_score, output_type, output_note, app_context, session_date)
+          VALUES (?, ?, 'focus', ?, 1, ?, ?, ?, ?, ?)
+        `).bind(user.id, session.email, durationMins, focusScore ?? null, outputType ?? null, outputNote ?? null, appContext, sessionDate).run()
+
+        // Also log to creator_outputs if they tracked something
+        if (outputType) {
+          await db.prepare(`
+            INSERT INTO creator_outputs (user_id, email, session_id, output_type, output_note, duration_mins, app_context)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `).bind(user.id, session.email, result.meta?.last_row_id ?? null, outputType, outputNote ?? null, durationMins, appContext).run()
+        }
+      }
+    }
+    return c.json({ ok: true })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500)
+  }
+})
+
+// ─── Session History — real D1 data for Weekly Review + Metrics ──────────────
+app.get('/api/session/history', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const db = c.env?.DB
+  if (!db) return c.json({ error: 'db_unavailable', sessions: [], outputs: [] }, 503)
+
+  try {
+    const days = parseInt(c.req.query('days') || '30')
+    const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)
+
+    // All focus sessions in range
+    const { results: sessions } = await db.prepare(`
+      SELECT id, duration_mins, focus_score, output_type, output_note, session_date, created_at
+      FROM sessions
+      WHERE email = ? AND session_date >= ? AND phase = 'focus' AND completed = 1
+      ORDER BY session_date DESC, created_at DESC
+    `).bind(session.email, since).all()
+
+    // Aggregate stats
+    const totalMins   = (sessions as any[]).reduce((s: number, r: any) => s + (r.duration_mins || 0), 0)
+    const totalSess   = sessions.length
+    const avgScore    = totalSess > 0 ? Math.round((sessions as any[]).reduce((s: number, r: any) => s + (r.focus_score || 0), 0) / totalSess) : 0
+
+    // Streak — consecutive days with at least 1 session
+    const daySet = new Set((sessions as any[]).map((r: any) => r.session_date))
+    let streak = 0
+    const today = new Date()
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(today); d.setDate(d.getDate() - i)
+      if (daySet.has(d.toISOString().slice(0, 10))) streak++
+      else if (i > 0) break
+    }
+
+    // Output type breakdown
+    const outputBreakdown: Record<string, number> = {}
+    ;(sessions as any[]).forEach((r: any) => {
+      if (r.output_type) outputBreakdown[r.output_type] = (outputBreakdown[r.output_type] || 0) + 1
+    })
+
+    // Recent outputs (last 10 with notes)
+    const recentOutputs = (sessions as any[])
+      .filter((r: any) => r.output_type)
+      .slice(0, 10)
+      .map((r: any) => ({ date: r.session_date, type: r.output_type, note: r.output_note, mins: r.duration_mins }))
+
+    // Sessions per day (for chart)
+    const perDay: Record<string, number> = {}
+    ;(sessions as any[]).forEach((r: any) => { perDay[r.session_date] = (perDay[r.session_date] || 0) + 1 })
+
+    return c.json({
+      totalMins,
+      totalSessions: totalSess,
+      avgFlowScore: avgScore,
+      streak,
+      outputBreakdown,
+      recentOutputs,
+      perDay,
+      days,
+    })
+  } catch (err: any) {
+    return c.json({ error: err.message, sessions: [], outputs: [] }, 500)
+  }
+})
+
 // ─── Behavior Insight ─────────────────────────────────────────────────────────
 app.get('/api/behavior/insight', async (c) => {
   const q = c.req.query() as any
@@ -5720,6 +5821,9 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .fcp-title{font-size:13px;font-weight:800;color:#f0f0f0;margin-bottom:4px}
 .fcp-sub{font-size:11px;color:#888;margin-bottom:10px}
 .fcp-btns{display:flex;gap:7px}
+.fcp-chip{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:20px;padding:4px 10px;font-size:11px;color:#ccc;cursor:pointer;transition:all .15s;white-space:nowrap}
+.fcp-chip:hover{background:rgba(168,85,247,.2);border-color:rgba(168,85,247,.4);color:#fff}
+.fcp-chip.active{background:rgba(168,85,247,.3);border-color:#a855f7;color:#fff;font-weight:700}
 @keyframes cFall{0%{opacity:1;transform:translate(0,0) rotate(0deg)}100%{opacity:0;transform:translate(var(--tx),var(--ty)) rotate(720deg)}}
 @keyframes celebIn{0%{opacity:0;transform:scale(.6)}100%{opacity:1;transform:scale(1)}}
 @keyframes slideR{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:translateX(0)}}
@@ -7030,15 +7134,37 @@ em{color:var(--accent);font-style:italic}
   </div>
 </div>
 
-<!-- Focus → Calendar prompt (shown after a focus session completes) -->
-<div class="focus-cal-prompt" id="focus-cal-prompt">
-  <button onclick="document.getElementById('focus-cal-prompt').style.display='none'" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#666;font-size:16px;cursor:pointer">&#x2715;</button>
-  <div class="fcp-title">🍅 Session logged!</div>
-  <div class="fcp-sub" id="fcp-sub">Add this to your Google Calendar?</div>
-  <div class="fcp-btns">
-    <button class="btn-primary" id="fcp-yes" style="flex:1;padding:7px;font-size:12px">Add to Calendar</button>
-    <button class="btn-sm" id="fcp-no" style="padding:7px 12px;font-size:12px">Skip</button>
+<!-- Session Complete — Output Tracking + Calendar prompt -->
+<div class="focus-cal-prompt" id="focus-cal-prompt" style="max-width:320px">
+  <button onclick="closeFocusPrompt()" style="position:absolute;top:8px;right:10px;background:none;border:none;color:#666;font-size:16px;cursor:pointer">&#x2715;</button>
+  <div class="fcp-title">🍅 Session complete!</div>
+  <div class="fcp-sub" id="fcp-sub" style="margin-bottom:12px">25m of deep focus done.</div>
+
+  <!-- Output tracking — all tiers -->
+  <div style="margin-bottom:12px">
+    <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:600;letter-spacing:.4px">WHAT DID YOU MAKE?</div>
+    <div style="display:flex;flex-wrap:wrap;gap:5px" id="fcp-output-chips">
+      <button class="fcp-chip" data-type="track"   onclick="selectOutputType('track')">🎵 Track</button>
+      <button class="fcp-chip" data-type="video"   onclick="selectOutputType('video')">🎬 Video</button>
+      <button class="fcp-chip" data-type="design"  onclick="selectOutputType('design')">🎨 Design</button>
+      <button class="fcp-chip" data-type="code"    onclick="selectOutputType('code')">💻 Code</button>
+      <button class="fcp-chip" data-type="writing" onclick="selectOutputType('writing')">✍️ Writing</button>
+      <button class="fcp-chip" data-type="content" onclick="selectOutputType('content')">📱 Content</button>
+      <button class="fcp-chip" data-type="other"   onclick="selectOutputType('other')">✦ Other</button>
+    </div>
+    <input id="fcp-output-note" type="text" placeholder="Quick note (optional)…" style="width:100%;margin-top:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:7px 10px;color:#e0e0e0;font-size:12px;outline:none;box-sizing:border-box;display:none"/>
   </div>
+
+  <!-- Calendar CTA — only for signed-in users -->
+  <div id="fcp-cal-row" style="display:none;margin-bottom:10px">
+    <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:600;letter-spacing:.4px">ADD TO GOOGLE CALENDAR?</div>
+    <div class="fcp-btns">
+      <button class="btn-primary" id="fcp-yes" style="flex:1;padding:7px;font-size:12px">Add to Calendar</button>
+      <button class="btn-sm" id="fcp-no" style="padding:7px 12px;font-size:12px">Skip</button>
+    </div>
+  </div>
+
+  <button onclick="saveFocusSession()" id="fcp-save-btn" style="width:100%;padding:8px;border-radius:8px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;border:none;font-size:13px;font-weight:700;cursor:pointer;margin-top:2px">Save Session →</button>
 </div>
 <!-- Keyboard shortcuts hint overlay -->
 <div id="kb-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:4000;align-items:center;justify-content:center;backdrop-filter:blur(8px)">

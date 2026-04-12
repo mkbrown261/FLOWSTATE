@@ -1846,50 +1846,122 @@ function blockSuggestion(startISO, endISO, durationMin) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// PILLAR 2 — Focus → Calendar Integration
+// ══════════════════════════════════════════════════════════════════
+// PILLAR 2 — Focus → Calendar + Output Tracking
 // ══════════════════════════════════════════════════════════════════
 
-// Called at the end of a completed focus phase
+// State for current session prompt
+let _fcpSession = { durationMin: 25, startISO: null, outputType: null };
+
 function showFocusCalPrompt(durationMin, startISO) {
-  if (!FS_USER) return; // only for signed-in users
   const prompt = document.getElementById('focus-cal-prompt');
-  const sub    = document.getElementById('fcp-sub');
+  if (!prompt) return;
+
+  // Reset state
+  _fcpSession = { durationMin, startISO, outputType: null };
+
+  // Update sub text
+  const sub = document.getElementById('fcp-sub');
+  if (sub) sub.textContent = `${durationMin}m of deep focus done.`;
+
+  // Reset chip selections
+  document.querySelectorAll('.fcp-chip').forEach(c => c.classList.remove('active'));
+  const noteInput = document.getElementById('fcp-output-note');
+  if (noteInput) { noteInput.style.display = 'none'; noteInput.value = ''; }
+
+  // Show calendar row only for signed-in users with Google
+  const calRow = document.getElementById('fcp-cal-row');
+  if (calRow) calRow.style.display = FS_USER ? 'block' : 'none';
+
+  // Wire calendar buttons fresh each time
   const yesBtn = document.getElementById('fcp-yes');
   const noBtn  = document.getElementById('fcp-no');
-  if (!prompt || !yesBtn || !noBtn) return;
+  if (yesBtn) {
+    const yes = yesBtn.cloneNode(true);
+    yesBtn.parentNode.replaceChild(yes, yesBtn);
+    yes.addEventListener('click', () => _addSessionToCalendar(durationMin, startISO));
+  }
+  if (noBtn) {
+    const no = noBtn.cloneNode(true);
+    noBtn.parentNode.replaceChild(no, noBtn);
+    no.addEventListener('click', () => { document.getElementById('fcp-cal-row').style.display = 'none'; });
+  }
 
-  const endISO = new Date().toISOString();
-  if (sub) sub.textContent = `Log ${durationMin}m focus block to Google Calendar?`;
   prompt.style.display = 'block';
+  // Auto-dismiss after 20s if untouched
+  setTimeout(() => {
+    if (prompt.style.display !== 'none' && !_fcpSession.outputType) prompt.style.display = 'none';
+  }, 20000);
+}
 
-  // Replace listeners each time
-  const yes = yesBtn.cloneNode(true);
-  const no  = noBtn.cloneNode(true);
-  yesBtn.parentNode.replaceChild(yes, yesBtn);
-  noBtn.parentNode.replaceChild(no, noBtn);
+function selectOutputType(type) {
+  _fcpSession.outputType = type;
+  document.querySelectorAll('.fcp-chip').forEach(c => c.classList.toggle('active', c.dataset.type === type));
+  const noteInput = document.getElementById('fcp-output-note');
+  if (noteInput) { noteInput.style.display = 'block'; noteInput.focus(); }
+}
 
-  yes.addEventListener('click', () => {
-    prompt.style.display = 'none';
-    fetch('/api/calendar/block', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+function closeFocusPrompt() {
+  const prompt = document.getElementById('focus-cal-prompt');
+  if (prompt) prompt.style.display = 'none';
+}
+
+function saveFocusSession() {
+  const btn = document.getElementById('fcp-save-btn');
+  const note = document.getElementById('fcp-output-note')?.value?.trim() || null;
+  const { durationMin, outputType } = _fcpSession;
+
+  // Save to D1 if signed in
+  if (FS_USER) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    fetch('/api/session/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({
-        title: `🍅 Focus Session — FlowState`,
-        start: startISO || new Date(Date.now() - durationMin * 60 * 1000).toISOString(),
-        end:   endISO,
+        durationMins: durationMin,
+        focusScore: state.timer._lastFlowScore || null,
+        outputType: outputType || null,
+        outputNote: note,
       })
     }).then(r => r.json()).then(d => {
-      if (d.ok || d.event?.id) {
-        notify('✅ Focus session logged to Google Calendar!', 'success');
-        loadCalEvents();
-      } else {
-        notify('Could not log session — reconnect Google Calendar', 'error');
+      if (d.ok) {
+        if (outputType) notify(`✅ ${durationMin}m session saved${outputType ? ' · ' + outputType : ''}`, 'success');
+        else notify(`✅ ${durationMin}m session saved`, 'success');
       }
-    }).catch(() => notify('Network error', 'error'));
-  });
-  no.addEventListener('click', () => { prompt.style.display = 'none'; });
+    }).catch(() => {}).finally(() => {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save Session →'; }
+      closeFocusPrompt();
+    });
+  } else {
+    // Guest — save to localStorage
+    const history = JSON.parse(localStorage.getItem('fs_session_history') || '[]');
+    history.unshift({ date: new Date().toISOString().slice(0,10), durationMins: durationMin, outputType, outputNote: note });
+    localStorage.setItem('fs_session_history', JSON.stringify(history.slice(0, 100)));
+    if (outputType) notify(`✅ ${durationMin}m logged locally · ${outputType}`, 'info');
+    closeFocusPrompt();
+  }
+}
 
-  // Auto-dismiss after 12s
-  setTimeout(() => { if (prompt.style.display !== 'none') prompt.style.display = 'none'; }, 12000);
+function _addSessionToCalendar(durationMin, startISO) {
+  const endISO = new Date().toISOString();
+  const calRow = document.getElementById('fcp-cal-row');
+  fetch('/api/calendar/block', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: `🍅 Focus Session — FlowState`,
+      start: startISO || new Date(Date.now() - durationMin * 60 * 1000).toISOString(),
+      end:   endISO,
+    })
+  }).then(r => r.json()).then(d => {
+    if (d.ok || d.event?.id) {
+      notify('📅 Added to Google Calendar!', 'success');
+      if (calRow) calRow.style.display = 'none';
+      loadCalEvents();
+    } else {
+      notify('Could not add to calendar — reconnect Google', 'error');
+    }
+  }).catch(() => notify('Network error', 'error'));
 }
 
 // ══════════════════════════════════════════════════════════════════
