@@ -8595,14 +8595,15 @@ app.get('/api/pair/status', async (c) => {
   if (!raw) return c.json({ status: 'none' })
   const data = typeof raw === 'string' ? JSON.parse(raw) : raw
 
-  // If the session has an endsAt timestamp and it has already passed,
-  // proactively delete the stale Redis key and return 'none' so the
-  // frontend never shows the "paired" banner for an expired session.
-  if (data.endsAt && new Date(data.endsAt).getTime() < Date.now()) {
+  // Entries without endsAt are legacy/stale — delete and return none.
+  // Also delete if endsAt has already passed.
+  const endsAtMs = data.endsAt ? new Date(data.endsAt).getTime() : 0
+  if (!endsAtMs || endsAtMs < Date.now()) {
     if (url && token) {
-      // Fire-and-forget: delete stale keys for both users
       const delKeys: string[] = [userKey]
       if (data.partnerEmail) delKeys.push(`pair_user:${encodeURIComponent(data.partnerEmail)}`)
+      // Also clean up the queue entry in case user was just waiting
+      delKeys.push('pair_queue')
       redisPipeline(url, token, delKeys.map(k => ['DEL', k])).catch(() => {})
     }
     return c.json({ status: 'none' })
