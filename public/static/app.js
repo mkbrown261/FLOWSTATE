@@ -10,7 +10,7 @@ let state = {
   restore: { scenes:[], idx:0, meditationTimer:null, meditationSeconds:0 },
   team:    { members:[], role:'member', activeTab:'sprint' },
   settings:{ focusMin:25, sound:null, isDemo:false },
-  gen:     { imgModel:'dalle3', vidModel:'veo2', i2vModel:'kling16', imgPickerOpen:false, vidPickerOpen:false, i2vPickerOpen:false }
+  gen:     { imgModel:'flux_pro', vidModel:'kling16', i2vModel:'kling16', imgPickerOpen:false, vidPickerOpen:false, i2vPickerOpen:false }
 };
 
 // ── Ambient Sound Engine ────────────────────────────────────────────────────
@@ -2928,7 +2928,7 @@ function restoreNav(dir) {
 // ── Generate ───────────────────────────────────────────────────────────────
 async function generateImage() {
   const prompt = document.getElementById('img-prompt').value.trim();
-  const model  = state.gen?.imgModel || 'dalle3';
+  const model  = state.gen?.imgModel || 'flux_pro';
   if (!prompt) { notify('Enter a prompt','error'); return; }
   const btn = document.getElementById('btn-gen-img'); btn.disabled=true; btn.textContent='Generating...';
   genSidebarLog('imggen', `Sending: "${prompt.slice(0,50)}${prompt.length>50?'…':''}"`);

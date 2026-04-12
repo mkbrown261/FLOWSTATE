@@ -1012,24 +1012,24 @@ app.post('/api/generate/image', async (c) => {
   if (!apiKey) return c.json({ error: spec.name + ' requires ' + spec.envKey, demo: true, imageUrl: 'https://placehold.co/1024x1024/1a1a2e/a855f7?text=' + encodeURIComponent(prompt.slice(0, 30)) })
 
   try {
-    // ── Google Imagen models ──────────────────────────────────────────────────
-    if (modelId === 'imagen3' || modelId === 'imagen4') {
-      const data: any = await (await fetch(spec.apiEndpoint + '?key=' + apiKey, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instances: [{ prompt }], parameters: { sampleCount: 1, aspectRatio } })
-      })).json()
-      const b64 = data.predictions?.[0]?.bytesBase64Encoded
-      if (b64) return c.json({ imageUrl: 'data:image/jpeg;base64,' + b64 })
-      return c.json({ error: data.error?.message || spec.name + ' generation failed', demo: true })
-    }
-
     // ── All Replicate image models ────────────────────────────────────────────
     const inputMap: Record<string, any> = {
+      // OpenAI via Replicate
+      dalle3:      { prompt, size: '1024x1024', quality: 'standard', style: 'vivid' },
+      dalle4:      { prompt, size: '1024x1024', quality: 'hd', style: 'vivid' },
+      'gpt-image': { prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90 },
+      // Google Imagen via Replicate
+      imagen3:     { prompt, aspect_ratio: aspectRatio, output_format: 'webp' },
+      imagen4:     { prompt, aspect_ratio: aspectRatio, output_format: 'webp' },
+      // Black Forest Labs
       flux_pro:    { prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90 },
       flux_dev:    { prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90, num_inference_steps: 28 },
       flux_schnell:{ prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90, num_inference_steps: 4 },
+      // Stability AI
+      sd3:         { prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90 },
       sd35:        { prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90 },
       sd35_medium: { prompt, aspect_ratio: aspectRatio, output_format: 'webp', output_quality: 90 },
+      // Others
       ideogram2:   { prompt, aspect_ratio: aspectRatio.replace(':', '_'), magic_prompt_option: 'AUTO' },
       recraft:     { prompt, size: '1024x1024', style: 'realistic_image' },
       seedream:    { prompt, aspect_ratio: aspectRatio },
@@ -1092,8 +1092,15 @@ app.post('/api/generate/video', async (c) => {
     const inputMap: Record<string, any> = {
       kling26:      { prompt, duration: Math.min(duration, 10), aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
       kling16:      { prompt, duration: Math.min(duration, 10), aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
+      kling21:      { prompt, duration: Math.min(duration, 10), aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
       minimax:      { prompt, ...(isImg2Vid ? { first_frame_image: imageUrl } : {}) },
       minimax_live: { prompt, ...(isImg2Vid ? { first_frame_image: imageUrl } : {}) },
+      hailuo:       { prompt, ...(isImg2Vid ? { first_frame_image: imageUrl } : {}) },
+      runway_gen4:  { prompt, ratio: '16:9', duration: Math.min(duration, 10), ...(isImg2Vid ? { image: imageUrl } : {}) },
+      runway_gen4t: { prompt, ratio: '16:9', duration: Math.min(duration, 10), ...(isImg2Vid ? { image: imageUrl } : {}) },
+      pika20:       { prompt, aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
+      sora:         { prompt, duration: Math.min(duration, 10), aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
+      luma:         { prompt, duration: Math.min(duration, 5), aspect_ratio: '16:9', ...(isImg2Vid ? { start_image_url: imageUrl } : {}) },
       hunyuan:      { prompt, video_length: Math.min(duration, 5), flow_shift: 7, embedded_guidance_scale: 6 },
       ltx:          { prompt, duration: Math.min(duration, 5), aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
     }
