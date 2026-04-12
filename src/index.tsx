@@ -638,6 +638,123 @@ app.get('/api/weekly-review', async (c) => {
   })
 })
 
+// ─── Weekly Email Digest ──────────────────────────────────────────────────────
+app.post('/api/email/weekly-digest', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const resendKey = c.env?.RESEND_API_KEY
+  if (!resendKey) return c.json({ error: 'email_not_configured' }, 503)
+
+  const db = c.env?.DB
+  let flowScore = 0, focusMin = 0, sessions30 = 0, streak = 0
+  let wins: string[] = [], improve: string[] = [], outputBreakdown: Record<string,number> = {}
+
+  if (db) {
+    try {
+      const since30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+      const since7  = new Date(Date.now() - 7  * 86400000).toISOString().slice(0, 10)
+      const { results } = await db.prepare(
+        `SELECT duration_mins, focus_score, output_type, session_date FROM sessions WHERE email=? AND session_date>=? AND phase='focus' AND completed=1 ORDER BY session_date DESC`
+      ).bind(session.email, since30).all() as any
+      const week = (results as any[]).filter((r:any) => r.session_date >= since7)
+      sessions30 = results.length
+      focusMin   = week.reduce((s:number,r:any) => s+(r.duration_mins||0), 0)
+      // Streak
+      const daySet = new Set((results as any[]).map((r:any) => r.session_date))
+      const today = new Date()
+      for (let i = 0; i < 365; i++) { const d=new Date(today); d.setDate(d.getDate()-i); if(daySet.has(d.toISOString().slice(0,10))) streak++; else if(i>0) break; }
+      // FlowScore
+      flowScore = Math.min(100, Math.round((focusMin/120)*40+(week.length/5)*30+Math.min(streak,7)*4+(week.length>0?15:0)))
+      // Output breakdown
+      ;(results as any[]).forEach((r:any) => { if(r.output_type) outputBreakdown[r.output_type]=(outputBreakdown[r.output_type]||0)+1 })
+      // Wins/improve
+      if (week.length >= 5) wins.push(`${week.length} focus sessions this week 🎯`)
+      if (streak >= 3) wins.push(`${streak}-day streak 🔥`)
+      if (focusMin >= 120) wins.push(`${focusMin} minutes of deep work this week`)
+      const topOutput = Object.entries(outputBreakdown).sort((a,b)=>b[1]-a[1])[0]
+      if (topOutput) wins.push(`Top output: ${topOutput[0]} (${topOutput[1]}x)`)
+      if (week.length < 3) improve.push('Aim for 5+ sessions next week — small daily habit compounds fast')
+      if (streak === 0) improve.push('Start a streak — even 1 session today resets the clock')
+    } catch(_) {}
+  }
+
+  const name = session.name?.split(' ')[0] || 'Creator'
+  const weekStr = `${new Date(Date.now()-7*86400000).toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'})}`
+  const scoreColor = flowScore >= 70 ? '#10b981' : flowScore >= 40 ? '#a855f7' : '#f59e0b'
+  const winsHtml = wins.length ? wins.map(w=>`<li style="padding:4px 0;color:#d0d0d0">${w}</li>`).join('') : '<li style="color:#666">Complete sessions this week to see your wins here!</li>'
+  const improveHtml = improve.length ? improve.map(i=>`<li style="padding:4px 0;color:#d0d0d0">${i}</li>`).join('') : '<li style="color:#888">Looking great — keep the momentum going!</li>'
+  const outputRows = Object.entries(outputBreakdown).sort((a,b)=>b[1]-a[1]).map(([t,n])=>`<span style="background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.25);border-radius:6px;padding:3px 10px;font-size:12px;color:#c084fc;margin:3px">${t} ×${n}</span>`).join('')
+
+  const html = `
+<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0a0a12;font-family:system-ui,-apple-system,sans-serif;color:#f0f0f0">
+<div style="max-width:560px;margin:0 auto;padding:32px 24px">
+  <div style="text-align:center;margin-bottom:28px">
+    <div style="font-size:32px;margin-bottom:8px">⚡</div>
+    <h1 style="font-size:22px;font-weight:900;margin:0;background:linear-gradient(135deg,#a855f7,#ec4899);-webkit-background-clip:text;-webkit-text-fill-color:transparent">FLOWSTATE</h1>
+    <div style="font-size:13px;color:#666;margin-top:4px">Weekly Review — ${weekStr}</div>
+  </div>
+  <div style="text-align:center;margin-bottom:24px">
+    <div style="font-size:13px;color:#888;margin-bottom:6px">Hey ${name} 👋 here's your week in focus.</div>
+    <div style="display:inline-block;background:#12102a;border:2px solid ${scoreColor};border-radius:20px;padding:16px 32px">
+      <div style="font-size:48px;font-weight:900;color:${scoreColor};line-height:1">${flowScore}</div>
+      <div style="font-size:12px;color:#888;margin-top:4px;text-transform:uppercase;letter-spacing:1px">FlowScore</div>
+    </div>
+  </div>
+  <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;justify-content:center">
+    <div style="background:#12102a;border:1px solid #2a2a3e;border-radius:12px;padding:14px 20px;text-align:center;min-width:100px">
+      <div style="font-size:24px;font-weight:800;color:#a855f7">${focusMin}m</div>
+      <div style="font-size:11px;color:#666;margin-top:2px">Focus Time</div>
+    </div>
+    <div style="background:#12102a;border:1px solid #2a2a3e;border-radius:12px;padding:14px 20px;text-align:center;min-width:100px">
+      <div style="font-size:24px;font-weight:800;color:#ec4899">${sessions30}</div>
+      <div style="font-size:11px;color:#666;margin-top:2px">Sessions (30d)</div>
+    </div>
+    <div style="background:#12102a;border:1px solid #2a2a3e;border-radius:12px;padding:14px 20px;text-align:center;min-width:100px">
+      <div style="font-size:24px;font-weight:800;color:#f59e0b">${streak}🔥</div>
+      <div style="font-size:11px;color:#666;margin-top:2px">Day Streak</div>
+    </div>
+  </div>
+  ${outputRows ? `<div style="margin-bottom:20px;text-align:center"><div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">Output Breakdown</div><div>${outputRows}</div></div>` : ''}
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px">
+    <div style="background:#12102a;border:1px solid #1a2e1a;border-radius:12px;padding:16px">
+      <div style="font-size:12px;font-weight:700;color:#10b981;margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px">🏆 Wins</div>
+      <ul style="margin:0;padding:0 0 0 16px;font-size:13px">${winsHtml}</ul>
+    </div>
+    <div style="background:#12102a;border:1px solid #2e2a1a;border-radius:12px;padding:16px">
+      <div style="font-size:12px;font-weight:700;color:#f59e0b;margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px">🚀 Level Up</div>
+      <ul style="margin:0;padding:0 0 0 16px;font-size:13px">${improveHtml}</ul>
+    </div>
+  </div>
+  <div style="text-align:center;margin-bottom:28px">
+    <a href="https://flowst8.cc" style="display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:14px 36px;border-radius:12px;font-weight:700;font-size:15px">Start This Week's Sessions →</a>
+  </div>
+  <div style="text-align:center;border-top:1px solid #1a1a2e;padding-top:16px;font-size:11px;color:#444">
+    FlowState · <a href="https://flowst8.cc" style="color:#666;text-decoration:none">flowst8.cc</a>
+  </div>
+</div>
+</body></html>`
+
+  try {
+    const emailRes = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'FlowState <weekly@flowst8.cc>',
+        to: [session.email],
+        subject: `⚡ Your FlowScore this week: ${flowScore} — ${weekStr}`,
+        html,
+      })
+    })
+    const emailData: any = await emailRes.json()
+    if (emailData.id) return c.json({ ok: true, emailId: emailData.id })
+    return c.json({ error: emailData.message || 'Email send failed' }, 500)
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // ─── Notion Board ─────────────────────────────────────────────────────────────
 app.get('/api/notion/databases', async (c) => {
   const ns = decodeSession(getCookie(c, 'fs_notion') || '')
@@ -6198,6 +6315,20 @@ em{color:var(--accent);font-style:italic}
       <i class="fas fa-calendar-exclamation"></i>&nbsp; <span id="block-msg"></span>
     </div>
   </div>
+  <!-- AI Intention Widget -->
+  <div id="intention-wrap" style="width:100%;max-width:480px;margin:14px auto 0">
+    <div style="background:var(--bg-panel);border:1px solid rgba(168,85,247,.2);border-radius:14px;padding:13px 16px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.8px"><i class="fas fa-brain" style="color:#a855f7;margin-right:4px"></i>Set Your Intention</span>
+        <span id="intention-ai-badge" style="display:none;font-size:9px;background:rgba(168,85,247,.15);color:var(--accent);border-radius:99px;padding:1px 7px;font-weight:700;border:1px solid rgba(168,85,247,.25)">AI</span>
+      </div>
+      <div style="display:flex;gap:7px;align-items:flex-start">
+        <input id="intention-input" type="text" placeholder="What will you accomplish this session?" style="flex:1;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:9px;padding:8px 12px;color:var(--text-p);font-size:13px;outline:none;min-width:0" onkeydown="if(event.key==='Enter')setIntention()"/>
+        <button onclick="setIntention()" style="padding:8px 13px;border-radius:9px;border:none;background:rgba(168,85,247,.2);color:var(--accent);cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap;flex-shrink:0">Set →</button>
+      </div>
+      <div id="intention-display" style="display:none;margin-top:10px;padding:8px 11px;background:rgba(168,85,247,.07);border-radius:8px;font-size:12px;color:var(--text-s);border-left:3px solid var(--accent)"></div>
+    </div>
+  </div>
   <!-- Smart Schedule Suggestions -->
   <div id="smart-schedule-wrap" style="margin-top:14px;width:100%;max-width:480px;margin-left:auto;margin-right:auto">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -6212,6 +6343,20 @@ em{color:var(--accent);font-style:italic}
 
 <!-- CHAT TAB -->
 <div class="tab-pane" id="tab-pane-chat" style="display:none;padding:14px">
+  <!-- Token usage meter (shown for free users) -->
+  <div id="chat-token-meter" style="display:none;margin-bottom:10px;padding:8px 12px;background:var(--bg-panel);border:1px solid var(--border);border-radius:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+      <span style="font-size:11px;color:#888;font-weight:600">Daily Token Usage</span>
+      <span id="chat-token-label" style="font-size:11px;color:var(--text-s)">0 / 1,500</span>
+    </div>
+    <div style="height:4px;background:rgba(255,255,255,.06);border-radius:99px;overflow:hidden">
+      <div id="chat-token-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#a855f7,#ec4899);border-radius:99px;transition:width .4s ease"></div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:5px">
+      <span id="chat-token-sub" style="font-size:10px;color:#555"></span>
+      <a href="#" onclick="openPricingModal();return false" style="font-size:10px;color:var(--accent);text-decoration:none;font-weight:700">↑ Upgrade for 100k/day</a>
+    </div>
+  </div>
   <div class="chat-wrap">
     <div class="chat-msgs" id="chat-msgs">
       <div class="msg ai">
@@ -6346,6 +6491,9 @@ em{color:var(--accent);font-style:italic}
         <div id="wr-improve"></div>
       </div>
     </div>
+    <button id="wr-send-email-btn" onclick="sendWeeklyDigest(this)" style="display:none;width:100%;margin-top:14px;padding:10px;border-radius:10px;border:none;background:linear-gradient(135deg,rgba(168,85,247,.2),rgba(236,72,153,.15));border:1px solid rgba(168,85,247,.35);color:#c084fc;font-size:13px;font-weight:700;cursor:pointer;transition:opacity .2s">
+      <i class="fas fa-envelope" style="margin-right:6px"></i>Send this week's recap to my email
+    </button>
   </div>
   <div class="insight-box" id="insight-box">
     <div class="ins-hl" id="ins-hl">Loading insight&#8230;</div>

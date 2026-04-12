@@ -1,8 +1,11 @@
 
 // ── State ──────────────────────────────────────────────────────────────────
 
+// ── D1 session history cache (populated on boot for signed-in users) ──────────
+let _d1History = null; // null = not loaded yet, {} = loaded
+
 let state = {
-  timer:   { running:false, phase:'focus', elapsed:0, totalFocusSec:0, sessions:0, streak:0, focusMin:25, shortMin:5, longMin:15, intervalId:null, audioCtx:null, soundType:null, pomodoroMusic:null },
+  timer:   { running:false, phase:'focus', elapsed:0, totalFocusSec:0, sessions:0, streak:0, focusMin:25, shortMin:5, longMin:15, intervalId:null, audioCtx:null, soundType:null, pomodoroMusic:null, _todaySessions:0, _lastSessionDate:null },
   chat:    { model:'auto', history:[] },
   cal:     { year:new Date().getFullYear(), month:new Date().getMonth(), events:[] },
   kanban:  { tasks:{ todo:[], inprogress:[], done:[] }, notionDb:null },
@@ -155,11 +158,20 @@ function loadLocalState() {
   try {
     const saved = JSON.parse(localStorage.getItem('fs_state') || '{}');
     if (saved.timer) {
-      state.timer.sessions     = saved.timer.sessions     || 0;
-      state.timer.totalFocusSec= saved.timer.totalFocusSec|| 0;
-      state.timer.streak       = saved.timer.streak       || 0;
-      state.timer.focusMin     = saved.timer.focusMin     || 25;
-      state.settings.focusMin  = state.timer.focusMin;
+      const todayStr = new Date().toISOString().slice(0, 10);
+      // Reset today's session count if it's a new day
+      const savedDate = saved.timer._lastSessionDate || '';
+      state.timer.sessions      = savedDate === todayStr ? (saved.timer.sessions || 0) : 0;
+      state.timer.totalFocusSec = savedDate === todayStr ? (saved.timer.totalFocusSec || 0) : 0;
+      state.timer.streak        = saved.timer.streak       || 0;
+      state.timer.focusMin      = saved.timer.focusMin     || 25;
+      state.settings.focusMin   = state.timer.focusMin;
+      state.timer._lastSessionDate = savedDate;
+      // Reset streak if last session was >48h ago (missed a day)
+      if (savedDate && savedDate !== todayStr) {
+        const daysSince = Math.floor((Date.now() - new Date(savedDate).getTime()) / 86400000);
+        if (daysSince > 1) state.timer.streak = 0; // streak broken
+      }
     }
     if (saved.kanban) state.kanban = saved.kanban;
   } catch(e) {}
@@ -168,7 +180,13 @@ function loadLocalState() {
 function saveLocalState() {
   try {
     localStorage.setItem('fs_state', JSON.stringify({
-      timer: { sessions:state.timer.sessions, totalFocusSec:state.timer.totalFocusSec, streak:state.timer.streak, focusMin:state.timer.focusMin },
+      timer: {
+        sessions: state.timer.sessions,
+        totalFocusSec: state.timer.totalFocusSec,
+        streak: state.timer.streak,
+        focusMin: state.timer.focusMin,
+        _lastSessionDate: state.timer._lastSessionDate,
+      },
       kanban: state.kanban
     }));
   } catch(e) {}
@@ -313,10 +331,16 @@ function renderObStep() {
       <button class="ob-btn" onclick="obFinish()">Almost Done →</button>
       <button class="ob-skip" onclick="obFinish()">Skip for now</button>`;
   } else {
-    inner = `<div class="ob-logo">🎉</div><div class="ob-title">FlowState is ready!</div>
-      <div class="ob-sub">Your workspace is configured. Start your first focus session and track your FlowScore.</div>
+    inner = `
+      <div class="ob-logo">🎉</div>
+      <div class="ob-title">You're all set!</div>
+      <div class="ob-sub">Your workspace is configured. Your FlowScore starts at <strong style="color:var(--accent)">0</strong> — complete your first session to earn points.</div>
       <div class="ob-progress">${progress}</div>
-      <button class="ob-btn" onclick="completeOnboarding()">Start FlowState →</button>`;
+      <div style="background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.2);border-radius:14px;padding:16px;margin:14px 0;text-align:left">
+        <div style="font-size:12px;font-weight:700;color:var(--accent);margin-bottom:10px">⚡ What happens when you complete a session:</div>
+        <div style="font-size:12px;color:var(--text-s);line-height:2">🎯 Your FlowScore updates in real-time<br>🔥 Your streak starts building<br>📊 Metrics tab shows your progress<br>💡 AI gives you a post-session debrief</div>
+      </div>
+      <button class="ob-btn" onclick="completeOnboarding()" style="background:linear-gradient(135deg,#a855f7,#ec4899);box-shadow:0 4px 20px rgba(168,85,247,.4)">Start My First Session →</button>`;
   }
   card.innerHTML = inner;
 }
@@ -353,6 +377,24 @@ async function completeOnboarding() {
   } catch(e){}
   document.getElementById('ob-screen').style.display='none';
   showMainApp();
+  // Pulse the start button so users know exactly what to click first
+  setTimeout(() => {
+    const startBtn = document.getElementById('btn-start');
+    if (startBtn) {
+      startBtn.style.boxShadow = '0 0 0 0 rgba(168,85,247,.7)';
+      startBtn.style.animation = 'ob-pulse 1.5s ease-out 3';
+      // Add keyframe via style tag if not present
+      if (!document.getElementById('ob-pulse-style')) {
+        const s = document.createElement('style');
+        s.id = 'ob-pulse-style';
+        s.textContent = '@keyframes ob-pulse{0%{box-shadow:0 0 0 0 rgba(168,85,247,.7)}70%{box-shadow:0 0 0 12px rgba(168,85,247,0)}100%{box-shadow:0 0 0 0 rgba(168,85,247,0)}}';
+        document.head.appendChild(s);
+      }
+      setTimeout(() => { startBtn.style.animation = ''; startBtn.style.boxShadow = ''; }, 5000);
+    }
+    // Show a one-time tooltip nudge
+    notify('⚡ Tap the play button to start your first session!', 'info');
+  }, 600);
 }
 
 // ── Main App ───────────────────────────────────────────────────────────────
@@ -369,13 +411,49 @@ function showMainApp(isDemo=false) {
   setupAmbientChips();
   maybeShowTip();
   loadTokenBalance();
-  initKeyboardShortcuts();         // PILLAR 3c — keyboard shortcuts
-  requestNotificationPermission(); // PILLAR 3b — ask for notification permission
-  // Check URL params FIRST to determine which tab to open
+  initKeyboardShortcuts();
+  requestNotificationPermission();
   const _startTab = checkBillingReturn();
   switchTab(_startTab || 'focus');
-  // Load smart suggestions after a short delay on focus tab
   setTimeout(loadSmartSuggestions, 1200);
+  // Seed real D1 history for signed-in users
+  if (FS_USER) loadD1History();
+}
+
+// ── Load real session history from D1, seed state + update UI ─────────────
+async function loadD1History() {
+  try {
+    const r = await fetch('/api/session/history?days=30', { credentials: 'include' });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.error) return;
+    _d1History = d;
+
+    // Seed state from D1 — real persistent numbers
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const todaySessions = d.perDay?.[todayStr] || 0;
+
+    // Only update totals if D1 has MORE data than what we have locally
+    // (local data from current browser session is valid for today)
+    if (d.totalMins > 0) {
+      // Set streak from D1 (authoritative)
+      state.timer.streak = Math.max(state.timer.streak, d.streak || 0);
+    }
+
+    // Today's session count: max of D1 + local (handles offline sessions)
+    state.timer.sessions = Math.max(state.timer.sessions, todaySessions);
+    state.timer._todaySessions = todaySessions;
+
+    // Update FlowScore badge with real score
+    if (d.avgFlowScore) {
+      const b = document.getElementById('fs-score-badge');
+      if (b) { b.style.display = 'block'; b.textContent = `⚡ ${d.avgFlowScore}`; }
+    }
+
+    // Refresh display
+    updateTimerDisplay();
+    saveLocalState();
+  } catch(e) {}
 }
 
 function checkBillingReturn() {
@@ -488,6 +566,7 @@ function switchTab(id) {
   if (id==='calendar') loadCalEvents();
   if (id==='focus')    setTimeout(loadSmartSuggestions, 400); // slight delay so DOM is ready
   if (id==='metrics')  { buildMetrics(); loadWeeklyReview(); }
+  if (id==='chat')     setTimeout(loadTokenBalance, 200); // refresh meter on every chat tab visit
   if (id==='board')    buildBoard();
   if (id==='team')     buildTeam();
   if (id==='learn')    loadLearnCards();
@@ -949,6 +1028,63 @@ function toggleTimer() {
   if (state.timer.running) { pauseTimer(); } else { startTimer(); }
 }
 
+// ── AI Intention + Debrief ────────────────────────────────────────────────
+let _currentIntention = null;
+
+function setIntention() {
+  const inp = document.getElementById('intention-input');
+  const val = inp?.value?.trim();
+  if (!val) return;
+  _currentIntention = val;
+  inp.value = '';
+  const display = document.getElementById('intention-display');
+  if (display) {
+    display.style.display = 'block';
+    display.innerHTML = `<strong>🎯 Intention set:</strong> ${escHtml(val)}`;
+  }
+  // Ask AI for a quick framing tip (non-blocking)
+  _getIntentionTip(val);
+}
+
+async function _getIntentionTip(intention) {
+  try {
+    const badge = document.getElementById('intention-ai-badge');
+    if (badge) badge.style.display = 'inline';
+    const display = document.getElementById('intention-display');
+    const r = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: `I'm about to start a focus session. My intention: "${intention}". Give me ONE powerful sentence (max 20 words) to frame my mindset. Be direct, no fluff.`,
+        model: 'gpt-4o-mini',
+        systemOverride: 'You are a focus coach. Reply with exactly one sentence under 20 words. No greetings, no lists, just the sentence.',
+      })
+    });
+    if (!r.ok) return;
+    const tip = (await r.text()).trim().replace(/^["']|["']$/g, '');
+    if (display && tip) {
+      display.innerHTML = `<strong>🎯 ${escHtml(intention)}</strong><br><em style="color:var(--accent);font-size:11px;margin-top:4px;display:block">"${escHtml(tip)}"</em>`;
+    }
+  } catch(e) {}
+}
+
+async function _getSessionDebrief(durationMin, intention) {
+  if (!intention) return null;
+  try {
+    const r = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: `I just completed a ${durationMin}-minute focus session. My intention was: "${intention}". Give me ONE insightful sentence (max 20 words) as a post-session reflection. Be specific to the intention.`,
+        model: 'gpt-4o-mini',
+        systemOverride: 'You are a focus coach. Reply with exactly one sentence under 20 words. No greetings.',
+      })
+    });
+    if (!r.ok) return null;
+    return (await r.text()).trim().replace(/^["']|["']$/g, '');
+  } catch(e) { return null; }
+}
+
 function startTimer() {
   // Record session start time for calendar logging
   if (state.timer.phase === 'focus' && !state.timer._sessionStartISO) {
@@ -1008,13 +1144,27 @@ function completePhase(skipped=false) {
   if (state.timer.phase==='focus' && !skipped) {
     const sessionStartISO = state.timer._sessionStartISO || new Date(Date.now() - state.timer.focusMin * 60 * 1000).toISOString();
     state.timer.sessions++;
-    state.timer.streak++;
+    // Streak: only increment once per calendar day
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (state.timer._lastSessionDate !== todayStr) {
+      state.timer.streak++;
+      state.timer._lastSessionDate = todayStr;
+    }
     saveLocalState();
     triggerCelebration('Focus Session Complete! 🎉', `${state.timer.sessions} sessions today — ${Math.round(state.timer.totalFocusSec/60)}m total`);
     updateFlowScore();
     maybeShowTip();
-    // PILLAR 2: prompt to log to calendar
-    setTimeout(() => showFocusCalPrompt(state.timer.focusMin, sessionStartISO), 1200);
+    // Clear intention display for next session
+    const intentionDisplay = document.getElementById('intention-display');
+    if (intentionDisplay) intentionDisplay.style.display = 'none';
+    // PILLAR 2: prompt to log to calendar + AI debrief
+    const intentionForDebrief = _currentIntention;
+    _currentIntention = null;
+    setTimeout(async () => {
+      let debrief = null;
+      if (intentionForDebrief) debrief = await _getSessionDebrief(state.timer.focusMin, intentionForDebrief);
+      showFocusCalPrompt(state.timer.focusMin, sessionStartISO, debrief);
+    }, 1200);
     // PILLAR 3b: browser notification
     sendNotification('🍅 Focus Session Complete!', `${state.timer.focusMin}m done — take a well-earned break.`);
     state.timer._sessionStartISO = null;
@@ -1431,12 +1581,11 @@ async function sendMessage() {
       removeTyping(tid);
       const code = err.code || '';
       if (code === 'VELOCITY_EXCEEDED') {
-        appendMsg('ai','⏱️ **Slow down!** You\'re sending too many messages. Wait 60 seconds and try again.','Rate limit');
+        appendMsg('ai','⏱️ You\'re sending too many messages. Wait 60 seconds and try again.','Rate limit');
       } else if (code === 'DAILY_LIMIT') {
-        const isPro = err.isPro;
-        appendMsg('ai', isPro
-          ? '📊 **Daily Pro limit reached** (100,000 tokens). Your quota resets at midnight UTC.'
-          : '📊 **Free daily limit reached** (1,500 tokens). [Upgrade to Pro](/upgrade) for unlimited tokens per day.', 'Usage limit');
+        removeTyping(tid);
+        showTokenWall(err.isPro);
+        return;
       } else {
         appendMsg('ai','⚠️ Request blocked. ' + (err.error || 'Try again later.'),'Blocked');
       }
@@ -1447,9 +1596,13 @@ async function sendMessage() {
     const reply = await res.text();
     const routedModel = res.headers.get('X-Routed-Model') || state.chat.model;
     const liveSearch  = res.headers.get('X-Live-Search') === 'on';
-    // Budget warning
+    // Budget warning — show inline token bar when running low
     const budgetWarn = res.headers.get('X-Budget-Warning');
-    if (budgetWarn) notify('⚡ ' + budgetWarn, 'warning');
+    const modelDowngraded = res.headers.get('X-Model-Downgraded');
+    if (budgetWarn) showTokenWarningBar(budgetWarn);
+    if (modelDowngraded && state.chat.model && !['gpt-4o-mini','gemini-2-flash','claude-haiku','grok-3-mini','llama-4-scout','llama-4-maverick','llama-3-3','deepseek-v3','auto'].includes(state.chat.model)) {
+      showModelDowngradeBadge();
+    }
     removeTyping(tid);
     appendMsg('ai', reply || 'No response.', (liveSearch ? '🌐 ' : '') + (MODEL_NAMES[routedModel] || routedModel));
     state.chat.history.push({role:'user',content:msg},{role:'assistant',content:reply||''});
@@ -1954,16 +2107,18 @@ function blockSuggestion(startISO, endISO, durationMin) {
 // State for current session prompt
 let _fcpSession = { durationMin: 25, startISO: null, outputType: null };
 
-function showFocusCalPrompt(durationMin, startISO) {
+function showFocusCalPrompt(durationMin, startISO, debrief) {
   const prompt = document.getElementById('focus-cal-prompt');
   if (!prompt) return;
 
   // Reset state
   _fcpSession = { durationMin, startISO, outputType: null };
 
-  // Update sub text
+  // Update sub text + optional AI debrief
   const sub = document.getElementById('fcp-sub');
-  if (sub) sub.textContent = `${durationMin}m of deep focus done.`;
+  if (sub) {
+    sub.innerHTML = `${durationMin}m of deep focus done.${debrief ? `<br><em style="color:var(--accent);font-size:10px;margin-top:3px;display:block;line-height:1.5">"${escHtml(debrief)}"</em>` : ''}`;
+  }
 
   // Reset chip selections
   document.querySelectorAll('.fcp-chip').forEach(c => c.classList.remove('active'));
@@ -2152,6 +2307,11 @@ function _renderWeeklyReview(d) {
     const badge = document.getElementById('wr-local-badge');
     if (badge) badge.style.display = 'flex';
   }
+  // Show "Send recap" button only for signed-in users who have sessions
+  const sendBtn = document.getElementById('wr-send-email-btn');
+  if (sendBtn) {
+    sendBtn.style.display = FS_USER && (d.sessions > 0 || d.focusMin > 0) ? 'block' : 'none';
+  }
 }
 
 function loadWeeklyReview() {
@@ -2181,6 +2341,33 @@ function loadWeeklyReview() {
 // ══════════════════════════════════════════════════════════════════
 // PILLAR 3b — Browser Notifications
 // ══════════════════════════════════════════════════════════════════
+// ── Weekly email digest ───────────────────────────────────────────────────
+async function sendWeeklyDigest(btn) {
+  if (!FS_USER) { openAuthPopup('/api/auth/google'); return; }
+  const orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right:6px"></i>Sending…';
+  try {
+    const r = await fetch('/api/email/weekly-digest', { method:'POST', credentials:'include' });
+    const d = await r.json();
+    if (d.error === 'not_authenticated') { openAuthPopup('/api/auth/google'); btn.disabled=false; btn.innerHTML=orig; return; }
+    if (d.error === 'email_not_configured') {
+      notify('Email not configured — contact support', 'error');
+    } else if (d.ok) {
+      btn.innerHTML = '<i class="fas fa-check" style="margin-right:6px"></i>Sent! Check your inbox';
+      btn.style.background = 'linear-gradient(135deg,rgba(16,185,129,.2),rgba(16,185,129,.1))';
+      btn.style.borderColor = 'rgba(16,185,129,.4)';
+      btn.style.color = '#10b981';
+      setTimeout(() => { btn.disabled=false; btn.innerHTML=orig; btn.style.cssText=''; }, 5000);
+      return;
+    } else {
+      notify('Could not send email — try again later', 'error');
+    }
+  } catch(e) { notify('Network error — try again', 'error'); }
+  btn.disabled = false;
+  btn.innerHTML = orig;
+}
+
 function requestNotificationPermission() {
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission();
@@ -2254,59 +2441,189 @@ function blockAroundEvent(evId) {
 // ── Metrics ────────────────────────────────────────────────────────────────
 let focusChartInstance = null;
 function buildMetrics() {
-  const sessions = state.timer.sessions;
-  const focusMin = Math.round(state.timer.totalFocusSec/60);
-  const streak   = state.timer.streak || 0;
-  const rate     = sessions ? Math.round((sessions/Math.max(sessions,4))*100) : 0;
-  const gratitude= parseInt(localStorage.getItem('gratitude_count')||'0');
-  const learnCards= state.learn.cards.length || 0;
+  // Prefer D1 history for signed-in users, fall back to local state
+  const d1 = _d1History;
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+
+  const todaySessionsLocal = state.timer.sessions;
+  const todayMinsLocal     = Math.round(state.timer.totalFocusSec / 60);
+
+  // If D1 loaded, use its richer data; supplement with today's live data
+  const totalSessions = d1 ? Math.max(d1.totalSessions, todaySessionsLocal) : todaySessionsLocal;
+  const streak        = d1 ? Math.max(d1.streak, state.timer.streak) : (state.timer.streak || 0);
+  const avgScore      = d1?.avgFlowScore || 0;
+  const gratitude     = parseInt(localStorage.getItem('gratitude_count') || '0');
+  const learnCards    = state.learn.cards.length || 0;
+
+  // Today's focus mins: max of D1 today entry and live state
+  const d1TodayMins = d1?.perDay ? Object.entries(d1.perDay).filter(([k]) => k === todayStr).reduce((s, [, v]) => s + v * 25, 0) : 0;
+  const focusMin = Math.max(todayMinsLocal, d1TodayMins);
+
+  const completionRate = totalSessions ? Math.min(100, Math.round((totalSessions / Math.max(totalSessions, 4)) * 100)) : 0;
 
   const cards = [
-    { icon:'🎯', val:sessions, lbl:'Sessions Today', trend:'+2 vs yesterday' },
-    { icon:'⏱', val:focusMin+'m', lbl:'Focus Minutes', trend:`${Math.round(focusMin/60*10)/10}h total` },
-    { icon:'🔥', val:streak, lbl:'Day Streak', trend:'Keep it up!' },
-    { icon:'✅', val:rate+'%', lbl:'Completion Rate', trend:'4-session goal' },
-    { icon:'🙏', val:gratitude, lbl:'Gratitude Entries', trend:'Daily practice' },
-    { icon:'📚', val:learnCards, lbl:'Cards Learned', trend:'Spaced repetition' },
+    { icon:'🎯', val: todaySessionsLocal || (d1?.perDay?.[todayStr] || 0), lbl:'Sessions Today', trend: d1 ? `${totalSessions} total (30d)` : 'today only' },
+    { icon:'⏱', val: focusMin+'m', lbl:'Focus Today', trend: d1 ? `${d1.totalMins}m all time (30d)` : `${Math.round(focusMin/60*10)/10}h` },
+    { icon:'🔥', val: streak, lbl:'Day Streak', trend: streak >= 7 ? '🏆 7-day streak!' : streak >= 3 ? '💪 building momentum' : 'Keep it up!' },
+    { icon:'⚡', val: avgScore || '—', lbl:'Avg FlowScore', trend: d1 ? 'last 30 days' : 'complete sessions to track' },
+    { icon:'🙏', val: gratitude, lbl:'Gratitude Entries', trend:'Daily practice' },
+    { icon:'📚', val: learnCards, lbl:'Cards Learned', trend:'Spaced repetition' },
   ];
 
-  document.getElementById('metrics-grid').innerHTML = cards.map(c=>`<div class="m-card"><div class="m-icon">${c.icon}</div><div class="m-val">${c.val}</div><div class="m-lbl">${c.lbl}</div><div class="m-trend">${c.trend}</div></div>`).join('');
+  document.getElementById('metrics-grid').innerHTML = cards.map(c=>`<div class="m-card"><div class="m-icon">${c.icon}</div><div class="m-val">${escHtml(String(c.val))}</div><div class="m-lbl">${c.lbl}</div><div class="m-trend">${c.trend}</div></div>`).join('');
 
+  // Build chart — use D1 perDay if available, else localStorage
   const weekData = [];
-  const today = new Date();
-  for (let i=6;i>=0;i--) {
-    const d = new Date(today); d.setDate(d.getDate()-i);
-    const key = 'sessions_' + d.toISOString().slice(0,10);
-    weekData.push(parseInt(localStorage.getItem(key)||'0'));
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today); d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    const d1Val = d1?.perDay?.[key] || 0;
+    const lsVal = parseInt(localStorage.getItem('sessions_' + key) || '0');
+    weekData.push(Math.max(d1Val, lsVal));
   }
-  const todayKey = 'sessions_' + today.toISOString().slice(0,10);
-  localStorage.setItem(todayKey, sessions);
+  // Save today's count for chart continuity
+  localStorage.setItem('sessions_' + todayStr, String(todaySessionsLocal));
 
   const ctx = document.getElementById('focus-chart')?.getContext('2d');
   if (!ctx) return;
   if (focusChartInstance) focusChartInstance.destroy();
 
-  // If no real data yet, show sample data so chart looks useful
   const hasData = weekData.some(v => v > 0);
   const sampleData = [2, 4, 3, 5, 2, 6, 3];
   const chartData = hasData ? weekData : sampleData;
   const isDemoChart = !hasData;
 
-  // Update chart title to show "sample" when no real data
   const chartTitle = document.querySelector('.chart-title');
   if (chartTitle) {
-    chartTitle.innerHTML = `<i class="fas fa-chart-bar" style="color:var(--accent)"></i> Focus Sessions This Week${isDemoChart ? ' <span style="font-size:10px;color:var(--text-m);font-weight:400;background:rgba(168,85,247,.12);padding:2px 7px;border-radius:10px;margin-left:4px">sample</span>' : ''}`;
+    chartTitle.innerHTML = `<i class="fas fa-chart-bar" style="color:var(--accent)"></i> Focus Sessions This Week${isDemoChart ? ' <span style="font-size:10px;color:var(--text-m);font-weight:400;background:rgba(168,85,247,.12);padding:2px 7px;border-radius:10px;margin-left:4px">sample data</span>' : (d1 ? ' <span style="font-size:10px;color:#10b981;font-weight:400;background:rgba(16,185,129,.1);padding:2px 7px;border-radius:10px;margin-left:4px">live from D1</span>' : '')}`;
   }
 
   focusChartInstance = new Chart(ctx, {
-    type:'bar',
+    type: 'bar',
     data: {
-      labels: Array.from({length:7},(_, i)=>{ const d=new Date(today); d.setDate(d.getDate()-(6-i)); return d.toLocaleDateString('en-US',{weekday:'short'}); }),
-      datasets:[{ data:chartData, backgroundColor: isDemoChart ? 'rgba(168,85,247,.25)' : 'rgba(168,85,247,.6)', borderColor:'#a855f7', borderWidth:2, borderRadius:8 }]
+      labels: Array.from({length:7}, (_, i) => { const d = new Date(today); d.setDate(d.getDate()-(6-i)); return d.toLocaleDateString('en-US',{weekday:'short'}); }),
+      datasets: [{ data: chartData, backgroundColor: isDemoChart ? 'rgba(168,85,247,.25)' : 'rgba(168,85,247,.65)', borderColor:'#a855f7', borderWidth:2, borderRadius:8 }]
     },
-    options:{ plugins:{legend:{display:false}}, scales:{ y:{beginAtZero:true,ticks:{color:'#888',stepSize:1,precision:0},grid:{color:'rgba(168,85,247,.07)'}}, x:{ticks:{color:'#888'},grid:{display:false}} }, animation:{duration:600} }
+    options: { plugins:{legend:{display:false}}, scales:{ y:{beginAtZero:true,ticks:{color:'#888',stepSize:1,precision:0},grid:{color:'rgba(168,85,247,.07)'}}, x:{ticks:{color:'#888'},grid:{display:false}} }, animation:{duration:600} }
   });
+
+  // Output breakdown (D1 only)
+  _renderOutputBreakdown();
   loadBehaviorInsight();
+}
+
+function _renderOutputBreakdown() {
+  const d1 = _d1History;
+  let el = document.getElementById('output-breakdown-wrap');
+  if (!el) {
+    // Inject after chart if not present
+    const chartWrap = document.querySelector('.chart-wrap');
+    if (!chartWrap) return;
+    el = document.createElement('div');
+    el.id = 'output-breakdown-wrap';
+    chartWrap.after(el);
+  }
+  if (!d1?.outputBreakdown || !Object.keys(d1.outputBreakdown).length) {
+    el.innerHTML = '';
+    return;
+  }
+  const items = Object.entries(d1.outputBreakdown).sort((a,b)=>b[1]-a[1]);
+  const ICONS = { Writing:'✍️', Code:'💻', Design:'🎨', Reading:'📚', Planning:'📋', Meeting:'💬', Other:'🔘' };
+  el.innerHTML = `
+    <div style="margin-top:16px">
+      <div class="chart-title" style="margin-bottom:10px"><i class="fas fa-trophy" style="color:var(--accent)"></i> Output Breakdown <span style="font-size:10px;color:#10b981;font-weight:400;background:rgba(16,185,129,.1);padding:2px 7px;border-radius:10px;margin-left:4px">30 days</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${items.map(([type, count]) => `<div style="display:flex;align-items:center;gap:6px;background:var(--bg-panel);border:1px solid var(--border);border-radius:10px;padding:7px 12px;font-size:12px">
+          <span>${ICONS[type]||'🔘'}</span>
+          <span style="color:var(--text-p);font-weight:600">${type}</span>
+          <span style="color:var(--accent);font-weight:800">${count}</span>
+        </div>`).join('')}
+      </div>
+      ${d1.recentOutputs?.length ? `<div style="margin-top:12px;font-size:11px;color:#666">
+        ${d1.recentOutputs.slice(0,3).map(o=>`<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+          <span style="color:#888">${o.date}</span> · <span style="color:var(--text-s)">${ICONS[o.type]||''} ${o.type}</span>${o.note ? ` · <em style="color:#666">${escHtml(o.note)}</em>` : ''} <span style="color:#555">(${o.mins}m)</span>
+        </div>`).join('')}
+      </div>` : ''}
+    </div>`;
+}
+
+// ── Token wall, upgrade moment, model downgrade badge ─────────────────────
+function showTokenWall(isPro) {
+  const used = _tokenBalance?.dailyUsed || 0;
+  const limit = _tokenBalance?.dailyLimit || (isPro ? 100000 : 1500);
+  const tier = _tokenBalance?.tier || 'free';
+
+  if (isPro) {
+    openModal(`
+      <div style="text-align:center;padding:8px 0">
+        <div style="font-size:40px;margin-bottom:12px">📊</div>
+        <h2 style="margin:0 0 8px">Daily Pro Limit Reached</h2>
+        <p style="color:var(--text-s);font-size:13px;margin-bottom:20px">You've used your 100,000 daily tokens. Your quota resets at midnight UTC.</p>
+        <div style="background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.2);border-radius:12px;padding:14px;margin-bottom:16px;font-size:13px">
+          <div style="color:#888;margin-bottom:4px">Used today</div>
+          <div style="font-size:22px;font-weight:800;color:var(--accent)">${used.toLocaleString()} <span style="font-size:13px;color:#888">/ ${limit.toLocaleString()}</span></div>
+        </div>
+        <button class="btn-primary" onclick="openTopupModal();closeModal()" style="width:100%;margin-bottom:8px">💰 Buy Token Pack — Never Expire</button>
+        <button onclick="closeModal()" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;font-size:13px">Wait until midnight reset</button>
+      </div>
+    `);
+    return;
+  }
+
+  // Free user — show the real upgrade comparison
+  openModal(`
+    <div style="text-align:center;padding:8px 0">
+      <div style="font-size:40px;margin-bottom:12px">⚡</div>
+      <h2 style="margin:0 0 6px">You've hit the free limit</h2>
+      <p style="color:var(--text-s);font-size:13px;margin-bottom:18px">You used all <strong style="color:var(--accent)">1,500 free tokens</strong> today. Here's what you're missing:</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px;text-align:left">
+        <div style="background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:12px;padding:14px">
+          <div style="font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Free</div>
+          <div style="font-size:12px;color:var(--text-s);line-height:2">1,500 tokens/day<br>GPT-4o mini only<br>No calendar sync<br>No image gen<br>Basic metrics</div>
+        </div>
+        <div style="background:linear-gradient(135deg,rgba(168,85,247,.12),rgba(236,72,153,.08));border:1px solid rgba(168,85,247,.35);border-radius:12px;padding:14px;position:relative">
+          <div style="position:absolute;top:-8px;right:10px;background:var(--grad);color:#fff;font-size:9px;font-weight:800;padding:2px 8px;border-radius:99px;letter-spacing:.5px">PRO</div>
+          <div style="font-size:11px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Pro — $18/mo</div>
+          <div style="font-size:12px;color:var(--text-p);line-height:2"><strong>100,000</strong> tokens/day<br>GPT-5, Claude, Gemini, Grok<br>Google Calendar sync<br>Image + video gen<br>Advanced insights</div>
+        </div>
+      </div>
+      <button class="btn-primary" onclick="closeModal();openPricingModal()" style="width:100%;margin-bottom:8px;padding:12px;font-size:14px">🚀 Upgrade to Pro — $18/mo</button>
+      <button onclick="openTopupModal();closeModal()" style="width:100%;padding:9px;border-radius:8px;border:1px solid rgba(16,185,129,.4);background:rgba(16,185,129,.08);color:#10b981;cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px">💰 Buy Tokens (no subscription)</button>
+      <button onclick="closeModal()" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;font-size:12px">Wait until tomorrow (resets midnight UTC)</button>
+    </div>
+  `);
+}
+
+function showTokenWarningBar(msg) {
+  // Show a persistent (dismissable) bar above the chat input when near the limit
+  let bar = document.getElementById('token-warn-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'token-warn-bar';
+    bar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 14px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:10px;font-size:12px;color:#f59e0b;margin-bottom:8px;cursor:pointer';
+    bar.onclick = () => { bar.style.display='none'; };
+    const chatPane = document.getElementById('tab-pane-chat');
+    if (chatPane) chatPane.insertBefore(bar, chatPane.firstChild);
+  }
+  const left = msg.match(/(\d[\d,]+) tokens/)?.[1] || '?';
+  bar.innerHTML = `<span>⚡ <strong>${left} tokens left today</strong> — ${msg} · <a href="#" onclick="event.stopPropagation();openPricingModal();return false" style="color:var(--accent);text-decoration:none;font-weight:700">Upgrade to Pro</a> for 100k/day</span><span style="opacity:.5;font-size:14px">✕</span>`;
+  bar.style.display = 'flex';
+}
+
+function showModelDowngradeBadge() {
+  const msgs = document.getElementById('chat-msgs');
+  if (!msgs) return;
+  const last = msgs.lastElementChild;
+  if (!last) return;
+  // Add a subtle "Free tier: running on GPT-4o mini" note to last AI message
+  const tag = last.querySelector('.m-tag');
+  if (tag && !tag.dataset.downgraded) {
+    tag.dataset.downgraded = '1';
+    tag.insertAdjacentHTML('afterend',
+      '<span style="font-size:10px;color:#f59e0b;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.2);border-radius:4px;padding:1px 6px;margin-left:4px;cursor:pointer" onclick="openPricingModal()" title="Upgrade to use your selected model">⬇ free tier · <u>upgrade</u></span>'
+    );
+  }
 }
 
 function loadBehaviorInsight() {
@@ -3918,20 +4235,36 @@ async function loadTokenBalance() {
     const r = await fetch('/api/billing/balance');
     if (!r.ok) return;
     _tokenBalance = await r.json();
+    const fmt = n => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+'M'
+                   : n >= 1_000     ? Math.round(n/1_000)+'k'
+                   : String(n);
     // Update compact token counter on the buy-tokens button
     const el = document.getElementById('token-balance-display');
     if (el && _tokenBalance) {
       const purchased = _tokenBalance.purchased || 0;
       const dailyLeft = Math.max(0, (_tokenBalance.dailyLimit || 0) - (_tokenBalance.dailyUsed || 0));
       const total = dailyLeft + purchased;
-      // Format: 12.3k, 1.2M, etc.
-      const fmt = n => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+'M'
-                     : n >= 1_000     ? Math.round(n/1_000)+'k'
-                     : String(n);
       el.textContent = fmt(total);
-      // Also update the button title with full breakdown
       const btn = document.getElementById('btn-topup');
       if (btn) btn.title = `${fmt(dailyLeft)} daily left · ${fmt(purchased)} purchased — Click to buy more`;
+    }
+    // Update the chat tab token usage meter (only for free tier)
+    const isPro = _tokenBalance?.tier === 'pro' || _tokenBalance?.tier === 'team';
+    const meter = document.getElementById('chat-token-meter');
+    if (meter && _tokenBalance && !isPro) {
+      const used  = _tokenBalance.dailyUsed  || 0;
+      const limit = _tokenBalance.dailyLimit || 1500;
+      const pct   = Math.min(100, Math.round((used / limit) * 100));
+      const left  = Math.max(0, limit - used);
+      meter.style.display = 'block';
+      const label = document.getElementById('chat-token-label');
+      const bar   = document.getElementById('chat-token-bar');
+      const sub   = document.getElementById('chat-token-sub');
+      if (label) label.textContent = `${used.toLocaleString()} / ${limit.toLocaleString()}`;
+      if (bar)   { bar.style.width = pct + '%'; bar.style.background = pct > 80 ? 'linear-gradient(90deg,#f59e0b,#ef4444)' : 'linear-gradient(90deg,#a855f7,#ec4899)'; }
+      if (sub)   sub.textContent = left > 0 ? `${left.toLocaleString()} tokens left today` : '⚠️ Daily limit reached';
+    } else if (meter && isPro) {
+      meter.style.display = 'none';
     }
   } catch(e) {}
 }
