@@ -5568,7 +5568,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0f0f1a;color:#f0
     <div class="feat"><span class="feat-icon">✓</span> Cloud sync</div>
   </div>
 
-  <p class="legal">By signing in you agree to our <a href="https://flowst8.cc/terms" target="_blank">Terms</a> &amp; <a href="https://flowst8.cc/privacy" target="_blank">Privacy Policy</a>.<br>Your data is never sold.</p>
+  <p class="legal">By signing in you agree to our <a href="/legal#terms" target="_blank">Terms of Use</a> &amp; <a href="/legal#privacy" target="_blank">Privacy Policy</a>.<br>Your data is never sold.</p>
 </div>
 
 <script>
@@ -6256,6 +6256,7 @@ em{color:var(--accent);font-style:italic}
       <div class="login-feat"><i class="fas fa-check"></i> Break reminders</div>
     </div>
     <p class="login-legal">API keys stored server-side as Cloudflare Secrets. Never exposed. Your data is never sold.</p>
+    <p class="login-legal" style="margin-top:8px">By signing in you agree to our <a href="/legal#terms" target="_blank" style="color:var(--accent)">Terms of Use</a> and <a href="/legal#privacy" target="_blank" style="color:var(--accent)">Privacy Policy</a>.</p>
   </div>
 </div>
 
@@ -8791,7 +8792,9 @@ app.get('/launch', async (c) => {
     <a href="https://twitter.com/flowst8cc" style="color:#6b7280;text-decoration:none;margin:0 12px">Twitter</a>
     <a href="mailto:hello@flowst8.cc" style="color:#6b7280;text-decoration:none;margin:0 12px">Contact</a>
   </div>
-  © 2025 FlowState · <a href="https://flowst8.cc" style="color:#555;text-decoration:none">flowst8.cc</a>
+  © 2026 FlowState · <a href="https://flowst8.cc" style="color:#555;text-decoration:none">flowst8.cc</a>
+  &nbsp;·&nbsp; <a href="/legal#privacy" style="color:#555;text-decoration:none">Privacy</a>
+  &nbsp;·&nbsp; <a href="/legal#terms" style="color:#555;text-decoration:none">Terms</a>
 </footer>
 </body>
 </html>`
@@ -8989,6 +8992,509 @@ async function scheduledHandler(event: any, env: any, ctx: any) {
     console.error('Cron weekly digest error:', err.message)
   }
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LEGAL PAGES  GET /legal  GET /privacy  GET /terms
+// ══════════════════════════════════════════════════════════════════════════════
+
+const LEGAL_CSS = `
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{--bg:#0a0a0f;--bg-panel:#111118;--border:#1e1e2e;--accent:#a855f7;--accent2:#ec4899;--text:#e8e8f0;--text-m:#9090a8;--text-s:#6060758}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;line-height:1.7;min-height:100vh}
+  .nav{display:flex;align-items:center;justify-content:space-between;padding:18px 32px;border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(10,10,15,.92);backdrop-filter:blur(12px);z-index:100}
+  .nav-logo{font-size:20px;font-weight:900;background:linear-gradient(135deg,#a855f7,#ec4899);-webkit-background-clip:text;-webkit-text-fill-color:transparent;text-decoration:none}
+  .nav-links{display:flex;gap:24px}
+  .nav-links a{color:var(--text-m);text-decoration:none;font-size:13px;font-weight:500;transition:color .2s}
+  .nav-links a:hover,.nav-links a.active{color:var(--text)}
+  .container{max-width:780px;margin:0 auto;padding:48px 24px 80px}
+  .tabs{display:flex;gap:0;border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:40px;background:var(--bg-panel)}
+  .tab-btn{flex:1;padding:12px 20px;background:none;border:none;color:var(--text-m);font-size:14px;font-weight:600;cursor:pointer;transition:all .2s;letter-spacing:.3px}
+  .tab-btn.active{background:linear-gradient(135deg,rgba(168,85,247,.15),rgba(236,72,153,.1));color:var(--text);border-bottom:2px solid var(--accent)}
+  .tab-content{display:none}.tab-content.active{display:block}
+  .doc-header{margin-bottom:36px}
+  .doc-title{font-size:32px;font-weight:900;background:linear-gradient(135deg,#a855f7,#ec4899);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}
+  .doc-meta{font-size:13px;color:var(--text-m);display:flex;gap:16px;flex-wrap:wrap}
+  .doc-meta span{background:var(--bg-panel);border:1px solid var(--border);border-radius:6px;padding:3px 10px}
+  .toc{background:var(--bg-panel);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-bottom:36px}
+  .toc-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:12px}
+  .toc ol{padding-left:18px;display:grid;grid-template-columns:1fr 1fr;gap:4px 16px}
+  .toc a{color:var(--accent);text-decoration:none;font-size:13px;transition:color .2s}
+  .toc a:hover{color:var(--accent2)}
+  h2{font-size:20px;font-weight:800;color:var(--text);margin:36px 0 14px;padding-top:8px;border-top:1px solid var(--border)}
+  h2:first-of-type{margin-top:0;border-top:none}
+  h3{font-size:15px;font-weight:700;color:var(--text);margin:20px 0 8px}
+  p{color:var(--text-m);margin-bottom:12px;font-size:15px}
+  ul,ol{color:var(--text-m);padding-left:20px;margin-bottom:14px;font-size:15px}
+  li{margin-bottom:5px}
+  strong{color:var(--text);font-weight:600}
+  .highlight{background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(236,72,153,.05));border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:16px 20px;margin:20px 0}
+  .highlight p{margin:0;font-size:14px}
+  .contact-box{background:var(--bg-panel);border:1px solid var(--border);border-radius:12px;padding:24px;margin-top:40px;text-align:center}
+  .contact-box h3{color:var(--text);margin-bottom:8px}
+  .contact-box a{color:var(--accent);text-decoration:none;font-weight:600}
+  .back-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;background:linear-gradient(135deg,rgba(168,85,247,.15),rgba(236,72,153,.1));border:1px solid rgba(168,85,247,.3);border-radius:8px;color:var(--text);text-decoration:none;font-size:13px;font-weight:600;transition:all .2s;margin-bottom:32px}
+  .back-btn:hover{background:linear-gradient(135deg,rgba(168,85,247,.25),rgba(236,72,153,.2))}
+  @media(max-width:600px){.toc ol{grid-template-columns:1fr}.nav{padding:14px 16px}.container{padding:32px 16px 60px}.doc-title{font-size:24px}}
+`
+
+const LEGAL_NAV = `
+  <nav class="nav">
+    <a class="nav-logo" href="/">FLOWSTATE</a>
+    <div class="nav-links">
+      <a href="/">App</a>
+      <a href="/legal#privacy">Privacy</a>
+      <a href="/legal#terms">Terms</a>
+    </div>
+  </nav>
+`
+
+const PRIVACY_POLICY_HTML = `
+<div class="doc-header">
+  <div class="doc-title">Privacy Policy</div>
+  <div class="doc-meta">
+    <span>Effective: April 12, 2026</span>
+    <span>Last updated: April 12, 2026</span>
+    <span>Version 1.0</span>
+  </div>
+</div>
+
+<div class="highlight">
+  <p><strong>The short version:</strong> FlowState helps you focus, grow, and ship. We collect only what we need to make the product work. We don't sell your data. We use industry-standard security. You own your data and can delete it anytime.</p>
+</div>
+
+<div class="toc">
+  <div class="toc-title">Contents</div>
+  <ol>
+    <li><a href="#p1">Who We Are</a></li>
+    <li><a href="#p2">What We Collect</a></li>
+    <li><a href="#p3">How We Use Your Data</a></li>
+    <li><a href="#p4">AI Features & Your Data</a></li>
+    <li><a href="#p5">Third-Party Services</a></li>
+    <li><a href="#p6">Data Storage & Security</a></li>
+    <li><a href="#p7">Cookies & Local Storage</a></li>
+    <li><a href="#p8">Your Rights</a></li>
+    <li><a href="#p9">Children's Privacy</a></li>
+    <li><a href="#p10">International Users</a></li>
+    <li><a href="#p11">Changes to This Policy</a></li>
+    <li><a href="#p12">Contact Us</a></li>
+  </ol>
+</div>
+
+<h2 id="p1">1. Who We Are</h2>
+<p>FlowState ("we," "us," or "our") is a productivity and creative intelligence platform operated as a software service. Our website and application are available at <strong>flowst8.cc</strong> and related subdomains. FlowState is an independent product — not affiliated with any corporation.</p>
+<p>This Privacy Policy explains how we collect, use, disclose, and protect information when you use FlowState, including the web app, embed widget, public profile pages (<code>/u/:slug</code>), the launch page, and all associated API endpoints.</p>
+
+<h2 id="p2">2. What We Collect</h2>
+
+<h3>2.1 Information You Provide Directly</h3>
+<ul>
+  <li><strong>Account information:</strong> When you sign in with Google OAuth, we receive your email address, display name, and profile picture URL from Google.</li>
+  <li><strong>Onboarding preferences:</strong> Focus duration, timezone, working hours, and productivity goals you enter during onboarding.</li>
+  <li><strong>Session data:</strong> Focus session duration, output type (code, writing, design, etc.), notes, FlowScore, and streak data you log manually or through the timer.</li>
+  <li><strong>Tasks &amp; deadlines:</strong> Task titles, statuses, tags, owners, deadlines, and progress percentages you create in the Kanban board or Smart Deadlines panel.</li>
+  <li><strong>Team standup updates:</strong> Your standup text when you post updates in the Team Hub.</li>
+  <li><strong>Profile information:</strong> Your public FlowState slug, bio, and display preferences for your public profile page (<code>/u/:slug</code>).</li>
+  <li><strong>Referral codes:</strong> Referral codes you generate or claim.</li>
+  <li><strong>AI chat messages:</strong> Prompts and conversation history you send to the AI chat, AI Flow Coach, ClawBot, or other AI assistants.</li>
+  <li><strong>Generated content:</strong> Images, videos, audio, or text generated using AI tools, stored in Cloudflare R2 if you choose to save outputs.</li>
+  <li><strong>Music playlist settings:</strong> YouTube playlist URLs you save for Pomodoro focus music.</li>
+  <li><strong>Uploaded files:</strong> Files you upload using the file-conversion tools (PDF, images, SVG, PPTX, TXT, CSV). These are processed in-memory and not permanently stored unless you explicitly save them to R2.</li>
+</ul>
+
+<h3>2.2 Information Collected Automatically</h3>
+<ul>
+  <li><strong>Session cookies:</strong> An <code>fs_session</code> HTTP-only cookie containing your encoded session (email, name, avatar, tier, Google access token) — set for 7 days after login.</li>
+  <li><strong>Integration tokens:</strong> OAuth access tokens for Google Calendar (<code>fs_session</code>), Notion (<code>fs_notion</code>), and Slack (<code>fs_slack</code>), stored as HTTP-only cookies.</li>
+  <li><strong>IP address:</strong> Used transiently for rate limiting and abuse prevention via Upstash Redis. Not stored permanently.</li>
+  <li><strong>Usage metadata:</strong> Daily AI token usage counts (keyed by email), velocity (requests per minute window), and tier information — stored in Redis and automatically expired.</li>
+  <li><strong>Cloudflare headers:</strong> Standard Cloudflare edge headers such as <code>CF-Connecting-IP</code> and geolocation data are processed at the edge for abuse prevention and are not logged.</li>
+</ul>
+
+<h3>2.3 Information from Third-Party Integrations (Optional)</h3>
+<p>You may optionally connect the following third-party services. We only request the minimum permissions needed:</p>
+<ul>
+  <li><strong>Google Calendar:</strong> Read and create calendar events to enable focus-block scheduling. We store your Google OAuth token in the session cookie (never in a database).</li>
+  <li><strong>Notion:</strong> Read databases and pages you authorize, and create pages when you use the Notion sync feature. Token stored in <code>fs_notion</code> cookie.</li>
+  <li><strong>Slack:</strong> Send messages to channels you authorize. Token stored in <code>fs_slack</code> cookie.</li>
+  <li><strong>DistroKid / UnitedMasters / SubmitHub:</strong> Music distribution integrations for the CLAW Release Manager feature — OAuth tokens used only for the duration of the distribution workflow.</li>
+  <li><strong>264Pro:</strong> If you connect your 264Pro account, we sync project data and activity logs. Token stored for the session.</li>
+</ul>
+
+<h2 id="p3">3. How We Use Your Data</h2>
+<ul>
+  <li><strong>Providing the service:</strong> Running your timer, tracking sessions, computing FlowScore, managing tasks, and serving your public profile.</li>
+  <li><strong>AI personalization:</strong> Your session history, output types, focus patterns, and streak data are used to generate personalized AI Flow Coach insights, behavioral pattern analysis, smart focus-time suggestions, and weekly digests.</li>
+  <li><strong>Billing &amp; subscriptions:</strong> Your email is passed to Stripe to manage subscriptions and token top-ups. We store a <code>stripe_customer:{email}</code> reference in Redis to link your Stripe account.</li>
+  <li><strong>Rate limiting &amp; abuse prevention:</strong> IP addresses and email-based keys in Redis to enforce daily AI token limits, velocity checks, and anti-abuse rules.</li>
+  <li><strong>Email communications:</strong> Streak reminder emails and weekly digest emails sent via Resend, using your email address from your session. You can opt out by unsubscribing from any email or by not enabling the feature.</li>
+  <li><strong>Team features:</strong> When you join a team workspace, your display name, avatar, FlowScore, and session stats are visible to team members on the leaderboard and team hub.</li>
+  <li><strong>Accountability pairing:</strong> Your email and session stats are temporarily shared with your paired partner during active pairing sessions.</li>
+  <li><strong>Public FlowScore widget:</strong> If you use the embed widget or public profile, your FlowScore, streak, and session count are publicly visible at <code>/u/:slug</code>.</li>
+  <li><strong>Product improvement:</strong> Aggregate, anonymized patterns (not tied to individual users) may inform product decisions.</li>
+</ul>
+
+<h2 id="p4">4. AI Features &amp; Your Data</h2>
+<p>FlowState routes your AI requests to multiple large language model providers depending on the nature of the task:</p>
+<ul>
+  <li><strong>OpenAI</strong> (GPT-4o, GPT-4o mini, DALL-E 3) — creative tasks, general chat, image generation</li>
+  <li><strong>Anthropic</strong> (Claude Sonnet, Claude Haiku) — code tasks, technical writing</li>
+  <li><strong>Google AI</strong> (Gemini models) — quick queries, multimodal tasks</li>
+  <li><strong>OpenRouter</strong> — aggregates multiple models including xAI Grok, Mistral, DeepSeek</li>
+  <li><strong>Replicate / fal.ai / Higgsfield AI</strong> — AI image and video generation</li>
+  <li><strong>ElevenLabs</strong> — AI text-to-speech</li>
+  <li><strong>Suno / MusicGen / Udio</strong> — AI music generation</li>
+  <li><strong>ACRCloud / Moises / Dolby</strong> — audio analysis and enhancement</li>
+</ul>
+<p>When you use an AI feature, your prompt and relevant context (session stats, behavioral data you've consented to share) are sent to the relevant provider. Each provider has their own privacy policy and data-handling practices. We do not share your account email or personally identifiable information with AI providers — only the content of your prompts and relevant anonymized context.</p>
+<div class="highlight">
+  <p><strong>Important:</strong> Do not include sensitive personal information (passwords, payment card numbers, government IDs, medical information) in AI chat messages or prompts. FlowState does not scrub prompt content before forwarding to AI providers.</p>
+</div>
+<p>AI-generated outputs (images, videos, audio) are stored in Cloudflare R2 under your account and are accessible via your private R2 key path. They are not publicly accessible unless you explicitly share them.</p>
+
+<h2 id="p5">5. Third-Party Services</h2>
+<p>FlowState integrates with the following third-party services. Each has its own privacy policy:</p>
+<ul>
+  <li><strong>Cloudflare</strong> (infrastructure, edge network, D1 database, R2 storage, Workers): <a href="https://www.cloudflare.com/privacypolicy/" target="_blank">cloudflare.com/privacypolicy</a></li>
+  <li><strong>Google</strong> (OAuth, Calendar API): <a href="https://policies.google.com/privacy" target="_blank">policies.google.com/privacy</a></li>
+  <li><strong>Stripe</strong> (billing): <a href="https://stripe.com/privacy" target="_blank">stripe.com/privacy</a></li>
+  <li><strong>Upstash</strong> (Redis rate-limiting): <a href="https://upstash.com/privacy" target="_blank">upstash.com/privacy</a></li>
+  <li><strong>Resend</strong> (transactional email): <a href="https://resend.com/privacy" target="_blank">resend.com/privacy</a></li>
+  <li><strong>Notion</strong> (optional integration): <a href="https://www.notion.so/Privacy-Policy-3468d120cf614d4c9014c09f6adc9091" target="_blank">notion.so privacy policy</a></li>
+  <li><strong>Slack</strong> (optional integration): <a href="https://slack.com/intl/en-us/privacy-policy" target="_blank">slack.com/privacy-policy</a></li>
+  <li><strong>YouTube / Google</strong> (embedded music player): YouTube's Terms of Service apply when you use Pomodoro playlist links.</li>
+  <li><strong>Spotify</strong> (optional music embed): <a href="https://www.spotify.com/us/legal/privacy-policy/" target="_blank">spotify.com/legal/privacy-policy</a></li>
+</ul>
+
+<h2 id="p6">6. Data Storage &amp; Security</h2>
+<h3>6.1 Where Data Lives</h3>
+<ul>
+  <li><strong>Cloudflare D1 (SQLite):</strong> Permanent relational data — user accounts, subscription records, billing transactions, session history, tasks, and referral codes.</li>
+  <li><strong>Upstash Redis:</strong> Ephemeral operational data — AI token usage (daily, auto-expiring), tier assignments, rate-limit counters, session-share cards, pairing queue state. Data in Redis is keyed by email or IP and expires automatically.</li>
+  <li><strong>Cloudflare R2:</strong> Files you upload or generate — AI image/video/audio outputs, cover art, and file-conversion results you choose to save.</li>
+  <li><strong>Browser (localStorage):</strong> Timer state, task data (if not synced to D1), playlist settings, UI preferences, onboarding completion flags, and standup drafts are stored locally in your browser. This data never leaves your device unless you're signed in and use a sync feature.</li>
+  <li><strong>HTTP-only cookies:</strong> Session tokens, OAuth tokens for integrations. Not accessible to JavaScript.</li>
+</ul>
+<h3>6.2 Security Measures</h3>
+<ul>
+  <li>All traffic is served over HTTPS via Cloudflare's global edge network.</li>
+  <li>Session cookies are marked <code>HttpOnly</code>, <code>Secure</code>, and <code>SameSite=Lax</code> (or <code>None</code> for cross-domain integrations).</li>
+  <li>AI token rate-limiting and velocity checks prevent abuse.</li>
+  <li>Stripe webhook verification using <code>STRIPE_WEBHOOK_SECRET</code> protects billing events.</li>
+  <li>OAuth <code>state</code> parameter validation on all OAuth flows prevents CSRF attacks.</li>
+  <li>Input sanitization and XSS escaping on all user-generated content rendered in the UI.</li>
+</ul>
+<p>No method of transmission over the internet is 100% secure. We take commercially reasonable steps to protect your information but cannot guarantee absolute security.</p>
+
+<h2 id="p7">7. Cookies &amp; Local Storage</h2>
+<p>We use the following browser storage mechanisms:</p>
+<ul>
+  <li><strong>fs_session</strong> (cookie, 7 days): Your login session — email, name, avatar, tier, Google token.</li>
+  <li><strong>fs_notion</strong> (cookie, 30 days): Your Notion OAuth token, if connected.</li>
+  <li><strong>fs_slack</strong> (cookie, 30 days): Your Slack OAuth token, if connected.</li>
+  <li><strong>fs_onboarded</strong> (cookie, 365 days): Records that you've completed onboarding.</li>
+  <li><strong>oauth_state</strong> (cookie, 10 min): CSRF state token for in-progress OAuth flows.</li>
+  <li><strong>localStorage (browser):</strong> Timer state (<code>fs_state</code>), tasks, playlist config, pomodoro settings, volume preferences, onboarding flags, standup entries, deadline data, and YouTube playlist items. This is cleared when you clear browser data.</li>
+</ul>
+<p>We do not use third-party advertising cookies or tracking pixels. We do not use Google Analytics or similar analytics services.</p>
+
+<h2 id="p8">8. Your Rights</h2>
+<p>Regardless of your location, you have the following rights with respect to your data:</p>
+<ul>
+  <li><strong>Access:</strong> Request a copy of the data we hold about you.</li>
+  <li><strong>Correction:</strong> Ask us to correct inaccurate data.</li>
+  <li><strong>Deletion:</strong> Request deletion of your account and all associated data. Deleting your account will remove your D1 records, R2 files, and Redis keys. Data in Stripe will be subject to Stripe's retention policy.</li>
+  <li><strong>Portability:</strong> Request an export of your session history and task data.</li>
+  <li><strong>Opt-out:</strong> Opt out of streak reminder emails and weekly digest emails at any time via the unsubscribe link or by contacting us.</li>
+  <li><strong>Revoke integrations:</strong> Disconnect Google, Notion, or Slack at any time via Settings. This deletes the stored token cookie.</li>
+</ul>
+<p>To exercise any of these rights, email us at <strong>privacy@flowst8.cc</strong>. We will respond within 30 days.</p>
+<p><strong>EU/EEA residents (GDPR):</strong> You have additional rights under the General Data Protection Regulation, including the right to lodge a complaint with your local supervisory authority. Our lawful basis for processing personal data is primarily "performance of a contract" (providing the service you signed up for) and "legitimate interests" (security and abuse prevention).</p>
+<p><strong>California residents (CCPA/CPRA):</strong> We do not sell personal information. You have the right to know, delete, and opt-out of the sharing of personal information. FlowState qualifies as a small business under CCPA thresholds, but we honor these rights regardless.</p>
+
+<h2 id="p9">9. Children's Privacy</h2>
+<p>FlowState is not directed at children under the age of 13. We do not knowingly collect personal information from children under 13. If you believe a child has provided us personal information, contact us at <strong>privacy@flowst8.cc</strong> and we will delete it promptly.</p>
+
+<h2 id="p10">10. International Users</h2>
+<p>FlowState is operated from the United States. If you access FlowState from outside the United States, your information may be transferred to and processed in the United States and other countries where our service providers operate (including Cloudflare's global edge network). By using FlowState, you consent to this transfer.</p>
+
+<h2 id="p11">11. Changes to This Policy</h2>
+<p>We may update this Privacy Policy from time to time. We will notify you of material changes by updating the "Last updated" date and, where appropriate, by sending an email to your registered address or displaying a notice in the app. Continued use of FlowState after changes are posted constitutes acceptance of the updated policy.</p>
+
+<h2 id="p12">12. Contact Us</h2>
+<div class="contact-box">
+  <h3>Privacy Questions</h3>
+  <p>Email us at <a href="mailto:privacy@flowst8.cc">privacy@flowst8.cc</a></p>
+  <p style="font-size:13px;color:var(--text-m);margin-top:8px">We aim to respond within 2–3 business days for general inquiries and within 30 days for formal data rights requests.</p>
+</div>
+`
+
+const TERMS_OF_USE_HTML = `
+<div class="doc-header">
+  <div class="doc-title">Terms of Use</div>
+  <div class="doc-meta">
+    <span>Effective: April 12, 2026</span>
+    <span>Last updated: April 12, 2026</span>
+    <span>Version 1.0</span>
+  </div>
+</div>
+
+<div class="highlight">
+  <p><strong>By using FlowState, you agree to these terms.</strong> If you don't agree, please don't use the service. These terms apply to all users including free, Pro, and Team plan subscribers, as well as users of the embed widget and public APIs.</p>
+</div>
+
+<div class="toc">
+  <div class="toc-title">Contents</div>
+  <ol>
+    <li><a href="#t1">Acceptance of Terms</a></li>
+    <li><a href="#t2">Description of Service</a></li>
+    <li><a href="#t3">Accounts &amp; Authentication</a></li>
+    <li><a href="#t4">Subscription Plans &amp; Billing</a></li>
+    <li><a href="#t5">AI Features &amp; Token Credits</a></li>
+    <li><a href="#t6">Acceptable Use</a></li>
+    <li><a href="#t7">User Content &amp; Intellectual Property</a></li>
+    <li><a href="#t8">Third-Party Integrations</a></li>
+    <li><a href="#t9">Availability &amp; Modifications</a></li>
+    <li><a href="#t10">Disclaimers</a></li>
+    <li><a href="#t11">Limitation of Liability</a></li>
+    <li><a href="#t12">Indemnification</a></li>
+    <li><a href="#t13">Termination</a></li>
+    <li><a href="#t14">Governing Law</a></li>
+    <li><a href="#t15">Changes to Terms</a></li>
+    <li><a href="#t16">Contact</a></li>
+  </ol>
+</div>
+
+<h2 id="t1">1. Acceptance of Terms</h2>
+<p>These Terms of Use ("Terms") constitute a legally binding agreement between you ("User," "you") and FlowState ("we," "us," "our") governing your access to and use of the FlowState platform, including the web application at <strong>flowst8.cc</strong>, all associated APIs, the embed widget (<code>/widget.js</code>), public profile pages, the launch page, and any related services (collectively, the "Service").</p>
+<p>By creating an account, signing in, or using any part of the Service, you confirm that (a) you are at least 13 years old; (b) you have the legal capacity to enter into this agreement; and (c) you agree to be bound by these Terms and our Privacy Policy.</p>
+
+<h2 id="t2">2. Description of Service</h2>
+<p>FlowState is an AI-native productivity and creative intelligence platform. The Service includes, but is not limited to:</p>
+<ul>
+  <li><strong>Pomodoro Focus Timer</strong> — customizable focus/break timer with FlowScore tracking, streak system, and session history.</li>
+  <li><strong>AI Chat Assistant</strong> — multi-model AI chat routed to OpenAI, Anthropic, Google, and other providers based on task type.</li>
+  <li><strong>AI Flow Coach</strong> — personalized behavioral pattern analysis and productivity insights derived from your session history.</li>
+  <li><strong>Smart Deadlines (Pro)</strong> — deadline tracking with AI risk analysis, progress bars, and team assignment.</li>
+  <li><strong>Team Hub</strong> — standup updates, leaderboard, sprint health monitoring, and accountability pairing.</li>
+  <li><strong>Accountability Pairing</strong> — real-time focus pairing with another FlowState user.</li>
+  <li><strong>Kanban Board</strong> — task management with drag-and-drop, tags, and D1 sync for Pro users.</li>
+  <li><strong>Google Calendar Integration</strong> — read and create focus blocks in your calendar.</li>
+  <li><strong>Notion &amp; Slack Integration</strong> — sync tasks and send standup updates to Notion and Slack.</li>
+  <li><strong>Generate Tab</strong> — AI image, video, and audio generation using Replicate, fal.ai, Higgsfield AI, ElevenLabs, and music AI models.</li>
+  <li><strong>FlowState Audio (FSAudio)</strong> — AI music production tools including arrangement suggestions, track generation, and audio analysis.</li>
+  <li><strong>CLAW Release Manager</strong> — music release pipeline including cover art generation, pitch drafting, metadata management, and distribution prep for DistroKid and UnitedMasters.</li>
+  <li><strong>ClawBot</strong> — AI creative assistant specialized for music and content creators.</li>
+  <li><strong>264Pro Integration</strong> — creative project sync, AI context memory, video generation, and diagnostic tools for 264Pro users.</li>
+  <li><strong>File Tools</strong> — browser-based file conversion (PDF↔Images, SVG→PNG, TXT→PDF, CSV→JSON, PPTX→PDF).</li>
+  <li><strong>Ambient Sound &amp; Music Player</strong> — built-in ambient sounds (Web Audio API) and YouTube/Spotify playlist integration for focus sessions.</li>
+  <li><strong>Pomodoro Volume Slider</strong> — in-app music volume control for ambient and playlist audio.</li>
+  <li><strong>Public FlowScore Widget</strong> — embeddable widget and public profile page displaying your productivity stats.</li>
+  <li><strong>Weekly AI Digest</strong> — automated weekly email summarizing your focus patterns, sent via Resend.</li>
+  <li><strong>Token Top-Up</strong> — one-time purchase of additional AI token credits via Stripe.</li>
+  <li><strong>Referral Program</strong> — refer new users and earn token credits.</li>
+  <li><strong>Launch Page</strong> — public marketing and Product Hunt launch page.</li>
+</ul>
+
+<h2 id="t3">3. Accounts &amp; Authentication</h2>
+<p>FlowState currently supports sign-in via <strong>Google OAuth</strong> and <strong>Magic Link (email)</strong>. By signing in with Google, you authorize FlowState to access your Google profile information (email, name, avatar) and, optionally, your Google Calendar.</p>
+<ul>
+  <li>You are responsible for maintaining the security of your Google account and any sessions you initiate on FlowState.</li>
+  <li>You must not share your session with others or use another person's account.</li>
+  <li>You must not attempt to circumvent authentication, rate limits, or tier restrictions.</li>
+  <li>We reserve the right to suspend or terminate accounts that violate these Terms.</li>
+  <li>Your FlowState public slug (<code>/u/:slug</code>) must not impersonate another person or organization.</li>
+</ul>
+
+<h2 id="t4">4. Subscription Plans &amp; Billing</h2>
+<h3>4.1 Plans</h3>
+<p>FlowState offers the following plans (prices and features subject to change with notice):</p>
+<ul>
+  <li><strong>Free:</strong> Timer, basic AI chat, limited daily AI tokens (1,500/day), local Kanban, public FlowScore widget, ambient sounds.</li>
+  <li><strong>Pro ($12/month or equivalent annual rate):</strong> All Free features, plus multi-LLM routing, Smart Deadlines, D1-synced tasks, all integrations, AI Flow Coach, CLAW Release Manager, FlowState Audio, full Generate tab, and 100,000 daily AI tokens.</li>
+  <li><strong>Team (pricing TBD):</strong> Pro features plus team Hub, leaderboard, burnout risk monitoring, sprint health, shared standup, and 100,000 daily AI tokens per seat.</li>
+</ul>
+<h3>4.2 Billing</h3>
+<ul>
+  <li>Subscriptions are billed via <strong>Stripe</strong>. By subscribing, you agree to Stripe's Terms of Service.</li>
+  <li>Subscriptions auto-renew at the end of each billing cycle. You can cancel anytime via the billing portal (accessible from Settings).</li>
+  <li>Annual subscriptions are non-refundable after 14 days from the initial purchase date.</li>
+  <li>Monthly subscriptions may be cancelled at any time; your access continues until the end of the current billing period.</li>
+  <li>We reserve the right to change pricing with 30 days' notice. Existing subscribers will be notified by email before any price change takes effect.</li>
+</ul>
+<h3>4.3 Token Top-Ups</h3>
+<ul>
+  <li>You may purchase additional AI token credits as a one-time purchase (not a subscription) in packs of 50k tokens ($5), 200k tokens ($15), or 500k tokens ($30).</li>
+  <li>Purchased tokens are non-refundable once credited to your account.</li>
+  <li>Purchased tokens do not expire and are consumed after your daily token budget is depleted.</li>
+  <li>Token credits are tied to your account and are not transferable.</li>
+</ul>
+<h3>4.4 Free Trial &amp; Demo Mode</h3>
+<p>FlowState may be used without an account in demo mode with limited functionality. Demo mode data is stored locally and is not backed up. Creating an account activates full free-tier features.</p>
+
+<h2 id="t5">5. AI Features &amp; Token Credits</h2>
+<p>AI features on FlowState consume token credits from your daily budget. Token consumption is measured in approximate LLM input/output tokens.</p>
+<ul>
+  <li><strong>Daily budgets reset at midnight UTC.</strong></li>
+  <li>Free users receive 1,500 tokens/day. Pro and Team users receive 100,000 tokens/day.</li>
+  <li>When your daily budget is depleted, AI features will return a rate-limit response until reset or until you use purchased tokens.</li>
+  <li>We do not guarantee that AI outputs will be accurate, appropriate, or free from errors. AI models may produce incorrect, biased, or unexpected responses.</li>
+  <li>You are responsible for reviewing AI-generated content before acting on it, publishing it, or distributing it.</li>
+  <li>AI image, video, and audio generation features are subject to additional content policies imposed by the underlying model providers (Replicate, fal.ai, Higgsfield, ElevenLabs, etc.).</li>
+  <li>The AI Flow Coach provides insights based on your personal usage patterns and is not a substitute for professional health, medical, or psychological advice.</li>
+</ul>
+
+<h2 id="t6">6. Acceptable Use</h2>
+<p>You agree not to use FlowState to:</p>
+<ul>
+  <li>Generate, distribute, or promote content that is illegal, harassing, defamatory, threatening, obscene, or violates any applicable law.</li>
+  <li>Create content that infringes on third-party intellectual property rights, including copyrighted text, images, music, or code.</li>
+  <li>Generate deepfakes, non-consensual intimate images, or any content that misrepresents real persons.</li>
+  <li>Attempt to bypass token limits, rate limits, or tier restrictions through automated scripts, bots, or abuse of multiple accounts.</li>
+  <li>Scrape, mirror, or reverse-engineer the FlowState application or APIs.</li>
+  <li>Interfere with the security, integrity, or availability of the Service.</li>
+  <li>Use the Service for any commercial purpose not expressly authorized, including reselling access to FlowState APIs.</li>
+  <li>Upload malicious files, scripts, or content designed to harm other users or the Service infrastructure.</li>
+  <li>Circumvent or attempt to disable any geographic restrictions or content filters.</li>
+  <li>Use the CLAW Release Manager or distribution features to distribute content you do not have the rights to distribute.</li>
+</ul>
+<p>We reserve the right to immediately suspend or terminate access for violation of these rules, without refund.</p>
+
+<h2 id="t7">7. User Content &amp; Intellectual Property</h2>
+<h3>7.1 Your Content</h3>
+<p>You retain ownership of content you create, upload, or generate using FlowState, including AI-generated outputs where you provided the prompts. By using the Service, you grant FlowState a limited, non-exclusive, royalty-free license to store, process, and display your content solely for the purpose of providing the Service to you.</p>
+<p>We do not claim ownership of your tasks, session notes, generated images, music, or other creative work.</p>
+<h3>7.2 AI-Generated Content Ownership</h3>
+<p>Ownership of AI-generated content is a complex and evolving legal area. FlowState makes no representations about the copyright status of AI-generated outputs. You are responsible for reviewing applicable laws in your jurisdiction before publishing, selling, or distributing AI-generated content.</p>
+<h3>7.3 FlowState Intellectual Property</h3>
+<p>All FlowState trademarks, logos, branding, application code, UI design, and proprietary algorithms (including the FlowScore formula, Intent Layer logic, and AI routing system) are the exclusive property of FlowState. You may not copy, reproduce, or create derivative works from these elements without prior written consent.</p>
+<h3>7.4 Feedback</h3>
+<p>If you submit feedback, feature requests, or bug reports, you grant us the right to use this feedback without compensation or attribution to improve the Service.</p>
+
+<h2 id="t8">8. Third-Party Integrations</h2>
+<p>FlowState integrates with third-party services including Google, Notion, Slack, Stripe, DistroKid, UnitedMasters, SubmitHub, YouTube, Spotify, and various AI providers. Your use of these integrations is subject to the respective third-party terms of service.</p>
+<ul>
+  <li>FlowState is not responsible for the availability, accuracy, or conduct of third-party services.</li>
+  <li>Connecting a third-party integration grants FlowState limited access to that service on your behalf. You can revoke this access at any time via the Settings modal or directly through the third-party service's authorization settings.</li>
+  <li>Using YouTube embedded players is subject to YouTube's <a href="https://www.youtube.com/t/terms" target="_blank">Terms of Service</a> and <a href="https://policies.google.com/privacy" target="_blank">Google Privacy Policy</a>.</li>
+  <li>Music distribution via DistroKid or UnitedMasters through the CLAW Release Manager is subject to those platforms' own distribution agreements and content policies.</li>
+</ul>
+
+<h2 id="t9">9. Availability &amp; Modifications</h2>
+<p>FlowState is provided on an "as is" and "as available" basis. We strive for high availability but do not guarantee uninterrupted access. The Service may be temporarily unavailable due to:</p>
+<ul>
+  <li>Scheduled maintenance (we will notify users in advance when possible).</li>
+  <li>Cloudflare infrastructure events or outages.</li>
+  <li>Third-party API provider outages.</li>
+  <li>Security incidents requiring immediate response.</li>
+</ul>
+<p>We reserve the right to modify, discontinue, or sunset any feature with or without notice. For paid features being removed, we will provide at least 30 days' notice and a pro-rated refund if applicable.</p>
+
+<h2 id="t10">10. Disclaimers</h2>
+<p>TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW:</p>
+<ul>
+  <li>THE SERVICE IS PROVIDED "AS IS" WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, OR NON-INFRINGEMENT.</li>
+  <li>WE DO NOT WARRANT THAT THE SERVICE WILL BE ERROR-FREE, UNINTERRUPTED, SECURE, OR FREE FROM VIRUSES OR OTHER HARMFUL COMPONENTS.</li>
+  <li>AI-GENERATED CONTENT MAY BE INACCURATE, INCOMPLETE, OR OUTDATED. FLOWSTATE IS NOT RESPONSIBLE FOR DECISIONS MADE BASED ON AI OUTPUTS.</li>
+  <li>THE AI FLOW COACH AND BEHAVIORAL INSIGHTS ARE FOR INFORMATIONAL PURPOSES ONLY AND DO NOT CONSTITUTE PROFESSIONAL ADVICE OF ANY KIND (MEDICAL, PSYCHOLOGICAL, LEGAL, FINANCIAL, ETC.).</li>
+  <li>MUSIC DISTRIBUTION SERVICES ENABLED THROUGH THE CLAW RELEASE MANAGER ARE PROVIDED AS A CONVENIENCE. FLOWSTATE DOES NOT GUARANTEE ACCEPTANCE, DISTRIBUTION SUCCESS, OR PLACEMENT BY ANY DISTRIBUTION PARTNER.</li>
+</ul>
+
+<h2 id="t11">11. Limitation of Liability</h2>
+<p>TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL FLOWSTATE, ITS OPERATORS, AFFILIATES, OR LICENSORS BE LIABLE FOR ANY:</p>
+<ul>
+  <li>INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES;</li>
+  <li>LOSS OF PROFITS, REVENUE, DATA, GOODWILL, OR BUSINESS OPPORTUNITIES;</li>
+  <li>DAMAGES RESULTING FROM UNAUTHORIZED ACCESS TO OR ALTERATION OF YOUR DATA;</li>
+  <li>DAMAGES RESULTING FROM THIRD-PARTY SERVICE OUTAGES OR FAILURES;</li>
+  <li>DAMAGES RESULTING FROM AI-GENERATED CONTENT OR DECISIONS MADE BASED ON AI INSIGHTS.</li>
+</ul>
+<p>IN ANY CASE, OUR TOTAL LIABILITY TO YOU FOR ALL CLAIMS ARISING FROM OR RELATED TO THE SERVICE SHALL NOT EXCEED THE GREATER OF: (A) THE TOTAL AMOUNT YOU PAID TO FLOWSTATE IN THE 12 MONTHS PRECEDING THE CLAIM, OR (B) $50 USD.</p>
+<p>Some jurisdictions do not allow certain limitations of liability — in those cases, our liability is limited to the minimum extent permitted by law.</p>
+
+<h2 id="t12">12. Indemnification</h2>
+<p>You agree to defend, indemnify, and hold harmless FlowState and its operators from and against any claims, damages, losses, and expenses (including reasonable legal fees) arising from or related to: (a) your use of the Service; (b) your violation of these Terms; (c) content you submit, generate, or distribute using the Service; (d) your violation of any third party's rights; or (e) your use of any third-party integration in violation of that party's terms.</p>
+
+<h2 id="t13">13. Termination</h2>
+<p>You may terminate your account at any time by contacting us at <strong>support@flowst8.cc</strong>. Upon termination, your data will be deleted in accordance with our Privacy Policy (typically within 30 days, subject to legal retention requirements).</p>
+<p>We may terminate or suspend your access immediately, without prior notice or liability, if you breach these Terms or engage in conduct we determine to be harmful to the Service, other users, or third parties. Upon termination by us for cause, you will not be entitled to a refund of any prepaid subscription fees.</p>
+
+<h2 id="t14">14. Governing Law &amp; Dispute Resolution</h2>
+<p>These Terms are governed by the laws of the <strong>State of Georgia, United States</strong>, without regard to its conflict of law provisions. Any disputes arising from these Terms or the Service shall be resolved first through informal negotiation. If informal resolution fails, disputes shall be submitted to binding arbitration in accordance with the rules of the American Arbitration Association, conducted in English in Atlanta, Georgia.</p>
+<p><strong>Class action waiver:</strong> You agree that any arbitration or proceeding shall be limited to the dispute between us individually. You waive the right to participate in a class action lawsuit or class-wide arbitration.</p>
+<p>Nothing in this section prevents either party from seeking emergency injunctive or other equitable relief from a court of competent jurisdiction.</p>
+
+<h2 id="t15">15. Changes to These Terms</h2>
+<p>We reserve the right to modify these Terms at any time. We will provide notice of material changes by updating the "Last updated" date above and, where appropriate, by sending an email to your registered address or displaying a prominent in-app notice at least 14 days before the change takes effect. Your continued use of the Service after the effective date of the revised Terms constitutes your acceptance of the changes.</p>
+
+<h2 id="t16">16. Contact</h2>
+<div class="contact-box">
+  <h3>Questions about these Terms?</h3>
+  <p>Email us at <a href="mailto:legal@flowst8.cc">legal@flowst8.cc</a></p>
+  <p style="font-size:13px;color:var(--text-m);margin-top:8px">For billing disputes: <a href="mailto:billing@flowst8.cc" style="color:var(--accent)">billing@flowst8.cc</a> &nbsp;|&nbsp; For privacy: <a href="mailto:privacy@flowst8.cc" style="color:var(--accent)">privacy@flowst8.cc</a></p>
+</div>
+`
+
+function buildLegalPage(activeTab: 'privacy' | 'terms'): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${activeTab === 'privacy' ? 'Privacy Policy' : 'Terms of Use'} — FlowState</title>
+  <meta name="description" content="${activeTab === 'privacy' ? 'FlowState Privacy Policy — how we collect, use, and protect your data.' : 'FlowState Terms of Use — rules and rights governing your use of the platform.'}">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://flowst8.cc/legal">
+  <style>${LEGAL_CSS}</style>
+</head>
+<body>
+  ${LEGAL_NAV}
+  <div class="container">
+    <a class="back-btn" href="/"><span>←</span> Back to FlowState</a>
+    <div class="tabs">
+      <button class="tab-btn ${activeTab === 'privacy' ? 'active' : ''}" onclick="switchTab('privacy')">🔒 Privacy Policy</button>
+      <button class="tab-btn ${activeTab === 'terms' ? 'active' : ''}" onclick="switchTab('terms')">📋 Terms of Use</button>
+    </div>
+    <div id="tab-privacy" class="tab-content ${activeTab === 'privacy' ? 'active' : ''}">
+      ${PRIVACY_POLICY_HTML}
+    </div>
+    <div id="tab-terms" class="tab-content ${activeTab === 'terms' ? 'active' : ''}">
+      ${TERMS_OF_USE_HTML}
+    </div>
+  </div>
+  <script>
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.getElementById('tab-' + tab).classList.add('active');
+      event.currentTarget.classList.add('active');
+      window.history.replaceState(null, '', '/legal#' + tab);
+    }
+    // Auto-switch based on hash
+    const hash = window.location.hash.replace('#','');
+    if (hash === 'terms') switchTab('terms');
+    // Smooth scroll for anchor links
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        const target = document.querySelector(a.getAttribute('href'));
+        if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      });
+    });
+  </script>
+</body>
+</html>`
+}
+
+app.get('/legal', (c) => {
+  const hash = c.req.query('tab') || 'privacy'
+  const tab = hash === 'terms' ? 'terms' : 'privacy'
+  return c.html(buildLegalPage(tab))
+})
+
+app.get('/privacy', (c) => c.redirect('/legal#privacy'))
+app.get('/terms', (c) => c.redirect('/legal#terms'))
+app.get('/privacy-policy', (c) => c.redirect('/legal#privacy'))
+app.get('/terms-of-service', (c) => c.redirect('/legal#terms'))
+app.get('/terms-of-use', (c) => c.redirect('/legal#terms'))
 
 // Cloudflare Workers scheduled event handler (cron trigger)
 // Registered in wrangler.jsonc triggers.crons

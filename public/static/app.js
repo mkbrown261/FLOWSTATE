@@ -5218,7 +5218,14 @@ function openSettingsModal() {
         <button class="btn-sm" style="justify-content:flex-start;gap:7px" onclick="closeModal();openProfileModal()"><i class="fas fa-globe"></i> Public FlowScore profile</button>
       </div>
     </div>
-    <button class="btn-sm" style="color:var(--danger);border-color:var(--danger);width:100%;margin-top:8px" onclick="signOut()">Sign Out</button>` : ''}`);
+    <button class="btn-sm" style="color:var(--danger);border-color:var(--danger);width:100%;margin-top:8px" onclick="signOut()">Sign Out</button>` : ''}
+    <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:16px">
+      <a href="/legal#privacy" target="_blank" style="font-size:11px;color:var(--text-s);text-decoration:none;transition:color .2s" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-s)'">🔒 Privacy Policy</a>
+      <span style="color:var(--border)">·</span>
+      <a href="/legal#terms" target="_blank" style="font-size:11px;color:var(--text-s);text-decoration:none;transition:color .2s" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-s)'">📋 Terms of Use</a>
+      <span style="color:var(--border)">·</span>
+      <a href="mailto:support@flowst8.cc" style="font-size:11px;color:var(--text-s);text-decoration:none;transition:color .2s" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-s)'">✉️ Contact</a>
+    </div>`);
 }
 
 function updateFocusDur(m) {
