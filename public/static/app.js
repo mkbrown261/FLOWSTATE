@@ -438,15 +438,14 @@ function setupTabListeners() {
   document.getElementById('cal-connect-btn')?.addEventListener('click', () => openAuthPopup('/api/auth/google'));
   document.getElementById('cal-prev')?.addEventListener('click', () => calNav(-1));
   document.getElementById('cal-next')?.addEventListener('click', () => calNav(1));
-  document.getElementById('cal-add-btn')?.addEventListener('click', () => {
-    const form = document.getElementById('add-ev-form');
-    const detail = document.getElementById('cal-day-detail');
-    if (detail) detail.style.display = 'none';
-    if (form) form.classList.toggle('show');
-  });
+  document.getElementById('cal-add-btn')?.addEventListener('click', () => calShowAddForm());
   document.getElementById('cal-refresh')?.addEventListener('click', loadCalEvents);
   document.getElementById('ev-save-btn')?.addEventListener('click', saveCalEvent);
-  document.getElementById('ev-cancel-btn')?.addEventListener('click', () => document.getElementById('add-ev-form').classList.remove('show'));
+  document.getElementById('ev-cancel-btn')?.addEventListener('click', () => {
+    document.getElementById('add-ev-form')?.classList.remove('show');
+    const detail = document.getElementById('cal-day-detail');
+    if (detail) detail.style.display = 'block';
+  });
   document.getElementById('btn-gen-img')?.addEventListener('click', generateImage);
   document.getElementById('btn-gen-vid')?.addEventListener('click', generateVideo);
   document.getElementById('btn-img2vid')?.addEventListener('click', generateImageToVideo);
@@ -1511,40 +1510,64 @@ function renderCalGrid() {
   grid.innerHTML = html;
 }
 
+function calOpenPanel() {
+  const panel = document.getElementById('cal-panel');
+  if (panel) panel.classList.add('open');
+}
+
+function calClosePanel() {
+  const panel = document.getElementById('cal-panel');
+  if (panel) panel.classList.remove('open');
+  document.getElementById('add-ev-form')?.classList.remove('show');
+  document.querySelectorAll('.cal-day.selected').forEach(el => el.classList.remove('selected'));
+}
+
+function calShowAddForm(dateStr) {
+  calOpenPanel();
+  // Hide day detail, show add form
+  const detail = document.getElementById('cal-day-detail');
+  const form = document.getElementById('add-ev-form');
+  if (detail) detail.style.display = 'none';
+  if (form) form.classList.add('show');
+  if (dateStr) {
+    document.getElementById('ev-start').value = dateStr + 'T09:00';
+    document.getElementById('ev-end').value   = dateStr + 'T10:00';
+  }
+  setTimeout(() => document.getElementById('ev-title')?.focus(), 100);
+}
+
 function clickCalDay(dateStr) {
   const title = document.getElementById('cal-day-panel-title');
   const evContainer = document.getElementById('cal-day-panel-events');
   const detail = document.getElementById('cal-day-detail');
-  if (!evContainer || !detail) return;
+  const addLink = document.getElementById('cal-add-link');
+  if (!evContainer) return;
 
   // Highlight selected day
   document.querySelectorAll('.cal-day.selected').forEach(el => el.classList.remove('selected'));
   const clickedEl = document.querySelector(`.cal-day[onclick="clickCalDay('${dateStr}')"]`);
   if (clickedEl) clickedEl.classList.add('selected');
 
-  // Hide add-event form, show detail panel
-  const form = document.getElementById('add-ev-form');
-  if (form) form.classList.remove('show');
-  detail.style.display = 'block';
+  // Open panel, show detail, hide add form
+  calOpenPanel();
+  if (detail) detail.style.display = 'block';
+  document.getElementById('add-ev-form')?.classList.remove('show');
 
   // Set title
   const d = new Date(dateStr + 'T12:00:00');
-  if (title) title.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' });
+  if (title) title.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' });
 
   // Filter events for this day
   const dayEvs = state.cal.events.filter(e => String(e.start || '').slice(0, 10) === dateStr)
     .sort((a, b) => new Date(a.start || 0) - new Date(b.start || 0));
 
+  const safeCol = c => (c && (c.startsWith('hsl') || c.startsWith('#') || c.startsWith('rgb'))) ? c : '#a855f7';
+
   if (!dayEvs.length) {
-    evContainer.innerHTML = `
-      <div style="color:#888;font-size:12px;padding:12px 0;text-align:center">
-        No events scheduled
-        <br><button onclick="clickCalDayAdd('${dateStr}')" style="margin-top:10px;padding:6px 14px;border-radius:7px;border:1px solid rgba(168,85,247,.5);background:transparent;color:#a855f7;font-size:12px;cursor:pointer;display:inline-block">+ Add event</button>
-      </div>`;
+    evContainer.innerHTML = `<div style="color:#888;font-size:12px;padding:8px 0;text-align:center">No events</div>`;
   } else {
-    const safeColor = c => (c && (c.startsWith('hsl') || c.startsWith('#') || c.startsWith('rgb'))) ? c : '#a855f7';
     evContainer.innerHTML = dayEvs.map(ev => {
-      const col = safeColor(ev.color);
+      const col = safeCol(ev.color);
       const start = ev.start || '';
       const timeLabel = (!ev.allDay && start.length > 10)
         ? new Date(start).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit', hour12:true })
@@ -1552,27 +1575,19 @@ function clickCalDay(dateStr) {
       const endLabel = (!ev.allDay && ev.end && ev.end.length > 10)
         ? ' – ' + new Date(ev.end).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit', hour12:true })
         : '';
-      return `<div class="ev-item" style="border-left:3px solid ${col};margin-bottom:6px">
+      return `<div class="ev-item" style="border-left:3px solid ${col};margin-bottom:6px;padding:8px 10px">
         <div style="flex:1;min-width:0">
-          <div class="ev-sum">${escHtml(ev.summary || '(no title)')}</div>
-          <div class="ev-time">${timeLabel}${endLabel}</div>
+          <div class="ev-sum" style="font-size:12px">${escHtml(ev.summary || '(no title)')}</div>
+          <div class="ev-time" style="font-size:11px">${timeLabel}${endLabel}</div>
         </div>
-        <button class="btn-blk" onclick="blockAroundEvent('${ev.id}')">Block</button>
       </div>`;
-    }).join('') +
-    `<button onclick="clickCalDayAdd('${dateStr}')" style="margin-top:8px;width:100%;padding:6px;border-radius:7px;border:1px dashed rgba(168,85,247,.35);background:transparent;color:#888;font-size:11px;cursor:pointer">+ Add event</button>`;
+    }).join('');
   }
+  if (addLink) addLink.style.display = 'block';
 }
 
 function clickCalDayAdd(dateStr) {
-  const form = document.getElementById('add-ev-form');
-  const detail = document.getElementById('cal-day-detail');
-  if (!form) return;
-  if (detail) detail.style.display = 'none';
-  document.getElementById('ev-start').value = dateStr + 'T09:00';
-  document.getElementById('ev-end').value   = dateStr + 'T10:00';
-  form.classList.add('show');
-  setTimeout(() => { document.getElementById('ev-title').focus(); form.scrollIntoView({ behavior:'smooth', block:'nearest' }); }, 50);
+  calShowAddForm(dateStr);
 }
 
 function _calDebug(msg, data, isError) {

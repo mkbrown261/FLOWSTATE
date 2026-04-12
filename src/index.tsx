@@ -238,6 +238,27 @@ app.get('/api/auth/logout', (c) => {
   return c.redirect('/')
 })
 
+// Hard-reset: wipe ALL cookies then redirect straight to Google OAuth
+// Use this when the refresh token is from an old client ID
+app.get('/api/auth/hard-reset', async (c) => {
+  deleteCookie(c, 'fs_session', { path: '/' })
+  deleteCookie(c, 'fs_notion', { path: '/' })
+  deleteCookie(c, 'fs_slack', { path: '/' })
+  const baseUrl = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
+  const state = Math.random().toString(36).slice(2)
+  setCookie(c, 'oauth_state', state, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' })
+  setCookie(c, 'cal_reconnect', '1', { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' })
+  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
+  url.searchParams.set('client_id', c.env?.GOOGLE_CLIENT_ID || '')
+  url.searchParams.set('redirect_uri', baseUrl + '/api/auth/google/callback')
+  url.searchParams.set('response_type', 'code')
+  url.searchParams.set('scope', 'openid profile email https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events')
+  url.searchParams.set('state', state)
+  url.searchParams.set('access_type', 'offline')
+  url.searchParams.set('prompt', 'consent')
+  return c.redirect(url.toString())
+})
+
 app.post('/api/auth/logout', async (c) => {
   deleteCookie(c, 'fs_session', { path: '/' })
   deleteCookie(c, 'fs_notion', { path: '/' })
@@ -5291,20 +5312,25 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .chat-suggest-chip:hover{border-color:var(--accent);color:var(--accent);background:rgba(168,85,247,.07)}
 .cal-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .cal-month-lbl{font-size:15px;font-weight:800;color:#f0f0f0;min-width:140px;text-align:center}
+.cal-wrap{display:flex;gap:0;transition:all .25s ease;width:100%}
+.cal-grid-col{flex:1;min-width:0;transition:all .25s ease}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:0;border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;width:100%}
-.cal-day-detail{background:var(--bg-panel);border:1px solid var(--border-h);border-radius:12px;padding:16px;margin-top:12px}
+.cal-panel{width:0;overflow:hidden;transition:width .25s ease;flex-shrink:0}
+.cal-panel.open{width:260px}
+.cal-panel-inner{width:260px;padding:0 0 0 12px}
+.cal-panel-card{background:var(--bg-panel);border:1px solid var(--border-h);border-radius:12px;padding:16px}
 .cal-hd{text-align:center;font-size:11px;font-weight:700;color:#aaa;padding:8px 4px;text-transform:uppercase;letter-spacing:.5px;background:rgba(255,255,255,.03);border-bottom:1px solid rgba(255,255,255,.08)}
-.cal-day{min-height:100px;display:flex;flex-direction:column;align-items:flex-start;padding:6px 5px 4px;cursor:pointer;transition:background .12s;border-right:1px solid rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.05);overflow:hidden}
+.cal-day{min-height:90px;display:flex;flex-direction:column;align-items:flex-start;padding:6px 5px 4px;cursor:pointer;transition:background .12s;border-right:1px solid rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.05);overflow:hidden}
 .cal-day:nth-child(7n){border-right:none}
 .cal-day:hover{background:rgba(168,85,247,.1)}
-.cal-day.today{background:rgba(168,85,247,.1)}
-.cal-day.selected{background:rgba(168,85,247,.18)}
-.cal-day.today .cal-day-num{background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;margin-bottom:4px}
-.cal-day-num{font-size:12px;font-weight:600;color:#d0d0d0;line-height:1;margin-bottom:4px;flex-shrink:0}
+.cal-day.today{background:rgba(168,85,247,.08)}
+.cal-day.selected{background:rgba(168,85,247,.2)}
+.cal-day.today .cal-day-num{background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800}
+.cal-day-num{font-size:12px;font-weight:600;color:#d0d0d0;line-height:1;margin-bottom:3px;flex-shrink:0}
 .cal-day-events{display:flex;flex-direction:column;gap:2px;width:100%}
-.cal-day-ev-chip{font-size:10px;font-weight:700;color:#fff;padding:2px 5px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;line-height:1.5}
+.cal-day-ev-chip{font-size:10px;font-weight:700;color:#fff;padding:2px 4px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;line-height:1.4}
 .cal-day.other{opacity:.2;cursor:default;pointer-events:none}
-.cal-day-more{font-size:9px;color:#888;padding:1px 4px}
+.cal-day-more{font-size:9px;color:#888;padding:1px 3px}
 .ev-list{display:flex;flex-direction:column;gap:7px;margin-top:8px}
 .ev-item{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--bg-panel);border:1px solid var(--border);border-radius:11px;cursor:pointer;transition:.2s}
 .ev-item:hover{border-color:var(--border-h)}
@@ -5585,7 +5611,7 @@ em{color:var(--accent);font-style:italic}
 .action-item{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-s);padding:5px 0;border-bottom:1px solid rgba(168,85,247,.05)}
 .action-item i{color:var(--accent);font-size:11px}
 .deadline-item{padding:9px 13px;background:var(--bg-card);border:1px solid var(--border);border-radius:9px;margin-bottom:6px}
-.add-ev-form{background:var(--bg-panel);border:1px solid var(--border-h);border-radius:14px;padding:16px;margin-bottom:14px;display:none}
+.add-ev-form{display:none}
 .add-ev-form.show{display:block}
 .add-ev-form h3{font-size:13px;font-weight:800;margin-bottom:12px}
 .form-row{display:flex;gap:8px;margin-bottom:8px}
@@ -5824,32 +5850,41 @@ em{color:var(--accent);font-style:italic}
     </div>
   </div>
 
-  <!-- Grid takes full width. Day-detail sidebar overlays on click. -->
-  <div class="cal-grid" id="cal-grid"></div>
-
-  <!-- Add-event form (hidden until Add Event clicked) -->
-  <div class="add-ev-form" id="add-ev-form">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <h3 style="margin:0;font-size:13px;font-weight:800">New Event</h3>
-      <button id="ev-cancel-btn" style="background:none;border:none;color:#aaa;font-size:16px;cursor:pointer">✕</button>
+  <!-- Grid + slide-in side panel -->
+  <div class="cal-wrap" id="cal-wrap">
+    <!-- LEFT: full-width grid, shrinks when panel opens -->
+    <div class="cal-grid-col" id="cal-grid-col">
+      <div class="cal-grid" id="cal-grid"></div>
     </div>
-    <div class="form-row"><input type="text" id="ev-title" placeholder="Event title" style="flex:2"><input type="color" id="ev-color-pick" value="#a855f7" style="flex:0 0 36px;padding:2px;cursor:pointer"></div>
-    <div class="form-row"><input type="datetime-local" id="ev-start"><input type="datetime-local" id="ev-end"></div>
-    <div class="form-row"><input type="text" id="ev-desc" placeholder="Description (optional)"></div>
-    <div style="display:flex;gap:8px;margin-top:6px">
-      <button class="btn-primary" id="ev-save-btn" style="flex:1">Save Event</button>
+    <!-- RIGHT: side panel, hidden until day clicked or Add Event pressed -->
+    <div class="cal-panel" id="cal-panel">
+      <div class="cal-panel-inner">
+        <!-- Day detail card -->
+        <div class="cal-panel-card" id="cal-day-detail">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <div id="cal-day-panel-title" style="font-size:13px;font-weight:700;color:#f0f0f0"></div>
+            <button onclick="calClosePanel()" style="background:none;border:none;color:#777;font-size:16px;cursor:pointer;padding:0 2px">&#x2715;</button>
+          </div>
+          <div id="cal-day-panel-events"></div>
+          <!-- Add event link inside day detail -->
+          <div id="cal-add-link" style="margin-top:10px;display:none">
+            <button onclick="calShowAddForm()" style="width:100%;padding:7px;border-radius:7px;border:1px dashed rgba(168,85,247,.4);background:transparent;color:#a855f7;font-size:12px;cursor:pointer;font-weight:600">+ Add Event</button>
+          </div>
+        </div>
+        <!-- Add event form -->
+        <div class="cal-panel-card add-ev-form" id="add-ev-form" style="margin-top:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <h3 style="margin:0;font-size:13px;font-weight:800">New Event</h3>
+            <button id="ev-cancel-btn" style="background:none;border:none;color:#aaa;font-size:16px;cursor:pointer">&#x2715;</button>
+          </div>
+          <div class="form-row"><input type="text" id="ev-title" placeholder="Event title" style="flex:2"><input type="color" id="ev-color-pick" value="#a855f7" style="flex:0 0 36px;padding:2px;cursor:pointer"></div>
+          <div class="form-row"><input type="datetime-local" id="ev-start"><input type="datetime-local" id="ev-end"></div>
+          <div class="form-row"><input type="text" id="ev-desc" placeholder="Description (optional)"></div>
+          <div style="margin-top:8px"><button class="btn-primary" id="ev-save-btn" style="width:100%">Save Event</button></div>
+        </div>
+      </div>
     </div>
   </div>
-
-  <!-- Day-detail panel (hidden until day clicked) -->
-  <div class="cal-day-detail" id="cal-day-detail" style="display:none">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-      <div id="cal-day-panel-title" style="font-size:14px;font-weight:700;color:#f0f0f0"></div>
-      <button onclick="document.getElementById('cal-day-detail').style.display='none'" style="background:none;border:none;color:#aaa;font-size:18px;cursor:pointer;line-height:1">✕</button>
-    </div>
-    <div id="cal-day-panel-events"></div>
-  </div>
-
   <div id="ev-list" style="display:none"></div>
 </div>
 
