@@ -323,16 +323,45 @@ app.get('/api/calendar/events', async (c) => {
   const token = await getValidAccessToken(c)
   if (!token) return c.json({ error: 'not_authenticated', events: [] }, 401)
   try {
-    const now = new Date()
-    const end = new Date(now.getTime() + 7*24*60*60*1000)
-    const params = new URLSearchParams({ timeMin: now.toISOString(), timeMax: end.toISOString(), maxResults: '20', singleEvents: 'true', orderBy: 'startTime' })
-    const calRes  = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events?' + params, { headers: { Authorization: 'Bearer ' + token } })
+    // Accept optional year+month query params so the frontend can request any month.
+    // Falls back to a 60-day window from today when no params are supplied.
+    const qYear  = parseInt(c.req.query('year')  || '0')
+    const qMonth = parseInt(c.req.query('month') || '-1') // 0-based (Jan=0)
+    let timeMin: Date, timeMax: Date
+    if (qYear > 0 && qMonth >= 0) {
+      // Start of requested month, end of month + 1 week buffer so events that
+      // start just before the grid edge still appear
+      timeMin = new Date(qYear, qMonth, 1)
+      timeMax = new Date(qYear, qMonth + 1, 7) // first week of next month
+    } else {
+      // Default: today through next 60 days (covers ~2 months of lectures)
+      timeMin = new Date()
+      timeMax = new Date(Date.now() + 60*24*60*60*1000)
+    }
+    const params = new URLSearchParams({
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      maxResults: '100',           // enough for a full semester of recurring events
+      singleEvents: 'true',        // expand recurring events (lectures) into individual instances
+      orderBy: 'startTime',
+    })
+    const calRes = await fetch(
+      'https://www.googleapis.com/calendar/v3/calendars/primary/events?' + params,
+      { headers: { Authorization: 'Bearer ' + token } }
+    )
     const data: any = await calRes.json()
     // Google returns 401/403 with an error object when the token lacks calendar scope or was revoked
     if (data.error?.code === 401 || data.error?.code === 403) {
       return c.json({ error: 'not_authenticated', events: [] }, 401)
     }
-    const events = (data.items || []).map((e: any) => ({ id: e.id, summary: e.summary || '(No title)', start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date, allDay: !e.start?.dateTime, color: e.colorId ? 'hsl(' + (parseInt(e.colorId) * 37) + ', 60%, 60%)' : 'var(--accent-primary)' }))
+    const events = (data.items || []).map((e: any) => ({
+      id:     e.id,
+      summary: e.summary || '(No title)',
+      start:  e.start?.dateTime || e.start?.date,
+      end:    e.end?.dateTime   || e.end?.date,
+      allDay: !e.start?.dateTime,
+      color:  e.colorId ? 'hsl(' + (parseInt(e.colorId) * 37) + ', 60%, 60%)' : 'var(--accent-primary)',
+    }))
     return c.json({ events })
   } catch (err: any) { return c.json({ error: err.message, events: [] }, 500) }
 })

@@ -1445,6 +1445,8 @@ function calNav(dir) {
   if (state.cal.month > 11) { state.cal.month=0; state.cal.year++; }
   if (state.cal.month < 0)  { state.cal.month=11; state.cal.year--; }
   renderCalGrid();
+  // Re-fetch events for the newly visible month
+  if (FS_USER) loadCalEvents();
 }
 
 function renderCalGrid() {
@@ -1491,7 +1493,10 @@ function loadCalEvents() {
     return;
   }
   document.getElementById('cal-auth-banner').style.display = 'none';
-  fetch('/api/calendar/events', { credentials: 'include' })
+  // Pass the currently-viewed year+month so the API fetches the full month,
+  // not just the next 7 days (which missed most school lectures)
+  const { year, month } = state.cal;
+  fetch(`/api/calendar/events?year=${year}&month=${month}`, { credentials: 'include' })
     .then(r => r.json())
     .then(d => {
       // Check for auth error FIRST — API always returns events:[] even on 401
@@ -1507,7 +1512,7 @@ function loadCalEvents() {
         renderCalGrid();
         return;
       }
-      // Success — d.events is a real array (may be empty if user has no events)
+      // Success — d.events is a real array (may be empty if user has no events this month)
       if (Array.isArray(d.events)) {
         state.cal.events = d.events;
         renderCalGrid();
@@ -1550,11 +1555,29 @@ function _showCalReconnectBanner() {
 function renderEvents(events) {
   const list = document.getElementById('ev-list');
   if (!list) return;
-  if (!events.length) { list.innerHTML = '<div class="empty"><i class="fas fa-calendar-alt"></i><p>No upcoming events. Click a day to add one.</p></div>'; return; }
-  list.innerHTML = events.slice(0,10).map(ev => {
-    const start = ev.start?.dateTime || ev.start?.date || ev.start || '';
-    const t = start ? new Date(start).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true}) : '';
-    return `<div class="ev-item"><div class="ev-dot" style="background:${ev.color||'var(--accent)'}"></div><div class="ev-time">${t}</div><div class="ev-sum">${escHtml(ev.summary||'(no title)')}</div><button class="btn-blk" onclick="blockAroundEvent('${ev.id}')">Block</button></div>`;
+  if (!events || !events.length) {
+    list.innerHTML = '<div class="empty"><i class="fas fa-calendar-alt"></i><p>No events this month. Click a day to add one.</p></div>';
+    return;
+  }
+  // Sort by start time ascending
+  const sorted = [...events].sort((a, b) => {
+    const ta = new Date(a.start || 0).getTime();
+    const tb = new Date(b.start || 0).getTime();
+    return ta - tb;
+  });
+  list.innerHTML = sorted.map(ev => {
+    const start = ev.start || '';
+    const d = start ? new Date(start) : null;
+    const dateLabel = d ? d.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' }) : '';
+    const timeLabel = (d && !ev.allDay) ? d.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true }) : 'All day';
+    return `<div class="ev-item">
+      <div class="ev-dot" style="background:${ev.color||'var(--accent)'}"></div>
+      <div style="flex:1;min-width:0">
+        <div class="ev-sum">${escHtml(ev.summary||'(no title)')}</div>
+        <div class="ev-time" style="font-size:10px;opacity:.6">${dateLabel} · ${timeLabel}</div>
+      </div>
+      <button class="btn-blk" onclick="blockAroundEvent('${ev.id}')">Block</button>
+    </div>`;
   }).join('');
 }
 
