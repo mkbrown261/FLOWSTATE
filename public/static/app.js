@@ -296,7 +296,7 @@ function renderObStep() {
       <div class="integ-list">
         <div class="integ-row"><div class="integ-left"><span class="integ-icon">📅</span><div><div class="integ-name">Google Calendar</div><div class="integ-desc">${FS_USER ? 'Signed in as ' + escHtml(FS_USER.email||FS_USER.name||'') + ' · Click to re-sync if events are missing' : 'Sync events, block focus time'}</div></div></div><button class="btn-connect ${FS_USER?'connected':''}" onclick="window.location.href='${FS_USER ? '/api/auth/calendar-reconnect' : '/api/auth/google'}'">${FS_USER?'↻ Re-sync':'Connect Google'}</button></div>
         <div class="integ-row"><div class="integ-left"><span class="integ-icon">📝</span><div><div class="integ-name">Notion</div><div class="integ-desc">Sync Kanban boards & tasks</div></div></div><button class="btn-connect ${FS_NOTION?'connected':''}" onclick="connectNotion()">${FS_NOTION?'✓ Connected':'Connect'}</button></div>
-        <div class="integ-row"><div class="integ-left"><span class="integ-icon">💬</span><div><div class="integ-name">Slack</div><div class="integ-desc">Team notifications & standups</div></div></div><button class="btn-connect ${FS_SLACK?'connected':''}" onclick="connectSlack()">${FS_SLACK?'✓ Connected':'Connect'}</button></div>
+        <div class="integ-row"><div class="integ-left"><span class="integ-icon">💬</span><div><div class="integ-name">Slack</div><div class="integ-desc">Team notifications &amp; standups · <em style="color:var(--text-m)">Requires an existing Slack workspace</em></div></div></div><button class="btn-connect ${FS_SLACK?'connected':''}" onclick="connectSlack()">${FS_SLACK?'✓ Connected':'Connect'}</button></div>
       </div>
       <button class="ob-btn" onclick="obNext()">Continue →</button>
       <button class="ob-skip" onclick="obNext()">Skip for now</button>`;
@@ -1520,6 +1520,10 @@ function loadCalEvents() {
         // Hide reconnect banner if previously shown
         const rb = document.getElementById('cal-reconnect-banner');
         if (rb) rb.style.display = 'none';
+        // If signed in but zero events returned, show the re-sync nudge
+        // (covers case where Google Calendar API was just enabled — old token needs refresh)
+        const notice = document.getElementById('cal-resync-notice');
+        if (notice) notice.style.display = d.events.length === 0 ? 'flex' : 'none';
       }
     })
     .catch(() => { renderCalGrid(); });
@@ -4246,8 +4250,8 @@ async function showClawActionLog() {
 // Called from renderObStep when step === 4
 function renderClawOnboardingStep() {
   return `
-    <div style="text-align:center;margin-bottom:18px">
-      <img src="/static/clawbot-mascot.png" style="width:56px;height:56px;object-fit:contain;margin-bottom:8px">
+    <div style="text-align:center;margin-bottom:18px;display:flex;flex-direction:column;align-items:center">
+      <img src="/static/clawbot-mascot.png" style="width:100px;height:100px;object-fit:contain;display:block;margin:0 auto 12px">
       <h2 style="font-size:18px;font-weight:900;margin:0 0 6px">Meet Claw</h2>
       <p style="font-size:13px;color:var(--text-m);margin:0 0 16px;line-height:1.6">Claw is your AI brain for the Flowstate ecosystem.<br>Choose what Claw is allowed to do on your behalf.</p>
     </div>

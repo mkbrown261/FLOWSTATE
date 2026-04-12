@@ -319,6 +319,50 @@ app.get('/api/auth/calendar-status', async (c) => {
   return c.json({ connected: true, expired, canRefresh })
 })
 
+// GET /api/calendar/debug — shows exactly what the token + Google raw response look like
+// Safe: only returns token prefix, not the full token
+app.get('/api/calendar/debug', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ step: 'no_session', fix: 'Not signed in — go to flowst8.cc and sign in first' })
+
+  const now = Date.now()
+  const expiresAt = session.expires_at || 0
+  const expired = now > expiresAt - 60000
+  const sessionInfo = {
+    email:         session.email,
+    has_access_token:  !!session.access_token,
+    token_prefix:  session.access_token ? session.access_token.substring(0, 12) + '...' : null,
+    has_refresh_token: !!session.refresh_token,
+    expires_at:    new Date(expiresAt).toISOString(),
+    expired,
+    now:           new Date(now).toISOString(),
+  }
+
+  const token = await getValidAccessToken(c)
+  if (!token) return c.json({ step: 'no_valid_token', sessionInfo, fix: 'Token expired with no refresh_token — visit /api/auth/calendar-reconnect' })
+
+  // Try a raw Google Calendar API call and return the full response for diagnosis
+  try {
+    const now2 = new Date()
+    const end  = new Date(now2.getFullYear(), now2.getMonth() + 1, 7)
+    const params = new URLSearchParams({ timeMin: new Date(now2.getFullYear(), now2.getMonth(), 1).toISOString(), timeMax: end.toISOString(), maxResults: '5', singleEvents: 'true', orderBy: 'startTime' })
+    const res  = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events?' + params, { headers: { Authorization: 'Bearer ' + token } })
+    const body: any = await res.json()
+    return c.json({
+      step: 'google_api_called',
+      http_status: res.status,
+      sessionInfo,
+      google_error: body.error || null,
+      event_count:  body.items?.length ?? 'no items key',
+      first_event:  body.items?.[0] ? { summary: body.items[0].summary, start: body.items[0].start } : null,
+      calendar_summary: body.summary || null,
+      raw_keys: Object.keys(body),
+    })
+  } catch (err: any) {
+    return c.json({ step: 'fetch_threw', error: err.message, sessionInfo })
+  }
+})
+
 app.get('/api/calendar/events', async (c) => {
   const token = await getValidAccessToken(c)
   if (!token) return c.json({ error: 'not_authenticated', events: [] }, 401)
@@ -5695,6 +5739,10 @@ em{color:var(--accent);font-style:italic}
     <p>See upcoming events, block focus time, and create events directly from FlowState.</p>
     <button class="btn-primary" id="cal-connect-btn"><i class="fas fa-google"></i>&nbsp; Connect Google</button>
   </div>
+  <div id="cal-resync-notice" style="display:none;margin-bottom:10px;padding:10px 14px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.35);border-radius:9px;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+    <div><strong style="color:#f59e0b">&#128197; Calendar was just enabled</strong> <span style="color:rgba(255,255,255,.5)">— click Re-sync to load your events</span></div>
+    <button onclick="window.location.href='/api/auth/calendar-reconnect'" style="padding:6px 14px;border-radius:7px;border:none;background:#f59e0b;color:#000;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">Re-sync Google →</button>
+  </div>
   <div class="sec-hd">
     <div class="sec-title" id="cal-month-label">&#8212; &#8212;</div>
     <div style="display:flex;gap:6px">
@@ -5702,6 +5750,7 @@ em{color:var(--accent);font-style:italic}
       <button class="btn-sm" id="cal-next"><i class="fas fa-chevron-right"></i></button>
       <button class="btn-sm" id="cal-add-btn"><i class="fas fa-plus"></i> Add Event</button>
       <button class="btn-sm" id="cal-refresh"><i class="fas fa-refresh"></i></button>
+      <button class="btn-sm" onclick="window.location.href='/api/auth/calendar-reconnect'" title="Re-sync Google Calendar"><i class="fas fa-rotate"></i> Re-sync</button>
     </div>
   </div>
   <div class="add-ev-form" id="add-ev-form">
