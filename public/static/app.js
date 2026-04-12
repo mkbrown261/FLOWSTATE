@@ -1447,13 +1447,16 @@ function setupAmbientChips() {
     <i class="fas fa-chevron-down" style="font-size:9px;color:var(--text-m);margin-left:1px"></i>
   </div>
   <div class="u-dropdown" id="u-dropdown">
-    <button class="u-drop-item" id="u-drop-avatar-btn">
+    <button class="u-drop-item" id="u-drop-avatar-btn" onclick="document.getElementById('u-avatar-file-input').click()">
       <i class="fas fa-camera"></i> Change Profile Picture
     </button>
-    <div id="u-avatar-form-wrap" style="display:none">
-      <div class="u-avatar-form">
-        <input type="url" id="u-avatar-url-input" placeholder="Paste image URL (https://...)" autocomplete="off">
-        <button onclick="saveAvatarUrl()">Save Picture</button>
+    <input type="file" id="u-avatar-file-input" accept="image/jpeg,image/png,image/gif,image/webp" capture="user" style="display:none">
+    <div id="u-avatar-upload-progress" style="display:none">
+      <div class="u-avatar-form" style="padding-top:4px">
+        <div style="font-size:11px;color:var(--text-s);text-align:center;padding:4px 0" id="u-avatar-progress-text">Uploading…</div>
+        <div style="height:3px;background:var(--border);border-radius:2px;overflow:hidden">
+          <div id="u-avatar-progress-bar" style="height:100%;width:0%;background:var(--grad);transition:width .3s"></div>
+        </div>
       </div>
     </div>
     <div class="u-drop-divider"></div>
@@ -1467,13 +1470,10 @@ function setupAmbientChips() {
   </div>
 </div>`;
 
-    // Toggle avatar URL form
-    document.getElementById('u-drop-avatar-btn')?.addEventListener('click', function() {
-      const form = document.getElementById('u-avatar-form-wrap');
-      if (!form) return;
-      const open = form.style.display !== 'none';
-      form.style.display = open ? 'none' : 'block';
-      if (!open) setTimeout(() => document.getElementById('u-avatar-url-input')?.focus(), 50);
+    // File input change — auto-upload when user picks a file
+    document.getElementById('u-avatar-file-input')?.addEventListener('change', function(e) {
+      const file = e.target.files?.[0];
+      if (file) uploadAvatarFile(file);
     });
 
     // Close dropdown when clicking outside
@@ -1498,48 +1498,69 @@ function setupAmbientChips() {
   }
 })();
 
-// Save avatar URL — POSTs to /api/avatar, updates the visible img, and persists via cookie re-issue
-async function saveAvatarUrl() {
-  const input = document.getElementById('u-avatar-url-input');
-  const url = input?.value?.trim();
-  if (!url || !/^https?:\/\/.+\..+/.test(url)) {
-    notify('Please paste a valid image URL (starting with https://)', 'warning');
-    return;
-  }
+// Upload avatar file — multipart POST to /api/avatar, updates the visible img + session cookie
+async function uploadAvatarFile(file) {
+  const allowed = ['image/jpeg','image/png','image/gif','image/webp'];
+  if (!allowed.includes(file.type)) { notify('Please choose a JPEG, PNG, GIF, or WebP image.', 'warning'); return; }
+  if (file.size > 5 * 1024 * 1024) { notify('Image must be under 5 MB.', 'warning'); return; }
+
+  // Show progress bar inside dropdown
+  const progress  = document.getElementById('u-avatar-upload-progress');
+  const progText  = document.getElementById('u-avatar-progress-text');
+  const progBar   = document.getElementById('u-avatar-progress-bar');
+  if (progress) progress.style.display = 'block';
+  if (progText)  progText.textContent  = 'Uploading…';
+  if (progBar)   progBar.style.width   = '30%';
+
   try {
-    const res = await fetch('/api/avatar', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
-    });
+    const form = new FormData();
+    form.append('file', file);
+
+    if (progBar) progBar.style.width = '60%';
+    const res  = await fetch('/api/avatar', { method: 'POST', credentials: 'include', body: form });
+    if (progBar) progBar.style.width = '90%';
     const data = await res.json();
+
     if (data.ok) {
-      // Update the visible avatar immediately
-      const img = document.getElementById('u-avatar-img');
+      if (progBar) progBar.style.width = '100%';
+      if (progText) progText.textContent = 'Done!';
+
+      // Update the visible avatar immediately using the returned URL
+      const url      = data.url;
+      const imgEl    = document.getElementById('u-avatar-img');
       const fallback = document.getElementById('u-avatar-fallback');
-      if (img) {
-        img.src = url;
-        img.style.display = 'block';
+      if (imgEl) {
+        imgEl.src          = url;
+        imgEl.style.display = 'block';
         if (fallback) fallback.style.display = 'none';
-      } else {
-        // No img element yet — insert one
-        if (fallback) {
-          fallback.insertAdjacentHTML('beforebegin', `<img class="u-avatar" id="u-avatar-img" src="${url}" alt="avatar" onerror="this.style.display='none'">`);
-          fallback.style.display = 'none';
-        }
+      } else if (fallback) {
+        fallback.insertAdjacentHTML('beforebegin',
+          `<img class="u-avatar" id="u-avatar-img" src="${url}" alt="avatar" onerror="this.style.display='none'">`);
+        fallback.style.display = 'none';
       }
-      // Hide the form and close dropdown
-      const form = document.getElementById('u-avatar-form-wrap');
-      if (form) form.style.display = 'none';
-      if (input) input.value = '';
-      notify('Profile picture updated!', 'success');
-      // Update FS_USER.picture in memory so the session reflects the change
+
       if (window.FS_USER) window.FS_USER.picture = url;
+      notify('Profile picture updated!', 'success');
+
+      // Hide progress after brief pause and reset file input
+      setTimeout(() => {
+        if (progress) progress.style.display = 'none';
+        if (progBar)  progBar.style.width    = '0%';
+        const fi = document.getElementById('u-avatar-file-input');
+        if (fi) fi.value = '';
+      }, 1200);
     } else {
-      notify(data.error === 'invalid_url' ? 'Invalid URL — use a direct image link (https://...)' : 'Could not update picture. Try again.', 'warning');
+      if (progress) progress.style.display = 'none';
+      const msg = {
+        no_file:     'No file received — please try again.',
+        invalid_type:'Only JPEG, PNG, GIF, or WebP images are allowed.',
+        too_large:   'Image must be under 5 MB.',
+        storage_unavailable: 'Storage unavailable — try again shortly.',
+      }[data.error] || 'Upload failed — please try again.';
+      notify(msg, 'warning');
     }
   } catch(e) {
+    if (progress) progress.style.display = 'none';
     notify('Network error — please try again.', 'warning');
   }
 }

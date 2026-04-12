@@ -5708,7 +5708,6 @@ app.get('/', (c) => {
 [data-theme="light"] .u-dropdown { background:var(--bg-panel);border-color:var(--border);box-shadow:0 8px 32px rgba(0,0,0,.12); }
 [data-theme="light"] .u-drop-item { color:var(--text-s); }
 [data-theme="light"] .u-drop-item:hover { background:rgba(124,58,237,.08);color:var(--text-p); }
-[data-theme="light"] .u-avatar-form input { background:var(--bg-card);color:var(--text-p);border-color:var(--border); }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
 body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg-base);color:var(--text-p);display:flex;flex-direction:column;transition:background .25s,color .25s}
@@ -5791,10 +5790,7 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .u-drop-item:hover{background:rgba(168,85,247,.12);color:var(--text-p)}
 .u-drop-item i{width:14px;text-align:center;font-size:13px;color:var(--accent)}
 .u-drop-divider{height:1px;background:var(--border);margin:4px 6px}
-.u-avatar-form{padding:8px 11px}
-.u-avatar-form input{width:100%;background:var(--bg-card);border:1px solid var(--border);border-radius:7px;padding:6px 9px;font-size:11px;color:var(--text-p);outline:none;margin-bottom:6px}
-.u-avatar-form input:focus{border-color:var(--accent)}
-.u-avatar-form button{width:100%;padding:6px;border-radius:7px;background:var(--grad);border:none;color:#fff;font-size:11px;font-weight:700;cursor:pointer}
+.u-avatar-form{padding:6px 11px 8px}
 .btn-signin{background:var(--grad);border:none;color:#fff;padding:7px 16px;border-radius:20px;font-size:12px;font-weight:700;cursor:pointer;transition:.2s}
 .tabs-bar{display:flex;align-items:center;gap:2px;padding:5px 16px;background:var(--bg-tabs);border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto;scrollbar-width:none}
 .tabs-bar::-webkit-scrollbar{display:none}
@@ -8146,37 +8142,82 @@ app.post('/api/profile/setup', async (c) => {
   }
 })
 
-// POST /api/avatar — update the user's profile picture URL
-// Accepts { url: string } — validates it's a real URL, updates D1 + re-issues session cookie
+// POST /api/avatar — upload a profile picture file from the user's device
+// Accepts multipart/form-data with a 'file' field (image/jpeg, image/png, image/gif, image/webp)
+// Stores in R2 under avatars/{email}/avatar.{ext}, re-issues session cookie with new URL
 app.post('/api/avatar', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
-  const db = c.env?.DB
-  if (!db) return c.json({ error: 'db_unavailable' }, 503)
+  const db  = c.env?.DB
+  const r2  = c.env?.R2
+  if (!r2) return c.json({ error: 'storage_unavailable' }, 503)
 
-  const { url } = await c.req.json().catch(() => ({ url: '' }))
-  // Basic validation — must be http/https URL
-  if (!url || !/^https?:\/\/.+\..+/.test(url.trim())) {
-    return c.json({ error: 'invalid_url' }, 400)
-  }
-  const avatarUrl = url.trim()
-
-  // Update avatar_url in public_profiles (upsert — profile may not exist yet)
+  let file: File | null = null
   try {
-    const user = await db.prepare(`SELECT id FROM users WHERE email=?`).bind(session.email).first() as any
-    if (user) {
-      await db.prepare(`
-        INSERT INTO public_profiles (user_id, email, slug, display_name, avatar_url, updated_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(email) DO UPDATE SET avatar_url=excluded.avatar_url, updated_at=datetime('now')
-      `).bind(user.id, session.email, session.email.split('@')[0].replace(/[^a-z0-9]/gi,'-').toLowerCase().slice(0,30), session.name || '', avatarUrl).run()
-    }
-  } catch(_) { /* non-fatal — still update the cookie */ }
+    const form = await c.req.formData()
+    file = form.get('file') as File | null
+  } catch(_) {}
+  if (!file) return c.json({ error: 'no_file' }, 400)
 
-  // Re-issue the session cookie with the new picture so the header updates immediately
+  // Allow only image types, max 5 MB
+  const allowed = ['image/jpeg','image/png','image/gif','image/webp']
+  if (!allowed.includes(file.type)) return c.json({ error: 'invalid_type' }, 400)
+  if (file.size > 5 * 1024 * 1024) return c.json({ error: 'too_large' }, 400)
+
+  const ext     = file.type.split('/')[1].replace('jpeg','jpg')
+  const r2Key   = `avatars/${session.email}/avatar.${ext}`
+  const buf     = await file.arrayBuffer()
+
+  await r2.put(r2Key, buf, {
+    httpMetadata: { contentType: file.type, cacheControl: 'public, max-age=31536000' },
+    customMetadata: { email: session.email, uploadedAt: new Date().toISOString() },
+  })
+
+  // Public URL served via GET /api/avatar/:key
+  const origin    = new URL(c.req.url).origin
+  const avatarUrl = `${origin}/api/avatar/img/${encodeURIComponent(r2Key)}?v=${Date.now()}`
+
+  // Upsert avatar_url into public_profiles (non-fatal)
+  try {
+    if (db) {
+      const user = await db.prepare(`SELECT id FROM users WHERE email=?`).bind(session.email).first() as any
+      if (user) {
+        await db.prepare(`
+          INSERT INTO public_profiles (user_id, email, slug, display_name, avatar_url, updated_at)
+          VALUES (?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(email) DO UPDATE SET avatar_url=excluded.avatar_url, updated_at=datetime('now')
+        `).bind(
+          user.id, session.email,
+          session.email.split('@')[0].replace(/[^a-z0-9]/gi,'-').toLowerCase().slice(0,30),
+          session.name || '', avatarUrl
+        ).run()
+      }
+    }
+  } catch(_) {}
+
+  // Re-issue session cookie with updated picture
   const newSession = { ...session, picture: avatarUrl }
   setCookie(c, 'fs_session', encodeSession(newSession), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 7*24*3600, path: '/' })
   return c.json({ ok: true, url: avatarUrl })
+})
+
+// GET /api/avatar/img/:key — serve avatar image publicly from R2
+app.get('/api/avatar/img/:key{.+}', async (c) => {
+  const r2 = c.env?.R2
+  if (!r2) return c.json({ error: 'storage_unavailable' }, 503)
+  const key = decodeURIComponent(c.req.param('key'))
+  // Only serve files under the avatars/ namespace
+  if (!key.startsWith('avatars/')) return c.json({ error: 'forbidden' }, 403)
+  const obj = await r2.get(key)
+  if (!obj) return c.json({ error: 'not_found' }, 404)
+  const ct = obj.httpMetadata?.contentType || 'image/jpeg'
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': ct,
+      'Cache-Control': 'public, max-age=31536000',
+      'Access-Control-Allow-Origin': '*',
+    }
+  })
 })
 
 // GET /api/profile/me — fetch own profile settings
