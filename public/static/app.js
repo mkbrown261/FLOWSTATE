@@ -600,22 +600,16 @@ function showMainApp(isDemo=false) {
 }
 
 async function _restorePairSession() {
-  // On every page load, unconditionally clear any lingering pair state from
-  // Redis. The banner must NEVER auto-show on reload — it should only appear
-  // when a user actively starts a session in the current tab.
-  // This prevents the phantom "Paired with Partner" banner that appeared on
-  // every reload due to stale Redis keys surviving after session expiry.
-  try {
-    fetch('/api/pair/leave', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}'
-    }).catch(() => {});
-  } catch(e) {}
-  // Ensure banner is always hidden on load
-  const banner = document.getElementById('pair-session-banner');
-  if (banner) banner.style.display = 'none';
+  // Silently clear any stale pair state from Redis on every page load.
+  // The banner is hidden via CSS by default (display:none in stylesheet)
+  // so it never flashes — it only becomes visible when _updatePairBanner()
+  // is explicitly called after an active pairing in the current tab.
+  fetch('/api/pair/leave', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  }).catch(() => {});
 }
 
 // ── Load real session history from D1, seed state + update UI ─────────────

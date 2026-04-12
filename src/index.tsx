@@ -5701,6 +5701,7 @@ app.get('/', (c) => {
 [data-theme="light"] .mob-close:hover { background:rgba(0,0,0,.06); }
 [data-theme="light"] .orb1 { background:radial-gradient(circle,var(--orb1),transparent 70%); }
 [data-theme="light"] .orb2 { background:radial-gradient(circle,var(--orb2),transparent 70%); }
+#pair-session-banner { display:none; }
 [data-theme="light"] #pair-session-banner { background:rgba(5,150,105,.12) !important; border-color:rgba(5,150,105,.3) !important; color:var(--text-p) !important; }
 [data-theme="light"] .sprint-health, [data-theme="light"] .sh-stats { background:var(--bg-card); }
 [data-theme="light"] #theme-toggle-btn::after { content: "☀️"; }
@@ -6398,7 +6399,7 @@ em{color:var(--accent);font-style:italic}
 <!-- FOCUS TAB -->
 <div class="tab-pane active" id="tab-pane-focus" style="display:none">
   <!-- Pair session active banner — shown by JS when paired -->
-  <div id="pair-session-banner" style="display:none;background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:12px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+  <div id="pair-session-banner" style="background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:12px;padding:10px 14px;margin-bottom:12px;align-items:center;justify-content:space-between;gap:10px;display:none">
     <div style="display:flex;align-items:center;gap:8px">
       <span style="width:8px;height:8px;border-radius:50%;background:#10b981;display:inline-block;animation:pulse 2s infinite"></span>
       <span style="font-size:13px;font-weight:700;color:#10b981">Paired with <span id="pair-banner-name">Partner</span></span>
