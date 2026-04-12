@@ -8588,10 +8588,26 @@ app.post('/api/pair/queue', async (c) => {
 app.get('/api/pair/status', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
   const userKey = `pair_user:${encodeURIComponent(session.email)}`
   const raw = await redisGet(c, userKey)
   if (!raw) return c.json({ status: 'none' })
   const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+
+  // If the session has an endsAt timestamp and it has already passed,
+  // proactively delete the stale Redis key and return 'none' so the
+  // frontend never shows the "paired" banner for an expired session.
+  if (data.endsAt && new Date(data.endsAt).getTime() < Date.now()) {
+    if (url && token) {
+      // Fire-and-forget: delete stale keys for both users
+      const delKeys: string[] = [userKey]
+      if (data.partnerEmail) delKeys.push(`pair_user:${encodeURIComponent(data.partnerEmail)}`)
+      redisPipeline(url, token, delKeys.map(k => ['DEL', k])).catch(() => {})
+    }
+    return c.json({ status: 'none' })
+  }
+
   return c.json({ status: data.partnerEmail ? 'paired' : 'waiting', data })
 })
 

@@ -604,9 +604,13 @@ async function _restorePairSession() {
     const res = await fetch('/api/pair/status', { credentials: 'include' });
     const data = await res.json();
     if (data.status === 'paired' && data.data?.partnerEmail) {
-      // Only restore if session hasn't ended yet (endsAt is in the future)
+      // Only restore if session hasn't ended yet (endsAt is in the future).
+      // NOTE: endsAt is an ISO-8601 string — must parse it with new Date()
+      // before comparing to Date.now() (milliseconds). A raw > comparison of
+      // a number vs a string is unreliable and was the root cause of the
+      // phantom "paired" banner appearing on every page load.
       const endsAt = data.data?.endsAt;
-      if (endsAt && Date.now() > endsAt) {
+      if (endsAt && Date.now() > new Date(endsAt).getTime()) {
         // Session expired — silently clear it on the server
         fetch('/api/pair/leave', { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: '{}' }).catch(()=>{});
         return;
@@ -617,7 +621,11 @@ async function _restorePairSession() {
       // Start background ping polling
       _pairState.pingTimer = setInterval(_pollPartnerPing, 6000);
       _pairState.msgTimer  = setInterval(_loadPairMessages, 4000);
-      notify(`🤝 Resuming pair session with ${escHtml(_pairState.partnerName || 'your partner')}`, 'info');
+      // Only show the "resuming" toast if the session genuinely has time left
+      const minsLeft = endsAt ? Math.round((new Date(endsAt).getTime() - Date.now()) / 60000) : 0;
+      if (minsLeft > 0) {
+        notify(`🤝 Resuming pair session with ${escHtml(_pairState.partnerName || 'your partner')} (${minsLeft}m left)`, 'info');
+      }
     }
   } catch(e) {}
 }
