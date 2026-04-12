@@ -1,26 +1,19 @@
 {
   "name": "FlowState",
   "short_name": "FlowState",
-  "description": "The focus OS for builders — AI chat, Pomodoro timer, Kanban, smart metrics, and more.",
+  "description": "The focus OS for builders — AI chat, Pomodoro timer, Kanban, metrics, and more.",
   "start_url": "/",
-  "scope": "/",
   "display": "standalone",
   "background_color": "#0a0a12",
   "theme_color": "#a855f7",
   "orientation": "portrait-primary",
   "categories": ["productivity", "utilities"],
-  "lang": "en",
   "icons": [
-    {
-      "src": "/static/favicon-32.png",
-      "sizes": "32x32",
-      "type": "image/png"
-    },
     {
       "src": "/static/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any"
+      "purpose": "any maskable"
     },
     {
       "src": "/static/icon-512.png",
@@ -29,6 +22,7 @@
       "purpose": "any maskable"
     }
   ],
+  "screenshots": [],
   "shortcuts": [
     {
       "name": "Focus Timer",
@@ -41,13 +35,6 @@
       "short_name": "Chat",
       "url": "/?tab=chat",
       "icons": [{ "src": "/static/icon-192.png", "sizes": "192x192" }]
-    },
-    {
-      "name": "Calendar",
-      "short_name": "Calendar",
-      "url": "/?tab=calendar",
-      "icons": [{ "src": "/static/icon-192.png", "sizes": "192x192" }]
     }
-  ],
-  "screenshots": []
+  ]
 }

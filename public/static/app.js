@@ -418,6 +418,8 @@ function showMainApp(isDemo=false) {
   setTimeout(loadSmartSuggestions, 1200);
   // Seed real D1 history for signed-in users
   if (FS_USER) loadD1History();
+  // Check for referral claim (?ref=FS-XXXXX in URL)
+  if (FS_USER) setTimeout(checkReferralClaim, 800);
 }
 
 // ── Load real session history from D1, seed state + update UI ─────────────
@@ -459,13 +461,15 @@ async function loadD1History() {
 function checkBillingReturn() {
   const params = new URLSearchParams(window.location.search);
 
-  // Handle ?tab=calendar&cal_synced=1 — returned from calendar reconnect flow
-  if (params.get('tab') === 'calendar') {
+  // Handle ?tab=<name> — used by PWA shortcuts, billing returns, etc.
+  const tabParam = params.get('tab');
+  if (tabParam) {
     window.history.replaceState({}, '', window.location.pathname);
-    if (params.get('cal_synced') === '1') {
+    if (tabParam === 'calendar' && params.get('cal_synced') === '1') {
       setTimeout(() => notify('✅ Google Calendar reconnected! Loading your events…', 'success'), 600);
     }
-    return 'calendar'; // tell showMainApp to open this tab instead of focus
+    const validTabs = ['focus','chat','calendar','metrics','board','team','learn','restore','generate','audio','clawbot'];
+    if (validTabs.includes(tabParam)) return tabParam;
   }
 
   const billing = params.get('billing');
@@ -3952,13 +3956,164 @@ function openCredsModal() {
   }).catch(()=>notify('Could not load credentials','error'));
 }
 
-function openInviteModal() {
-  if (!FS_USER && !state.settings.isDemo) { notify('Sign in to invite teammates','info'); return; }
-  fetch('/api/invite/generate',{method:'POST'}).then(r=>r.json()).then(d=>{
-    const code = d.inviteCode||d.intent?.inviteCode||'FLOW-DEMO';
-    const url  = d.inviteUrl ||d.intent?.inviteUrl ||window.location.origin+'?invite='+code;
-    openModal(`<div class="invite-box"><h2>🎉 Invite Your Team</h2><p style="color:var(--text-s);font-size:13px;margin-top:6px">Share this link to invite teammates to FlowState</p><div class="invite-code">${code}</div><input class="fs-in" value="${url}" readonly style="text-align:center;margin-bottom:11px" id="invite-url"><button class="btn-primary" onclick="navigator.clipboard.writeText(document.getElementById('invite-url').value).then(()=>notify('Link copied!','success'))"><i class="fas fa-copy"></i> Copy Link</button><div style="margin-top:12px;font-size:12px;color:var(--text-m)">You and your invitee each get 7 days of Pro free.</div></div>`);
-  }).catch(()=>notify('Error generating invite','error'));
+// ── Referral system ───────────────────────────────────────────────────────────
+async function openInviteModal() {
+  if (!FS_USER && !state.settings.isDemo) {
+    openModal(`
+      <div style="text-align:center;padding:8px 0">
+        <div style="font-size:40px;margin-bottom:12px">🎁</div>
+        <h2 style="margin:0 0 8px">Invite Friends, Earn Tokens</h2>
+        <p style="color:var(--text-s);font-size:13px;margin-bottom:18px">Sign in to generate your unique referral link.<br>You earn <strong style="color:#10b981">5,000 tokens</strong> per friend who joins — they get <strong style="color:#a855f7">10,000 bonus tokens</strong>.</p>
+        <button class="btn-primary" onclick="closeModal();openAuthPopup('/api/auth/google')" style="width:100%"><i class="fab fa-google"></i> Sign in to get your link</button>
+      </div>`);
+    return;
+  }
+
+  // Show loading state
+  openModal(`<div style="text-align:center;padding:24px 0"><i class="fas fa-spinner fa-spin" style="font-size:24px;color:var(--accent)"></i><div style="margin-top:12px;color:#888;font-size:13px">Generating your link…</div></div>`);
+
+  try {
+    const [genRes, statsRes] = await Promise.all([
+      fetch('/api/referral/generate', { method: 'POST', credentials: 'include' }),
+      fetch('/api/referral/stats', { credentials: 'include' }),
+    ]);
+    const gen   = await genRes.json();
+    const stats = await statsRes.json();
+    if (gen.error) { notify('Error generating referral link', 'error'); return; }
+
+    const refUrl  = gen.url;
+    const code    = gen.code;
+    const claimed = stats.claimed || 0;
+    const earned  = claimed * 5000;
+
+    const shareActions = [
+      { icon: 'fa-copy',     label: 'Copy Link',    fn: `navigator.clipboard.writeText('${refUrl}').then(()=>notify('🔗 Copied!','success'))` },
+      { icon: 'fa-twitter',  label: 'Share on X',   fn: `window.open('https://twitter.com/intent/tweet?text=${encodeURIComponent(gen.shareText + ' ' + refUrl)}','_blank')` },
+      { icon: 'fa-whatsapp', label: 'WhatsApp',      fn: `window.open('https://wa.me/?text=${encodeURIComponent(gen.shareText + ' ' + refUrl)}','_blank')` },
+    ].map(a => `<button class="btn-sm" onclick="${a.fn}" style="flex:1;gap:5px;justify-content:center"><i class="fab ${a.icon}"></i>${a.label}</button>`).join('');
+
+    openModal(`
+      <div style="padding:4px 0">
+        <div style="text-align:center;margin-bottom:18px">
+          <div style="font-size:36px;margin-bottom:8px">🎁</div>
+          <h2 style="margin:0 0 6px">Invite Friends</h2>
+          <p style="color:var(--text-s);font-size:12px">You earn <strong style="color:#10b981">5,000 tokens</strong> per friend · They get <strong style="color:#a855f7">10,000 bonus tokens</strong></p>
+        </div>
+        ${claimed > 0 ? `
+        <div style="background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(16,185,129,.05));border:1px solid rgba(16,185,129,.25);border-radius:12px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;color:var(--text-s)">🏆 ${claimed} friend${claimed!==1?'s':''} joined</span>
+          <span style="font-size:14px;font-weight:800;color:#10b981">+${earned.toLocaleString()} tokens earned</span>
+        </div>` : ''}
+        <div style="background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:10px 12px;margin-bottom:12px">
+          <div style="font-size:10px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Your Referral Code</div>
+          <div style="font-family:monospace;font-size:18px;font-weight:900;color:var(--accent);letter-spacing:2px;text-align:center">${code}</div>
+        </div>
+        <input id="ref-url-input" value="${refUrl}" readonly style="width:100%;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text-s);font-size:11px;margin-bottom:10px;outline:none" onclick="this.select()">
+        <div style="display:flex;gap:7px;margin-bottom:12px">${shareActions}</div>
+        <div style="font-size:11px;color:#555;text-align:center">Link never expires · Share anywhere</div>
+        ${FS_USER ? `<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+          <button class="btn-sm" style="width:100%;gap:6px;justify-content:center" onclick="closeModal();openProfileModal()"><i class="fas fa-globe"></i> Set up your public FlowScore profile</button>
+        </div>` : ''}
+      </div>`);
+  } catch(e) {
+    notify('Error loading referral data', 'error');
+  }
+}
+
+// ── Public profile setup ──────────────────────────────────────────────────────
+async function openProfileModal() {
+  if (!FS_USER) { notify('Sign in to create a profile', 'info'); return; }
+  openModal(`<div style="text-align:center;padding:20px 0"><i class="fas fa-spinner fa-spin" style="font-size:20px;color:var(--accent)"></i></div>`);
+  try {
+    const r = await fetch('/api/profile/me', { credentials: 'include' });
+    const d = await r.json();
+    const p = d.profile;
+    const defaultSlug = (FS_USER.name||FS_USER.email||'').toLowerCase().replace(/[^a-z0-9]/g,'-').replace(/-+/g,'-').slice(0,20);
+
+    openModal(`
+      <div style="padding:4px 0">
+        <h2 style="margin:0 0 6px;text-align:center">🌍 Public FlowScore Profile</h2>
+        <p style="color:var(--text-s);font-size:12px;text-align:center;margin-bottom:16px">Create a shareable profile at <strong style="color:var(--accent)">flowst8.cc/u/your-slug</strong></p>
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Profile Slug (URL)</label>
+          <div style="display:flex;align-items:center;gap:5px">
+            <span style="font-size:12px;color:#555">flowst8.cc/u/</span>
+            <input id="prof-slug" value="${p?.slug||defaultSlug}" placeholder="your-slug" maxlength="30" style="flex:1;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;padding:7px 10px;color:var(--text-p);font-size:13px;outline:none">
+          </div>
+        </div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Display Name</label>
+          <input id="prof-name" value="${p?.display_name||FS_USER.name||''}" maxlength="50" style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;padding:7px 10px;color:var(--text-p);font-size:13px;outline:none">
+        </div>
+        <div style="margin-bottom:14px">
+          <label style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Tagline (optional)</label>
+          <input id="prof-tagline" value="${p?.tagline||''}" maxlength="80" placeholder="Builder. 90min deep work blocks." style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;padding:7px 10px;color:var(--text-p);font-size:13px;outline:none">
+        </div>
+        <div style="margin-bottom:14px">
+          <label style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px">Show on profile</label>
+          <div style="display:flex;flex-wrap:wrap;gap:7px">
+            ${[
+              {id:'show-score',  label:'FlowScore ring',   checked: p?.show_score !== 0},
+              {id:'show-streak', label:'Day streak',       checked: p?.show_streak !== 0},
+              {id:'show-outputs',label:'Output types',     checked: p?.show_outputs === 1},
+              {id:'show-weekly', label:'Weekly stats',     checked: p?.show_weekly === 1},
+            ].map(c=>`<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-s);cursor:pointer"><input type="checkbox" id="${c.id}" ${c.checked?'checked':''}> ${c.label}</label>`).join('')}
+          </div>
+        </div>
+        <button class="btn-primary" style="width:100%;margin-bottom:8px" onclick="saveProfile()">Save Profile</button>
+        ${p?.slug ? `<a href="/u/${p.slug}" target="_blank" style="display:block;text-align:center;font-size:12px;color:var(--accent);text-decoration:none">👁 View my profile →</a>` : ''}
+      </div>`);
+  } catch(e) {
+    notify('Error loading profile', 'error');
+  }
+}
+
+async function saveProfile() {
+  const slug        = document.getElementById('prof-slug')?.value?.trim();
+  const displayName = document.getElementById('prof-name')?.value?.trim();
+  const tagline     = document.getElementById('prof-tagline')?.value?.trim();
+  const showScore   = document.getElementById('show-score')?.checked;
+  const showStreak  = document.getElementById('show-streak')?.checked;
+  const showOutputs = document.getElementById('show-outputs')?.checked;
+  const showWeekly  = document.getElementById('show-weekly')?.checked;
+  if (!slug || slug.length < 3) { notify('Slug must be at least 3 characters', 'error'); return; }
+
+  try {
+    const r = await fetch('/api/profile/setup', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug, displayName, tagline, showScore, showStreak, showOutputs, showWeekly }),
+    });
+    const d = await r.json();
+    if (d.error === 'slug_taken') { notify('That slug is taken — try another', 'error'); return; }
+    if (d.error === 'slug_too_short') { notify('Slug must be at least 3 characters', 'error'); return; }
+    if (d.ok) {
+      notify(`✅ Profile live at flowst8.cc/u/${d.slug}`, 'success');
+      closeModal();
+      setTimeout(() => window.open(`/u/${d.slug}`, '_blank'), 500);
+    } else {
+      notify(d.error || 'Error saving profile', 'error');
+    }
+  } catch(e) {
+    notify('Network error — try again', 'error');
+  }
+}
+
+// ── Referral claim on first load (if ?ref= in URL) ───────────────────────────
+async function checkReferralClaim() {
+  const params = new URLSearchParams(window.location.search);
+  const ref = params.get('ref');
+  if (!ref || !FS_USER) return;
+  // Clean the URL
+  window.history.replaceState({}, '', window.location.pathname);
+  try {
+    const r = await fetch(`/api/referral/claim?ref=${encodeURIComponent(ref)}`, { credentials: 'include' });
+    const d = await r.json();
+    if (d.ok) {
+      notify(`🎁 Welcome! ${d.referrerName} referred you — +${(d.bonusTokens||0).toLocaleString()} bonus tokens added to your account!`, 'success');
+    }
+    // Silently ignore code_already_used, self_referral, invalid_code etc.
+  } catch(_) {}
 }
 
 function openSettingsModal() {
@@ -3980,7 +4135,15 @@ function openSettingsModal() {
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><span>💬 Slack</span><button class="btn-sm ${FS_SLACK?'connected':''}" onclick="connectSlack()" style="${FS_SLACK?'color:var(--green);border-color:var(--green)'  :''}"> ${FS_SLACK?'✓ Connected':'Connect'}</button></div>
       </div>
     </div>
-    ${isSigned ? '<button class="btn-sm" style="color:var(--danger);border-color:var(--danger);width:100%;margin-top:8px" onclick="signOut()">Sign Out</button>' : ''}`);
+    ${isSigned ? `
+    <div style="margin:14px 0">
+      <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">PROFILE & REFERRAL</div>
+      <div style="display:flex;flex-direction:column;gap:7px">
+        <button class="btn-sm" style="justify-content:flex-start;gap:7px" onclick="closeModal();openInviteModal()"><i class="fas fa-user-plus"></i> Invite friends — earn tokens</button>
+        <button class="btn-sm" style="justify-content:flex-start;gap:7px" onclick="closeModal();openProfileModal()"><i class="fas fa-globe"></i> Public FlowScore profile</button>
+      </div>
+    </div>
+    <button class="btn-sm" style="color:var(--danger);border-color:var(--danger);width:100%;margin-top:8px" onclick="signOut()">Sign Out</button>` : ''}`);
 }
 
 function updateFocusDur(m) {
@@ -4234,7 +4397,9 @@ async function loadTokenBalance() {
   try {
     const r = await fetch('/api/billing/balance');
     if (!r.ok) return;
-    _tokenBalance = await r.json();
+    const data = await r.json();
+    if (data.error) return; // not_authenticated or other error — skip update
+    _tokenBalance = data;
     const fmt = n => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+'M'
                    : n >= 1_000     ? Math.round(n/1_000)+'k'
                    : String(n);

@@ -6263,7 +6263,8 @@ em{color:var(--accent);font-style:italic}
     <button class="btn-sm" id="btn-creds" title="API Credentials"><i class="fas fa-key"></i></button>
     <button class="btn-sm" id="btn-topup" title="Buy More Tokens" onclick="openTopupModal()" style="background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.4);color:#10b981;display:flex;align-items:center;gap:4px"><i class="fas fa-coins"></i><span id="token-balance-display" style="font-size:10px;font-weight:700;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span></button>
     <button class="btn-sm" id="btn-pricing"><i class="fas fa-star"></i> Pro</button>
-    <button class="btn-sm" id="btn-invite"><i class="fas fa-user-plus"></i></button>
+    <button class="btn-sm" id="btn-invite" title="Invite friends — earn tokens"><i class="fas fa-user-plus"></i></button>
+    <button class="btn-sm" id="pwa-install-btn" onclick="triggerPwaInstall()" title="Add FlowState to home screen" style="display:none"><i class="fas fa-download"></i></button>
     <button class="btn-sm" id="btn-settings"><i class="fas fa-gear"></i></button>
   </div>
 </div>
@@ -7446,6 +7447,40 @@ const FS_SLACK    = ${slackJson};
 const FS_ONBOARDED= ${onboardedJson};
 </script>
 <script src="/static/app.js"></script>
+<script>
+// ── Service Worker registration ──────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/static/sw.js', { scope: '/' })
+      .then(reg => {
+        // Check for updates every 30 min
+        setInterval(() => reg.update(), 1800000);
+      })
+      .catch(() => {}); // Fail silently
+  });
+}
+// ── PWA install prompt — capture and show at right moment ────────────────────
+let _pwaInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  _pwaInstallPrompt = e;
+  // Show an "Add to Home Screen" button after first focus session
+  const btn = document.getElementById('pwa-install-btn');
+  if (btn) btn.style.display = 'flex';
+});
+window.addEventListener('appinstalled', () => {
+  _pwaInstallPrompt = null;
+  const btn = document.getElementById('pwa-install-btn');
+  if (btn) btn.style.display = 'none';
+  if (typeof notify === 'function') notify('⚡ FlowState added to your home screen!', 'success');
+});
+function triggerPwaInstall() {
+  if (_pwaInstallPrompt) {
+    _pwaInstallPrompt.prompt();
+    _pwaInstallPrompt.userChoice.then(() => { _pwaInstallPrompt = null; });
+  }
+}
+</script>
 </body>
 </html>
 `)})
@@ -7705,4 +7740,376 @@ app.get('/api/r2/presign/:key{.+}', async (c) => {
   }
 })
 
-export default app
+// ══════════════════════════════════════════════════════════════════════════════
+// TIER 3 — REFERRAL SYSTEM
+// ══════════════════════════════════════════════════════════════════════════════
+
+// POST /api/referral/generate — create or return an existing referral code
+app.post('/api/referral/generate', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const db = c.env?.DB
+  if (!db) return c.json({ error: 'db_unavailable' }, 503)
+
+  try {
+    // Check if user already has an unused (or partially used) code
+    const existing = await db.prepare(
+      `SELECT code FROM referrals WHERE referrer_email=? ORDER BY created_at DESC LIMIT 1`
+    ).bind(session.email).first() as any
+    if (existing?.code) {
+      const baseUrl = new URL(c.req.url).origin
+      return c.json({
+        code: existing.code,
+        url: `${baseUrl}/?ref=${existing.code}`,
+        shareText: `${session.name || 'Someone'} invited you to FlowState — the focus OS for builders. Use their link for a free 30-day Pro trial!`,
+      })
+    }
+    // Generate new code
+    const code = 'FS-' + Math.random().toString(36).slice(2, 8).toUpperCase()
+    await db.prepare(
+      `INSERT INTO referrals (code, referrer_email, referrer_name) VALUES (?, ?, ?)`
+    ).bind(code, session.email, session.name || '').run()
+    const baseUrl = new URL(c.req.url).origin
+    return c.json({
+      code,
+      url: `${baseUrl}/?ref=${code}`,
+      shareText: `${session.name || 'Someone'} invited you to FlowState — the focus OS for builders. Use their link for a free 30-day Pro trial!`,
+    })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// GET /api/referral/stats — how many people have used my code
+app.get('/api/referral/stats', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const db = c.env?.DB
+  if (!db) return c.json({ error: 'db_unavailable' }, 503)
+
+  try {
+    const rows = await db.prepare(
+      `SELECT code, used_by_email, used_at, bonus_granted FROM referrals WHERE referrer_email=? ORDER BY created_at DESC LIMIT 20`
+    ).bind(session.email).all() as any
+    const total   = rows.results?.length || 0
+    const claimed = (rows.results as any[])?.filter((r: any) => r.used_by_email).length || 0
+    const latest  = (rows.results as any[])?.[0]
+    return c.json({ total, claimed, code: latest?.code, bonusGranted: latest?.bonus_granted === 1 })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// GET /api/referral/claim?ref=FS-XXXXX — called on first sign-in when ?ref= param is present
+// Marks the code as used and grants bonus tokens to both parties
+app.get('/api/referral/claim', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const db = c.env?.DB
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  const code  = c.req.query('ref')?.toUpperCase()
+  if (!code) return c.json({ error: 'missing_code' }, 400)
+  if (!db)   return c.json({ error: 'db_unavailable' }, 503)
+
+  try {
+    const ref = await db.prepare(
+      `SELECT * FROM referrals WHERE code=?`
+    ).bind(code).first() as any
+    if (!ref) return c.json({ error: 'invalid_code' }, 404)
+    if (ref.used_by_email) return c.json({ error: 'code_already_used' }, 409)
+    if (ref.referrer_email === session.email) return c.json({ error: 'self_referral' }, 400)
+
+    // Mark code as used
+    await db.prepare(
+      `UPDATE referrals SET used_by_email=?, used_at=datetime('now') WHERE code=?`
+    ).bind(session.email, code).run()
+
+    // Grant 10,000 bonus tokens to new user via Redis
+    if (url && token) {
+      const newUserKey = `token_balance:${encodeURIComponent(session.email)}`
+      const referrerKey = `token_balance:${encodeURIComponent(ref.referrer_email)}`
+      await redisPipeline(url, token, [
+        ['INCRBY', newUserKey, '10000'],
+        ['INCRBY', referrerKey, '5000'],
+      ])
+      // Mark bonus granted in D1
+      await db.prepare(
+        `UPDATE referrals SET bonus_granted=1 WHERE code=?`
+      ).bind(code).run()
+    }
+    return c.json({ ok: true, bonusTokens: 10000, referrerBonus: 5000, referrerName: ref.referrer_name || 'your friend' })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TIER 3 — PUBLIC FLOWSCORE PROFILES
+// ══════════════════════════════════════════════════════════════════════════════
+
+// POST /api/profile/setup — create or update public profile
+app.post('/api/profile/setup', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const db = c.env?.DB
+  if (!db) return c.json({ error: 'db_unavailable' }, 503)
+
+  const { slug, displayName, tagline, showScore, showStreak, showOutputs, showWeekly } = await c.req.json()
+  // Validate slug: lowercase alphanumeric + hyphens, 3-30 chars
+  const cleanSlug = (slug || '').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30)
+  if (cleanSlug.length < 3) return c.json({ error: 'slug_too_short' }, 400)
+
+  try {
+    const user = await db.prepare(`SELECT id FROM users WHERE email=?`).bind(session.email).first() as any
+    if (!user) return c.json({ error: 'user_not_found' }, 404)
+    // Check slug uniqueness (except own profile)
+    const conflict = await db.prepare(
+      `SELECT email FROM public_profiles WHERE slug=? AND email != ?`
+    ).bind(cleanSlug, session.email).first()
+    if (conflict) return c.json({ error: 'slug_taken' }, 409)
+
+    await db.prepare(`
+      INSERT INTO public_profiles (user_id, email, slug, display_name, tagline, show_score, show_streak, show_outputs, show_weekly, avatar_url, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(email) DO UPDATE SET
+        slug=excluded.slug, display_name=excluded.display_name, tagline=excluded.tagline,
+        show_score=excluded.show_score, show_streak=excluded.show_streak,
+        show_outputs=excluded.show_outputs, show_weekly=excluded.show_weekly,
+        avatar_url=excluded.avatar_url, updated_at=datetime('now')
+    `).bind(
+      user.id, session.email, cleanSlug,
+      displayName || session.name || '', tagline || null,
+      showScore !== false ? 1 : 0, showStreak !== false ? 1 : 0,
+      showOutputs ? 1 : 0, showWeekly ? 1 : 0,
+      session.picture || null
+    ).run()
+    return c.json({ ok: true, slug: cleanSlug, url: `${new URL(c.req.url).origin}/u/${cleanSlug}` })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// GET /api/profile/me — fetch own profile settings
+app.get('/api/profile/me', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const db = c.env?.DB
+  if (!db) return c.json({ error: 'db_unavailable' }, 503)
+  const profile = await db.prepare(`SELECT * FROM public_profiles WHERE email=?`).bind(session.email).first()
+  return c.json({ profile: profile || null })
+})
+
+// GET /u/:slug — public profile page
+app.get('/u/:slug', async (c) => {
+  const db = c.env?.DB
+  if (!db) return c.html('<h1>Profile unavailable</h1>', 503)
+  const slug = c.req.param('slug').toLowerCase()
+
+  const profile = await db.prepare(
+    `SELECT * FROM public_profiles WHERE slug=?`
+  ).bind(slug).first() as any
+  if (!profile) return c.html(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Profile not found — FlowState</title></head><body style="font-family:system-ui;background:#0a0a12;color:#f0f0f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><div style="font-size:48px">⚡</div><h1>Profile not found</h1><p style="color:#888">This FlowState profile doesn't exist yet.</p><a href="/" style="color:#a855f7;text-decoration:none;font-weight:700">← Open FlowState</a></div></body></html>`, 404)
+
+  // Fetch stats from D1
+  let flowScore = 0, focusMin = 0, sessions7 = 0, streak = 0
+  let outputBreakdown: Record<string, number> = {}
+  try {
+    const since30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+    const since7  = new Date(Date.now() - 7  * 86400000).toISOString().slice(0, 10)
+    const { results } = await db.prepare(
+      `SELECT duration_mins, focus_score, output_type, session_date FROM sessions WHERE email=? AND session_date>=? AND phase='focus' AND completed=1 ORDER BY session_date DESC`
+    ).bind(profile.email, since30).all() as any
+    const week = (results as any[]).filter((r: any) => r.session_date >= since7)
+    focusMin   = week.reduce((s: number, r: any) => s + (r.duration_mins || 0), 0)
+    sessions7  = week.length
+    const daySet = new Set((results as any[]).map((r: any) => r.session_date))
+    const today = new Date()
+    for (let i = 0; i < 365; i++) { const d = new Date(today); d.setDate(d.getDate() - i); if (daySet.has(d.toISOString().slice(0, 10))) streak++; else if (i > 0) break; }
+    flowScore  = Math.min(100, Math.round((focusMin / 120) * 40 + (sessions7 / 5) * 30 + Math.min(streak, 7) * 4 + (sessions7 > 0 ? 15 : 0)))
+    ;(results as any[]).forEach((r: any) => { if (r.output_type) outputBreakdown[r.output_type] = (outputBreakdown[r.output_type] || 0) + 1 })
+  } catch (_) {}
+
+  const scoreColor = flowScore >= 70 ? '#10b981' : flowScore >= 40 ? '#a855f7' : '#f59e0b'
+  const circumference = 163.4
+  const dashOffset = circumference - (flowScore / 100) * circumference
+  const outputChips = Object.entries(outputBreakdown).sort((a, b) => b[1] - a[1]).slice(0, 6)
+    .map(([t, n]) => `<span style="background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.25);border-radius:99px;padding:4px 12px;font-size:12px;color:#c084fc;margin:3px;display:inline-block">${t} ×${n}</span>`).join('')
+
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta property="og:title" content="${profile.display_name} — FlowState">
+  <meta property="og:description" content="FlowScore ${flowScore} · ${sessions7} sessions this week · ${streak}-day streak">
+  <meta property="og:image" content="https://flowst8.cc/static/og-card.png">
+  <meta name="twitter:card" content="summary">
+  <title>${profile.display_name} — FlowState</title>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:system-ui,-apple-system,sans-serif;background:#0a0a12;color:#f0f0f0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+    .card{background:#12102a;border:1px solid rgba(168,85,247,.25);border-radius:24px;padding:32px;max-width:420px;width:100%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+    .logo{font-size:13px;font-weight:800;color:#a855f7;letter-spacing:1px;text-transform:uppercase;margin-bottom:24px;display:flex;align-items:center;justify-content:center;gap:6px}
+    .avatar{width:72px;height:72px;border-radius:50%;border:3px solid ${scoreColor};margin:0 auto 12px;object-fit:cover;background:#1a1a2e}
+    .name{font-size:22px;font-weight:900;margin-bottom:4px}
+    .tagline{font-size:13px;color:#888;margin-bottom:24px}
+    .score-wrap{position:relative;width:100px;height:100px;margin:0 auto 20px}
+    .score-inner{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+    .score-num{font-size:28px;font-weight:900;color:${scoreColor};line-height:1}
+    .score-lbl{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.8px;margin-top:2px}
+    .stats{display:flex;gap:12px;justify-content:center;margin-bottom:20px;flex-wrap:wrap}
+    .stat{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px 16px;min-width:80px}
+    .stat-val{font-size:20px;font-weight:800;color:#f0f0f0}
+    .stat-lbl{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+    .outputs{margin-bottom:20px;flex-wrap:wrap;display:flex;justify-content:center}
+    .cta{display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:12px;font-weight:700;font-size:14px;margin-top:4px}
+    .cta:hover{opacity:.9}
+    .badge{font-size:10px;color:#555;margin-top:16px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo"><span>⚡</span> FLOWSTATE</div>
+    ${profile.avatar_url ? `<img class="avatar" src="${profile.avatar_url}" alt="${profile.display_name}" onerror="this.style.display='none'">` : `<div class="avatar" style="display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:900;color:${scoreColor}">${(profile.display_name||'?')[0].toUpperCase()}</div>`}
+    <div class="name">${profile.display_name || 'FlowState User'}</div>
+    ${profile.tagline ? `<div class="tagline">${profile.tagline}</div>` : '<div class="tagline">Building in flow 🔥</div>'}
+    ${profile.show_score ? `
+    <div class="score-wrap">
+      <svg width="100" height="100" viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="42" fill="none" stroke="rgba(168,85,247,.15)" stroke-width="8"/>
+        <circle cx="50" cy="50" r="42" fill="none" stroke="${scoreColor}" stroke-width="8"
+          stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"
+          stroke-linecap="round" transform="rotate(-90 50 50)"/>
+      </svg>
+      <div class="score-inner">
+        <div class="score-num">${flowScore}</div>
+        <div class="score-lbl">FlowScore</div>
+      </div>
+    </div>` : ''}
+    <div class="stats">
+      ${profile.show_streak ? `<div class="stat"><div class="stat-val">${streak}🔥</div><div class="stat-lbl">Day Streak</div></div>` : ''}
+      <div class="stat"><div class="stat-val">${focusMin}m</div><div class="stat-lbl">This Week</div></div>
+      <div class="stat"><div class="stat-val">${sessions7}</div><div class="stat-lbl">Sessions</div></div>
+    </div>
+    ${profile.show_outputs && outputChips ? `<div class="outputs">${outputChips}</div>` : ''}
+    <a href="https://flowst8.cc" class="cta">Start Your FlowScore →</a>
+    <div class="badge">Powered by FlowState · flowst8.cc</div>
+  </div>
+</body>
+</html>`)
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TIER 3 — SCHEDULED WEEKLY DIGEST (Cloudflare Cron Trigger)
+// Fires every Monday at 9:00 UTC via wrangler.jsonc triggers config.
+// Sends weekly recap email to all users who have sessions in the past 7 days.
+// ══════════════════════════════════════════════════════════════════════════════
+async function scheduledHandler(event: any, env: any, ctx: any) {
+  const db     = env?.DB
+  const resendKey = env?.RESEND_API_KEY as string | undefined
+  if (!db || !resendKey) return
+
+  try {
+    const since7 = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10)
+    // Get all unique emails that had a session in the past 7 days
+    const { results } = await db.prepare(
+      `SELECT DISTINCT email FROM sessions WHERE session_date>=? AND phase='focus' AND completed=1 LIMIT 500`
+    ).bind(since7).all() as any
+
+    for (const row of (results as any[])) {
+      try {
+        // Fetch their stats (same logic as /api/email/weekly-digest)
+        const since30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+        const { results: sRows } = await db.prepare(
+          `SELECT duration_mins, focus_score, output_type, session_date FROM sessions WHERE email=? AND session_date>=? AND phase='focus' AND completed=1 ORDER BY session_date DESC`
+        ).bind(row.email, since30).all() as any
+        const week = (sRows as any[]).filter((r: any) => r.session_date >= since7)
+        if (week.length === 0) continue
+        const focusMin   = week.reduce((s: number, r: any) => s + (r.duration_mins || 0), 0)
+        const sessions7  = week.length
+        const daySet = new Set((sRows as any[]).map((r: any) => r.session_date))
+        let streak = 0
+        const today = new Date()
+        for (let i = 0; i < 365; i++) { const d = new Date(today); d.setDate(d.getDate() - i); if (daySet.has(d.toISOString().slice(0, 10))) streak++; else if (i > 0) break; }
+        const flowScore = Math.min(100, Math.round((focusMin / 120) * 40 + (sessions7 / 5) * 30 + Math.min(streak, 7) * 4 + (sessions7 > 0 ? 15 : 0)))
+        const scoreColor = flowScore >= 70 ? '#10b981' : flowScore >= 40 ? '#a855f7' : '#f59e0b'
+        const wins: string[] = []
+        const improve: string[] = []
+        if (sessions7 >= 5) wins.push(`${sessions7} focus sessions this week 🎯`)
+        if (streak >= 3) wins.push(`${streak}-day streak 🔥`)
+        if (focusMin >= 120) wins.push(`${focusMin} minutes of deep work`)
+        if (sessions7 < 3) improve.push('Aim for 5+ sessions next week')
+        if (streak === 0) improve.push('Start a streak — 1 session/day compounds fast')
+        const weekStr = `${new Date(Date.now()-7*86400000).toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'})}`
+        const winsHtml = wins.length ? wins.map(w=>`<li style="padding:4px 0;color:#d0d0d0">${w}</li>`).join('') : '<li style="color:#666">Keep going!</li>'
+        const improvHtml = improve.length ? improve.map(i=>`<li style="padding:4px 0;color:#d0d0d0">${i}</li>`).join('') : '<li style="color:#888">Looking great!</li>'
+
+        const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#0a0a12;font-family:system-ui,-apple-system,sans-serif;color:#f0f0f0">
+<div style="max-width:560px;margin:0 auto;padding:32px 24px">
+  <div style="text-align:center;margin-bottom:24px"><div style="font-size:28px">⚡</div>
+    <h1 style="font-size:20px;font-weight:900;margin:4px 0;background:linear-gradient(135deg,#a855f7,#ec4899);-webkit-background-clip:text;-webkit-text-fill-color:transparent">FLOWSTATE</h1>
+    <div style="font-size:12px;color:#666">Weekly Review — ${weekStr}</div>
+  </div>
+  <div style="text-align:center;margin-bottom:20px">
+    <div style="display:inline-block;background:#12102a;border:2px solid ${scoreColor};border-radius:20px;padding:14px 28px">
+      <div style="font-size:44px;font-weight:900;color:${scoreColor};line-height:1">${flowScore}</div>
+      <div style="font-size:11px;color:#888;margin-top:4px;text-transform:uppercase;letter-spacing:1px">FlowScore</div>
+    </div>
+  </div>
+  <div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;justify-content:center">
+    <div style="background:#12102a;border:1px solid #2a2a3e;border-radius:12px;padding:12px 18px;text-align:center">
+      <div style="font-size:22px;font-weight:800;color:#a855f7">${focusMin}m</div><div style="font-size:11px;color:#666">Focus Time</div>
+    </div>
+    <div style="background:#12102a;border:1px solid #2a2a3e;border-radius:12px;padding:12px 18px;text-align:center">
+      <div style="font-size:22px;font-weight:800;color:#ec4899">${sessions7}</div><div style="font-size:11px;color:#666">Sessions</div>
+    </div>
+    <div style="background:#12102a;border:1px solid #2a2a3e;border-radius:12px;padding:12px 18px;text-align:center">
+      <div style="font-size:22px;font-weight:800;color:#f59e0b">${streak}🔥</div><div style="font-size:11px;color:#666">Day Streak</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px">
+    <div style="background:#12102a;border:1px solid #1a2e1a;border-radius:12px;padding:14px">
+      <div style="font-size:11px;font-weight:700;color:#10b981;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">🏆 Wins</div>
+      <ul style="margin:0;padding:0 0 0 14px;font-size:12px">${winsHtml}</ul>
+    </div>
+    <div style="background:#12102a;border:1px solid #2e2a1a;border-radius:12px;padding:14px">
+      <div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">🚀 Level Up</div>
+      <ul style="margin:0;padding:0 0 0 14px;font-size:12px">${improvHtml}</ul>
+    </div>
+  </div>
+  <div style="text-align:center;margin-bottom:24px">
+    <a href="https://flowst8.cc" style="display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:12px 32px;border-radius:12px;font-weight:700;font-size:14px">Start This Week →</a>
+  </div>
+  <div style="text-align:center;font-size:11px;color:#333">FlowState · <a href="https://flowst8.cc" style="color:#555">flowst8.cc</a></div>
+</div></body></html>`
+
+        await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from: 'FlowState <weekly@flowst8.cc>',
+            to: [row.email],
+            subject: `⚡ Your FlowScore this week: ${flowScore} — ${weekStr}`,
+            html,
+          })
+        })
+        // Small delay to avoid rate limiting
+        await new Promise(r => setTimeout(r, 200))
+      } catch (_) { /* continue with next user on individual failure */ }
+    }
+  } catch (err: any) {
+    console.error('Cron weekly digest error:', err.message)
+  }
+}
+
+// Cloudflare Workers scheduled event handler (cron trigger)
+// Registered in wrangler.jsonc triggers.crons
+const handler = {
+  fetch: app.fetch.bind(app),
+  scheduled: scheduledHandler,
+}
+
+export default handler
