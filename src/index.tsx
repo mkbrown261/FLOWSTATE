@@ -230,6 +230,14 @@ app.get('/api/auth/me', async (c) => {
   return c.json({ authenticated: true, name: session.name, email: session.email, picture: session.picture, provider: session.provider })
 })
 
+// GET version so users can clear session by visiting the URL directly
+app.get('/api/auth/logout', (c) => {
+  deleteCookie(c, 'fs_session', { path: '/' })
+  deleteCookie(c, 'fs_notion', { path: '/' })
+  deleteCookie(c, 'fs_slack', { path: '/' })
+  return c.redirect('/')
+})
+
 app.post('/api/auth/logout', async (c) => {
   deleteCookie(c, 'fs_session', { path: '/' })
   deleteCookie(c, 'fs_notion', { path: '/' })
@@ -432,7 +440,7 @@ app.get('/api/calendar/events', async (c) => {
       start:  e.start?.dateTime || e.start?.date,
       end:    e.end?.dateTime   || e.end?.date,
       allDay: !e.start?.dateTime,
-      color:  e.colorId ? 'hsl(' + (parseInt(e.colorId) * 37) + ', 60%, 60%)' : 'var(--accent-primary)',
+      color:  'hsl(' + (parseInt(e.colorId || '8') * 37) + ', 60%, 60%)',
     }))
     return c.json({ events, count: events.length })
   } catch (err: any) { return c.json({ error: err.message, events: [] }, 500) }
@@ -5280,14 +5288,19 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .btn-send{width:42px;height:42px;border-radius:11px;background:var(--grad);border:none;color:#fff;font-size:15px;cursor:pointer;transition:.2s;flex-shrink:0;display:flex;align-items:center;justify-content:center}
 .chat-suggest-chip{background:var(--bg-panel);border:1px solid var(--border);color:var(--text-m);padding:7px 13px;border-radius:20px;font-size:12.5px;cursor:pointer;transition:.2s;white-space:nowrap}
 .chat-suggest-chip:hover{border-color:var(--accent);color:var(--accent);background:rgba(168,85,247,.07)}
-.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:14px}
-.cal-hd{text-align:center;font-size:10px;font-weight:700;color:var(--text-m);padding:5px;text-transform:uppercase;letter-spacing:1px}
-.cal-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:.2s;position:relative;border:1px solid transparent}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:14px}
+.cal-hd{text-align:center;font-size:10px;font-weight:700;color:#aaa;padding:5px 3px;text-transform:uppercase;letter-spacing:1px}
+.cal-day{min-height:64px;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;padding:6px 7px 4px;border-radius:9px;font-size:12px;font-weight:600;cursor:pointer;transition:.2s;position:relative;border:1px solid transparent;overflow:hidden}
 .cal-day:hover{background:rgba(168,85,247,.1);border-color:var(--border)}
-.cal-day.today{background:rgba(168,85,247,.15);border-color:var(--accent);color:var(--accent);font-weight:900}
-.cal-day.has-ev::after{content:'';position:absolute;bottom:3px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--accent)}
-.cal-day.other{opacity:.25;cursor:default}
-.ev-list{display:flex;flex-direction:column;gap:7px;margin-top:4px}
+.cal-day.today{background:transparent;border-color:rgba(168,85,247,.4)}
+.cal-day.today .cal-day-num{background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+.cal-day.has-ev .cal-day-dot{display:block}
+.cal-day-num{font-size:12px;font-weight:600;color:var(--text-p);line-height:1;margin-bottom:3px}
+.cal-day-dot{display:none;width:5px;height:5px;border-radius:50%;background:var(--accent);margin-top:2px}
+.cal-day-events{display:flex;flex-direction:column;gap:2px;width:100%;margin-top:2px}
+.cal-day-ev-chip{font-size:10px;font-weight:500;color:#fff;padding:1px 4px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.cal-day.other{opacity:.2;cursor:default}
+.ev-list{display:flex;flex-direction:column;gap:7px;margin-top:8px}
 .ev-item{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--bg-panel);border:1px solid var(--border);border-radius:11px;cursor:pointer;transition:.2s}
 .ev-item:hover{border-color:var(--border-h)}
 .ev-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}

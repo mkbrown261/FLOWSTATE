@@ -1472,18 +1472,36 @@ function renderCalGrid() {
   const total = new Date(year,month+1,0).getDate();
   const prevTotal = new Date(year,month,0).getDate();
   let html = days.map(d=>`<div class="cal-hd">${d}</div>`).join('');
-  for (let i=0;i<first;i++) html += `<div class="cal-day other">${prevTotal-first+i+1}</div>`;
+  // Filler days from previous month
+  for (let i=0;i<first;i++) {
+    html += `<div class="cal-day other"><span class="cal-day-num">${prevTotal-first+i+1}</span></div>`;
+  }
   for (let d=1;d<=total;d++) {
     const isToday = year===now.getFullYear()&&month===now.getMonth()&&d===now.getDate();
     const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const hasEv = state.cal.events.some(e=>{
-      const s = e.start?.dateTime || e.start?.date || e.start || '';
+    // Get events for this day (up to 3 chips)
+    const dayEvs = state.cal.events.filter(e=>{
+      const s = e.start || '';
       return typeof s==='string' && s.startsWith(dateStr);
     });
-    html += `<div class="cal-day ${isToday?'today':''} ${hasEv?'has-ev':''}" onclick="clickCalDay('${dateStr}')">${d}</div>`;
+    const hasEv = dayEvs.length > 0;
+    // Build mini event chips inside the cell
+    const chipsHtml = dayEvs.slice(0,3).map(e=>{
+      const timeStr = e.allDay ? '' : new Date(e.start).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+      const label = (timeStr ? timeStr + ' ' : '') + escHtml(e.summary||'');
+      // Use a safe colour — CSS variable strings can't be used in inline rgba
+      const safeColor = (e.color && e.color.startsWith('hsl')) ? e.color : '#a855f7';
+      return `<div class="cal-day-ev-chip" style="background:${safeColor};opacity:0.85;border-left:2px solid ${safeColor}">${label}</div>`;
+    }).join('');
+    const moreHtml = dayEvs.length > 3 ? `<div style="font-size:9px;color:#aaa;margin-top:1px">+${dayEvs.length-3} more</div>` : '';
+    html += `<div class="cal-day ${isToday?'today':''} ${hasEv?'has-ev':''}" onclick="clickCalDay('${dateStr}')">
+      <span class="cal-day-num">${d}</span>
+      <div class="cal-day-dot"></div>
+      <div class="cal-day-events">${chipsHtml}${moreHtml}</div>
+    </div>`;
   }
   const remaining = 42 - first - total;
-  for (let d=1;d<=remaining;d++) html += `<div class="cal-day other">${d}</div>`;
+  for (let d=1;d<=remaining;d++) html += `<div class="cal-day other"><span class="cal-day-num">${d}</span></div>`;
   grid.innerHTML = html;
 }
 
@@ -1610,7 +1628,7 @@ function renderEvents(events) {
     const dateLabel = d ? d.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' }) : '';
     const timeLabel = (d && !ev.allDay) ? d.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true }) : 'All day';
     return `<div class="ev-item">
-      <div class="ev-dot" style="background:${ev.color||'var(--accent)'}"></div>
+      <div class="ev-dot" style="background:${(ev.color&&ev.color.startsWith('hsl'))?ev.color:'#a855f7'}"></div>
       <div style="flex:1;min-width:0">
         <div class="ev-sum">${escHtml(ev.summary||'(no title)')}</div>
         <div class="ev-time" style="font-size:10px;opacity:.6">${dateLabel} · ${timeLabel}</div>
