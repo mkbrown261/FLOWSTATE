@@ -368,25 +368,22 @@ function showMainApp(isDemo=false) {
   setupTabListeners();
   setupAmbientChips();
   maybeShowTip();
-  checkBillingReturn();
   loadTokenBalance();
-  switchTab('focus');
+  // Check URL params FIRST to determine which tab to open
+  const _startTab = checkBillingReturn();
+  switchTab(_startTab || 'focus');
 }
 
 function checkBillingReturn() {
   const params = new URLSearchParams(window.location.search);
 
   // Handle ?tab=calendar&cal_synced=1 — returned from calendar reconnect flow
-  // Switch to calendar tab immediately and load events with the fresh token
   if (params.get('tab') === 'calendar') {
     window.history.replaceState({}, '', window.location.pathname);
-    setTimeout(() => {
-      switchTab('calendar');
-      if (params.get('cal_synced') === '1') {
-        notify('✅ Google Calendar reconnected! Loading your events…', 'success');
-      }
-    }, 400);
-    return;
+    if (params.get('cal_synced') === '1') {
+      setTimeout(() => notify('✅ Google Calendar reconnected! Loading your events…', 'success'), 600);
+    }
+    return 'calendar'; // tell showMainApp to open this tab instead of focus
   }
 
   const billing = params.get('billing');
@@ -1515,8 +1512,10 @@ function loadCalEvents() {
     .then(d => {
       // Check for auth error FIRST — API always returns events:[] even on 401
       if (d.error === 'not_authenticated') {
-        // Token expired and no refresh_token — show reconnect prompt
         _showCalReconnectBanner();
+        // Also show the top resync notice
+        const notice = document.getElementById('cal-resync-notice');
+        if (notice) notice.style.display = 'flex';
         renderCalGrid();
         return;
       }
@@ -1534,10 +1533,9 @@ function loadCalEvents() {
         // Hide reconnect banner if previously shown
         const rb = document.getElementById('cal-reconnect-banner');
         if (rb) rb.style.display = 'none';
-        // If signed in but zero events returned, show the re-sync nudge
-        // (covers case where Google Calendar API was just enabled — old token needs refresh)
+        // Hide re-sync notice if events loaded successfully
         const notice = document.getElementById('cal-resync-notice');
-        if (notice) notice.style.display = d.events.length === 0 ? 'flex' : 'none';
+        if (notice) notice.style.display = 'none';
       }
     })
     .catch(() => { renderCalGrid(); });
