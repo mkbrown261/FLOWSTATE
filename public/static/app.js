@@ -2193,7 +2193,7 @@ function saveFocusSession() {
         setTimeout(() => _showPostSessionShareNudge(durationMin, outputType), 800);
       }
     }).catch(() => {}).finally(() => {
-      if (btn) { btn.disabled = false; btn.textContent = 'Save Session →'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Save →'; }
       closeFocusPrompt();
     });
   } else {
@@ -2240,6 +2240,7 @@ function _addSessionToCalendar(durationMin, startISO) {
   const calRow = document.getElementById('fcp-cal-row');
   fetch('/api/calendar/block', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({
       title: `🍅 Focus Session — FlowState`,
       start: startISO || new Date(Date.now() - durationMin * 60 * 1000).toISOString(),
@@ -7409,30 +7410,40 @@ function _renderCoachUI(data) {
   const c = data.coaching || {};
   const s = data.stats || {};
   const moodColor = { inspired:'#a855f7', impressed:'#10b981', encouraging:'#f59e0b', concerned:'#ef4444' };
-  const mc = moodColor[c.coachMood] || '#a855f7';
-  const peakTime = s.peakHour != null ? `${s.peakHour}:00` : 'N/A';
+  // Whitelist coachMood to prevent CSS injection
+  const safeMood = ['inspired','impressed','encouraging','concerned'].includes(c.coachMood) ? c.coachMood : 'inspired';
+  const mc = moodColor[safeMood];
+  const peakTime = (s.peakHour != null && Number.isInteger(s.peakHour)) ? `${s.peakHour}:00` : 'N/A';
+  // Escape all AI-returned strings and user data to prevent XSS
+  const badge      = escHtml(c.badge       || '⚡');
+  const badgeLabel = escHtml(c.badgeLabel  || 'Flow Builder');
+  const headline   = escHtml(c.headline    || 'Keep building momentum');
+  const insight    = escHtml(c.insight     || 'Loading...');
+  const tip        = escHtml(c.tip         || 'Keep showing up daily — consistency beats intensity.');
+  const topOutput  = escHtml(s.topOutput   || 'None logged');
+  const peakDays   = escHtml((s.peakDays || []).join(', ') || 'N/A');
 
   el.innerHTML = `
     <!-- Badge + Headline -->
     <div style="background:linear-gradient(135deg,rgba(168,85,247,.1),rgba(236,72,153,.06));border:1px solid rgba(168,85,247,.25);border-radius:14px;padding:20px;margin-bottom:16px;text-align:center">
-      <div style="font-size:44px;margin-bottom:6px">${c.badge || '⚡'}</div>
-      <div style="font-size:13px;font-weight:800;color:${mc};text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">${c.badgeLabel || 'Flow Builder'}</div>
-      <div style="font-size:18px;font-weight:900;color:#f0f0f0;line-height:1.3;margin-bottom:10px">${c.headline || 'Keep building momentum'}</div>
-      <p style="color:#c084fc;font-size:13px;line-height:1.6;margin:0">${c.insight || 'Loading...'}</p>
+      <div style="font-size:44px;margin-bottom:6px">${badge}</div>
+      <div style="font-size:13px;font-weight:800;color:${mc};text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">${badgeLabel}</div>
+      <div style="font-size:18px;font-weight:900;color:#f0f0f0;line-height:1.3;margin-bottom:10px">${headline}</div>
+      <p style="color:#c084fc;font-size:13px;line-height:1.6;margin:0">${insight}</p>
     </div>
 
     <!-- Stats grid -->
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center">
-        <div style="font-size:22px;font-weight:900;color:#a855f7">${s.sessions || 0}</div>
+        <div style="font-size:22px;font-weight:900;color:#a855f7">${parseInt(s.sessions)||0}</div>
         <div style="font-size:10px;color:var(--text-s);margin-top:2px">Sessions</div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center">
-        <div style="font-size:22px;font-weight:900;color:#10b981">${s.focusMin || 0}m</div>
+        <div style="font-size:22px;font-weight:900;color:#10b981">${parseInt(s.focusMin)||0}m</div>
         <div style="font-size:10px;color:var(--text-s);margin-top:2px">Focus Time</div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center">
-        <div style="font-size:22px;font-weight:900;color:#f59e0b">${s.streak || 0}🔥</div>
+        <div style="font-size:22px;font-weight:900;color:#f59e0b">${parseInt(s.streak)||0}🔥</div>
         <div style="font-size:10px;color:var(--text-s);margin-top:2px">Day Streak</div>
       </div>
     </div>
@@ -7442,16 +7453,16 @@ function _renderCoachUI(data) {
       <div style="font-weight:700;color:var(--text-m);margin-bottom:8px;font-size:11px;text-transform:uppercase;letter-spacing:.6px">📊 Your Patterns</div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;color:var(--text-s)">
         <span>🕐 Peak hour: <strong style="color:var(--text)">${peakTime}</strong></span>
-        <span>📅 Best days: <strong style="color:var(--text)">${(s.peakDays||[]).join(', ') || 'N/A'}</strong></span>
-        <span>🎯 Top output: <strong style="color:var(--text)">${s.topOutput || 'None logged'}</strong></span>
-        <span>📈 Avg score: <strong style="color:var(--text)">${s.avgScore || 0}/100</strong></span>
+        <span>📅 Best days: <strong style="color:var(--text)">${peakDays}</strong></span>
+        <span>🎯 Top output: <strong style="color:var(--text)">${topOutput}</strong></span>
+        <span>📈 Avg score: <strong style="color:var(--text)">${parseInt(s.avgScore)||0}/100</strong></span>
       </div>
     </div>
 
     <!-- Actionable tip -->
     <div style="background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.25);border-radius:10px;padding:14px;margin-bottom:16px">
       <div style="font-size:11px;font-weight:800;color:#a855f7;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">💡 Coach's Tip</div>
-      <p style="font-size:13px;color:#d0d0d0;line-height:1.6;margin:0">${c.tip || 'Keep showing up daily — consistency beats intensity.'}</p>
+      <p style="font-size:13px;color:#d0d0d0;line-height:1.6;margin:0">${tip}</p>
     </div>
 
     <div style="display:flex;gap:8px">
@@ -7474,7 +7485,8 @@ async function openPairingModal() {
     const res = await fetch('/api/pair/status', { credentials: 'include' });
     const data = await res.json();
     if (data.status === 'paired' && data.data?.partnerEmail) {
-      _pairState = { ...data.data, status: 'paired' };
+      const { pollTimer, pingTimer } = _pairState;
+      _pairState = { ...data.data, status: 'paired', pollTimer, pingTimer };
       _renderPairedUI();
       return;
     }
@@ -7537,7 +7549,8 @@ async function _joinPairQueue() {
       if (_pairState.pollTimer) clearInterval(_pairState.pollTimer);
       _pairState.pollTimer = setInterval(_pollPairStatus, 5000);
     } else if (data.status === 'already_paired') {
-      _pairState = { status: 'paired', partnerName: data.partner, sessionId: data.sessionId };
+      const { pollTimer, pingTimer } = _pairState;
+      _pairState = { status: 'paired', partnerName: data.partner, sessionId: data.sessionId, pollTimer, pingTimer };
       _renderPairedUI();
     }
   } catch(e) {
@@ -7551,7 +7564,8 @@ async function _pollPairStatus() {
     const data = await res.json();
     if (data.status === 'paired' && data.data?.partnerEmail) {
       clearInterval(_pairState.pollTimer);
-      _pairState = { ...data.data, status: 'paired' };
+      const { pingTimer } = _pairState;
+      _pairState = { ...data.data, status: 'paired', pollTimer: null, pingTimer };
       _renderPairedUI();
     } else if (data.status === 'none') {
       clearInterval(_pairState.pollTimer);

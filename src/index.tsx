@@ -2093,7 +2093,7 @@ app.get('/api/team/leaderboard', async (c) => {
         const today = new Date()
         for (let i = 0; i < 365; i++) { const d = new Date(today); d.setDate(d.getDate() - i); if (daySet.has(d.toISOString().slice(0, 10))) streak++; else if (i > 0) break; }
         const flowScore = Math.min(100, Math.round((focusMin / 120) * 40 + (sessions7 / 5) * 30 + Math.min(streak, 7) * 4 + (sessions7 > 0 ? 15 : 0)))
-        return { email: p.email, name: p.display_name || p.email.split('@')[0], avatar: p.avatar_url?.[0] || '⚡', slug: p.slug, flowScore, focusMin, streak, sessions: sessions7 }
+        return { email: p.email, name: p.display_name || p.email.split('@')[0], avatar: p.avatar_url || '⚡', slug: p.slug, flowScore, focusMin, streak, sessions: sessions7 }
       } catch (_) {
         return { email: p.email, name: p.display_name || 'Unknown', avatar: '⚡', slug: null, flowScore: 0, focusMin: 0, streak: 0, sessions: 0 }
       }
@@ -8000,7 +8000,7 @@ app.get('/u/:slug', async (c) => {
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta property="og:title" content="${profile.display_name} — FlowState">
   <meta property="og:description" content="FlowScore ${flowScore} · ${sessions7} sessions this week · ${streak}-day streak">
-  <meta property="og:image" content="https://flowst8.cc/static/og-card.png">
+  <meta property="og:image" content="https://flowst8.cc/static/og-card.svg">
   <meta name="twitter:card" content="summary">
   <title>${profile.display_name} — FlowState</title>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
@@ -8437,12 +8437,12 @@ app.get('/launch', async (c) => {
 <meta property="og:url" content="https://flowst8.cc/launch">
 <meta property="og:title" content="FlowState — Build in Flow 🚀">
 <meta property="og:description" content="The AI focus OS built for creators. Track sessions, generate music/video, manage releases, and measure your flow — all in one place.">
-<meta property="og:image" content="https://flowst8.cc/static/og-launch.png">
+<meta property="og:image" content="https://flowst8.cc/static/og-launch.svg">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:site" content="@flowst8cc">
 <meta name="twitter:title" content="FlowState — Build in Flow 🚀">
 <meta name="twitter:description" content="The AI focus OS for creators. Free to start.">
-<meta name="twitter:image" content="https://flowst8.cc/static/og-launch.png">
+<meta name="twitter:image" content="https://flowst8.cc/static/og-launch.svg">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <script src="https://cdn.tailwindcss.com"></script>
 <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
@@ -8757,10 +8757,13 @@ app.get('/widget.js', async (c) => {
   container.appendChild(div.firstChild);
 })();`
 
-  c.header('Content-Type', 'application/javascript; charset=UTF-8')
-  c.header('Cache-Control', 'public, max-age=300')
-  c.header('Access-Control-Allow-Origin', '*')
-  return c.text(js)
+  return new Response(js, {
+    headers: {
+      'Content-Type': 'application/javascript; charset=UTF-8',
+      'Cache-Control': 'public, max-age=300',
+      'Access-Control-Allow-Origin': '*',
+    }
+  })
 })
 
 // Widget embed page (for iframe use)
