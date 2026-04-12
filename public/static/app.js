@@ -2196,7 +2196,13 @@ function openSlackModal() {
     }
     const channels = d.channels || [];
     if (!channels.length) {
-      openModal(`<h2>💬 Slack</h2><div style="padding:20px;text-align:center;color:var(--text-m)">No channels found in your workspace yet.</div>`);
+      openModal(`<h2>💬 Slack</h2>
+        <div style="padding:20px;text-align:center">
+          <div style="font-size:36px;margin-bottom:12px">📭</div>
+          <p style="color:var(--text-m);font-size:13px;margin-bottom:16px">No channels found in your workspace.<br>Create one to get started.</p>
+          <input class="fs-in" id="sl-new-chan" placeholder="channel-name" style="width:100%;margin-bottom:10px">
+          <button class="btn-primary" style="width:100%" onclick="createSlackChannel()">Create Channel</button>
+        </div>`);
       return;
     }
     _renderSlackSendModal(channels);
@@ -2221,28 +2227,95 @@ function _connectSlackThenOpen() {
 }
 
 function _renderSlackSendModal(channels) {
-  openModal(`<h2>💬 Send Slack Message</h2>
-    <div style="margin-top:14px">
-      <label style="font-size:12px;color:var(--text-m)">Channel</label>
-      <select class="fs-sel" id="sl-chan" style="width:100%;margin:6px 0 12px">${channels.map(c=>`<option value="${c.id}">#${c.name}</option>`).join('')}</select>
-      <label style="font-size:12px;color:var(--text-m)">Message</label>
-      <textarea class="chat-in" id="sl-msg" style="width:100%;height:80px;margin-top:6px" placeholder="Type your message…"></textarea>
-      <div style="margin-top:10px;display:flex;gap:8px">
-        <button class="btn-primary" onclick="sendTestSlack()" style="flex:1">Send</button>
-        <button class="btn-sm" onclick="closeModal()">Cancel</button>
+  const chanOptions = channels.map(ch =>
+    `<option value="${ch.id}">#${ch.name}${ch.memberCount ? ' ('+ch.memberCount+' members)' : ''}</option>`
+  ).join('');
+  openModal(`
+    <h2 style="margin-bottom:4px">💬 Slack</h2>
+    <p style="font-size:12px;color:var(--text-m);margin:0 0 16px">Post a message to a channel in your Slack workspace.</p>
+
+    <div style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <label style="font-size:12px;color:var(--text-m);font-weight:600">Channel</label>
+        <button onclick="_showCreateChannelForm()" style="font-size:11px;color:var(--accent);background:none;border:none;cursor:pointer;padding:0">+ New channel</button>
       </div>
-    </div>`);
+      <select class="fs-sel" id="sl-chan" style="width:100%">
+        ${chanOptions}
+      </select>
+      <div id="sl-create-form" style="display:none;margin-top:8px;display:none">
+        <input class="fs-in" id="sl-new-chan" placeholder="channel-name (no spaces)" style="width:100%;margin-bottom:6px">
+        <div style="display:flex;gap:8px">
+          <button class="btn-primary" onclick="createSlackChannel()" style="flex:1;font-size:12px">Create</button>
+          <button class="btn-sm" onclick="document.getElementById('sl-create-form').style.display='none'" style="font-size:12px">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <label style="font-size:12px;color:var(--text-m);font-weight:600;display:block;margin-bottom:6px">Message</label>
+      <textarea class="chat-in" id="sl-msg" style="width:100%;height:80px" placeholder="Type your message…"></textarea>
+    </div>
+
+    <div style="display:flex;gap:8px">
+      <button class="btn-primary" onclick="sendSlackMessage()" style="flex:1">Send to Slack</button>
+      <button class="btn-sm" onclick="closeModal()">Cancel</button>
+    </div>
+  `);
 }
 
-function sendTestSlack() {
-  const chan = document.getElementById('sl-chan')?.value;
-  const msg  = document.getElementById('sl-msg')?.value;
-  if (!msg?.trim()) { notify('Enter a message','error'); return; }
-  fetch('/api/slack/message', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ channel:chan, text:msg })
-  }).then(r=>r.json()).then(d=>{ if(d.ok) { closeModal(); notify('Message sent!','success'); } else notify(d.error||'Send failed','error'); }).catch(()=>notify('Error sending','error'));
+function _showCreateChannelForm() {
+  const form = document.getElementById('sl-create-form');
+  if (form) form.style.display = form.style.display === 'none' ? 'block' : 'none';
 }
+
+function createSlackChannel() {
+  const name = document.getElementById('sl-new-chan')?.value?.trim();
+  if (!name) { notify('Enter a channel name', 'error'); return; }
+  const btn = document.querySelector('#sl-create-form .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+  fetch('/api/slack/create-channel', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  }).then(r => r.json()).then(d => {
+    if (d.ok && d.channel) {
+      // Add new channel to dropdown and select it
+      const sel = document.getElementById('sl-chan');
+      if (sel) {
+        const opt = document.createElement('option');
+        opt.value = d.channel.id;
+        opt.textContent = '#' + d.channel.name;
+        opt.selected = true;
+        sel.appendChild(opt);
+      }
+      document.getElementById('sl-create-form').style.display = 'none';
+      notify('#' + d.channel.name + ' created!', 'success');
+    } else {
+      notify(d.error || 'Could not create channel', 'error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Create'; }
+    }
+  }).catch(() => { notify('Error creating channel', 'error'); if (btn) { btn.disabled = false; btn.textContent = 'Create'; } });
+}
+
+function sendSlackMessage() {
+  const chan = document.getElementById('sl-chan')?.value;
+  const msg  = document.getElementById('sl-msg')?.value?.trim();
+  if (!msg) { notify('Enter a message', 'error'); return; }
+  const btn = document.querySelector('#sl-send-btn') || document.querySelector('.btn-primary[onclick="sendSlackMessage()"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  fetch('/api/slack/message', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: chan, text: msg }),
+  }).then(r => r.json()).then(d => {
+    if (d.ok) { closeModal(); notify('Message sent to Slack! ✓', 'success'); }
+    else {
+      notify(d.error || 'Send failed', 'error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Send to Slack'; }
+    }
+  }).catch(() => { notify('Error sending', 'error'); if (btn) { btn.disabled = false; btn.textContent = 'Send to Slack'; } });
+}
+
+// Keep old name working for any other callers
+function sendTestSlack() { sendSlackMessage(); }
 
 // ── Learn ──────────────────────────────────────────────────────────────────
 function loadLearnCards() {

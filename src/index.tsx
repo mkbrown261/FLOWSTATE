@@ -480,7 +480,25 @@ app.post('/api/slack/message', async (c) => {
   const { channel, text } = await c.req.json()
   try {
     const data: any = await (await fetch('https://slack.com/api/chat.postMessage', { method: 'POST', headers: { Authorization: 'Bearer ' + ss.access_token, 'Content-Type': 'application/json' }, body: JSON.stringify({ channel, text }) })).json()
-    return c.json({ ok: data.ok, ts: data.ts })
+    return c.json({ ok: data.ok, ts: data.ts, error: data.error })
+  } catch (err: any) { return c.json({ error: err.message }, 500) }
+})
+
+app.post('/api/slack/create-channel', async (c) => {
+  const ss = decodeSession(getCookie(c, 'fs_slack') || '')
+  if (!ss) return c.json({ error: 'not_connected' }, 401)
+  const { name } = await c.req.json()
+  if (!name) return c.json({ error: 'Channel name required' }, 400)
+  // Slack channel names: lowercase, no spaces, max 80 chars
+  const cleanName = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-_]/g, '').substring(0, 80)
+  try {
+    const data: any = await (await fetch('https://slack.com/api/conversations.create', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + ss.access_token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: cleanName, is_private: false }),
+    })).json()
+    if (!data.ok) return c.json({ error: data.error || 'Could not create channel' }, 400)
+    return c.json({ ok: true, channel: { id: data.channel.id, name: data.channel.name } })
   } catch (err: any) { return c.json({ error: err.message }, 500) }
 })
 
