@@ -9597,7 +9597,43 @@ let _codeState = {
   fileTree: [], activeFile: null, activeFileSha: null, activeFileContent: '',
   generatedFiles: {},   // path → { content, sha }
   generating: false,
+  agent: 'gemini',      // active AI agent id
+  agentName: 'Gemini 2.0 Flash',
+  projectStarted: false, // true once first generation has occurred in this session
 };
+
+// ── Agent / Model selector ───────────────────────────────────────────────────
+function selectCodeAgent(id, name) {
+  // If the user has already generated code, require a new project
+  if (_codeState.projectStarted) {
+    if (!confirm(`Switching AI agents requires starting a new project.\n\nAll unsaved generated files will be cleared. Continue?`)) return;
+    // Reset generated work
+    _codeState.generatedFiles = {};
+    _codeState.activeFile = null;
+    _codeState.activeFileSha = null;
+    _codeState.activeFileContent = '';
+    _codeState.projectStarted = false;
+    // Clear UI
+    const editor = document.getElementById('code-editor-wrap');
+    if (editor) editor.innerHTML = `<div class="code-welcome"><div style="font-size:32px;margin-bottom:12px">⚡</div><div style="font-size:16px;font-weight:800;color:var(--text-p);margin-bottom:8px">AI Code Workspace</div><div style="font-size:13px;color:var(--text-s);line-height:1.7;max-width:320px">Connect your GitHub, select a repo, then describe what you want the AI to build.</div></div>`;
+    const panel = document.getElementById('code-generated-files-panel');
+    const list  = document.getElementById('code-gen-file-list');
+    if (panel) panel.style.display = 'none';
+    if (list)  list.innerHTML = '';
+    const tb = document.getElementById('code-toolbar-actions');
+    if (tb) tb.style.display = 'none';
+    const fb = document.getElementById('code-active-file');
+    if (fb) fb.innerHTML = '<i class="fas fa-file-code"></i> No file open';
+    codeLog('🔄 New project started — agent switched to ' + name, 'info');
+  }
+  _codeState.agent     = id;
+  _codeState.agentName = name;
+  // Update card UI
+  document.querySelectorAll('.code-agent-card').forEach(c => {
+    c.classList.toggle('active', c.dataset.agent === id);
+  });
+  codeLog('🤖 Agent: ' + name, 'success');
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 function initCodeWorkspace() {
@@ -9811,6 +9847,7 @@ async function codeGenerate() {
         file: _codeState.activeFile || '',
         language: lang,
         existingCode: _codeState.activeFile ? _codeState.activeFileContent : '',
+        agent: _codeState.agent,
       })
     });
     const data = await res.json();
@@ -9821,10 +9858,11 @@ async function codeGenerate() {
     _codeState.activeFile = filePath;
     _codeState.activeFileContent = data.code;
     _codeState.generatedFiles[filePath] = { content: data.code, sha: _codeState.activeFileSha };
+    _codeState.projectStarted = true; // mark project as started so agent switch triggers new-project flow
 
     _codeRenderCode(data.code, filePath);
     _codeAddGeneratedFileToPanel(filePath);
-    codeLog('✅ Code generated — ' + data.code.split('\n').length + ' lines', 'success');
+    codeLog(`✅ Code generated (${_codeState.agentName}) — ${data.code.split('\n').length} lines`, 'success');
 
     // Prompt clear
     const inp = document.getElementById('code-prompt-input');

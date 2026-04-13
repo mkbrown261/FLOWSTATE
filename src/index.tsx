@@ -468,15 +468,13 @@ app.post('/api/github/commit', async (c) => {
   return c.json({ ok: true, sha: data.content?.sha, url: data.content?.html_url })
 })
 
-// POST /api/github/ai-code — AI generates code for a file/feature, streams result
+// POST /api/github/ai-code — AI generates code for a file/feature
 app.post('/api/github/ai-code', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
-  const gh = decodeSession(getCookie(c, 'fs_github') || '')
-  const { prompt, repo, file, language, existingCode } = await c.req.json()
+  const { prompt, repo, file, language, existingCode, agent = 'gemini' } = await c.req.json()
   if (!prompt) return c.json({ error: 'missing_prompt' }, 400)
 
-  const apiKey = c.env?.OPENAI_API_KEY || c.env?.GEMINI_API_KEY || ''
   const systemPrompt = `You are an expert software engineer. Generate clean, production-ready code.
 ${repo ? `Working in repo: ${repo}` : ''}
 ${file ? `File: ${file}` : ''}
@@ -487,20 +485,73 @@ Respond with ONLY the code — no markdown fences, no explanation. Just the raw 
     ? `Existing code:\n\`\`\`\n${existingCode}\n\`\`\`\n\nTask: ${prompt}`
     : prompt
 
-  // Try Gemini first (already configured), fallback message if no key
-  const geminiKey = c.env?.GEMINI_API_KEY || ''
-  if (!geminiKey) return c.json({ error: 'no_ai_key', code: '// AI key not configured' })
+  let code = '// Could not generate code'
 
-  const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: systemPrompt + '\n\n' + userMsg }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 8192 }
+  // ── Gemini 2.0 Flash (default) ──────────────────────────────────────────────
+  if (agent === 'gemini') {
+    const geminiKey = c.env?.GEMINI_API_KEY || ''
+    if (!geminiKey) return c.json({ error: 'no_ai_key', code: '// Gemini API key not configured' })
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: systemPrompt + '\n\n' + userMsg }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: 8192 }
+      })
     })
-  })
-  const geminiData: any = await geminiRes.json()
-  const code = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '// Could not generate code'
+    const d: any = await r.json()
+    code = d?.candidates?.[0]?.content?.parts?.[0]?.text || code
+
+  // ── GPT-4o ──────────────────────────────────────────────────────────────────
+  } else if (agent === 'gpt4o') {
+    const openaiKey = c.env?.OPENAI_API_KEY || ''
+    if (!openaiKey) return c.json({ error: 'no_ai_key', code: '// OpenAI API key not configured' })
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }],
+        temperature: 0.3, max_tokens: 8192
+      })
+    })
+    const d: any = await r.json()
+    code = d?.choices?.[0]?.message?.content || code
+
+  // ── Claude 3.5 Sonnet ───────────────────────────────────────────────────────
+  } else if (agent === 'claude') {
+    const claudeKey = c.env?.ANTHROPIC_API_KEY || ''
+    if (!claudeKey) return c.json({ error: 'no_ai_key', code: '// Anthropic API key not configured' })
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 8192,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMsg }]
+      })
+    })
+    const d: any = await r.json()
+    code = d?.content?.[0]?.text || code
+
+  // ── DeepSeek Coder (via Together AI) ───────────────────────────────────────
+  } else if (agent === 'deepseek') {
+    const togetherKey = c.env?.TOGETHER_API_KEY || ''
+    if (!togetherKey) return c.json({ error: 'no_ai_key', code: '// Together API key not configured' })
+    const r = await fetch('https://api.together.xyz/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${togetherKey}` },
+      body: JSON.stringify({
+        model: 'deepseek-ai/DeepSeek-Coder-V2-Instruct',
+        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }],
+        temperature: 0.3, max_tokens: 8192
+      })
+    })
+    const d: any = await r.json()
+    code = d?.choices?.[0]?.message?.content || code
+  }
+
   // Strip markdown fences if AI added them anyway
   const clean = code.replace(/^```[\w]*\n?/,'').replace(/\n?```$/,'').trim()
   return c.json({ ok: true, code: clean })
@@ -6200,7 +6251,15 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .gen-sidebar-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:6px}
 .gen-sidebar-row{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--text-s);padding:3px 0}
 /* ── AI Code Workspace ── */
-.code-workspace{display:flex;flex:1;overflow:hidden;height:100%}
+.code-workspace{display:flex;flex:1;overflow:hidden;height:100%;flex-direction:column}
+.code-agent-bar{flex-shrink:0;padding:10px 14px;border-bottom:1px solid var(--border);background:rgba(8,8,18,.85);display:flex;align-items:center;gap:10px;overflow-x:auto}
+.code-agent-card{flex-shrink:0;background:rgba(16,185,129,.04);border:1px solid rgba(16,185,129,.15);border-radius:10px;padding:8px 12px;cursor:pointer;transition:.18s;min-width:130px;text-align:left}
+.code-agent-card:hover{background:rgba(16,185,129,.09);border-color:rgba(16,185,129,.35);transform:translateY(-1px)}
+.code-agent-card.active{background:rgba(16,185,129,.13);border-color:#10b981;box-shadow:0 0 12px rgba(16,185,129,.2)}
+.code-agent-badge{font-size:9px;font-weight:800;letter-spacing:.8px;color:#10b981;text-transform:uppercase;margin-bottom:3px;opacity:.8}
+.code-agent-name{font-size:12px;font-weight:700;color:var(--text-p);margin-bottom:2px}
+.code-agent-desc{font-size:10px;color:var(--text-m);line-height:1.4}
+.code-workspace-body{display:flex;flex:1;overflow:hidden}
 .code-sidebar{width:220px;flex-shrink:0;background:rgba(8,8,18,.7);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
 .code-gh-header{padding:10px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
 .code-btn-connect{display:flex;align-items:center;gap:7px;width:100%;padding:8px 12px;border-radius:9px;background:var(--grad);border:none;color:#fff;font-size:12px;font-weight:700;cursor:pointer;justify-content:center;transition:.18s}
@@ -7602,11 +7661,37 @@ em{color:var(--accent);font-style:italic}
       </div>
     </div>
 
-  </div><!-- /gen-body-wrap -->
-
-  <!-- ═══════════════════════ AI CODE WORKSPACE ═══════════════════════ -->
-  <div class="gen-sub-pane" id="gen-pane-code" style="display:none;flex:1;overflow:hidden">
+    <!-- ═══════════════════════ AI CODE WORKSPACE ═══════════════════════ -->
+    <div class="gen-sub-pane" id="gen-pane-code">
     <div class="code-workspace">
+
+      <!-- Agent / Model selector bar -->
+      <div class="code-agent-bar" id="code-agent-bar">
+        <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);flex-shrink:0;margin-right:4px">AI Agent</div>
+        <div class="code-agent-card active" onclick="selectCodeAgent('gemini','Gemini 2.0 Flash')" data-agent="gemini">
+          <div class="code-agent-badge">FAST · MULTIMODAL</div>
+          <div class="code-agent-name">Gemini 2.0 Flash</div>
+          <div class="code-agent-desc">Google · context-aware · multi-file</div>
+        </div>
+        <div class="code-agent-card" onclick="selectCodeAgent('gpt4o','GPT-4o')" data-agent="gpt4o">
+          <div class="code-agent-badge">OPENAI · SMART</div>
+          <div class="code-agent-name">GPT-4o</div>
+          <div class="code-agent-desc">Best for complex logic &amp; refactoring</div>
+        </div>
+        <div class="code-agent-card" onclick="selectCodeAgent('claude','Claude 3.5 Sonnet')" data-agent="claude">
+          <div class="code-agent-badge">ANTHROPIC · PRECISE</div>
+          <div class="code-agent-name">Claude 3.5 Sonnet</div>
+          <div class="code-agent-desc">Long context · detailed explanations</div>
+        </div>
+        <div class="code-agent-card" onclick="selectCodeAgent('deepseek','DeepSeek Coder')" data-agent="deepseek">
+          <div class="code-agent-badge">CODE SPECIALIST</div>
+          <div class="code-agent-name">DeepSeek Coder</div>
+          <div class="code-agent-desc">Optimised for code generation &amp; bugs</div>
+        </div>
+      </div>
+
+      <!-- Three-column workspace body -->
+      <div class="code-workspace-body">
 
       <!-- LEFT: File Explorer + GitHub Panel -->
       <div class="code-sidebar">
@@ -7710,8 +7795,11 @@ em{color:var(--accent);font-style:italic}
         </div>
       </div>
 
-    </div>
-  </div>
+      </div><!-- /code-workspace-body -->
+    </div><!-- /code-workspace -->
+  </div><!-- /gen-pane-code -->
+
+  </div><!-- /gen-body-wrap -->
 
 </div><!-- /tab-pane-generate -->
 
