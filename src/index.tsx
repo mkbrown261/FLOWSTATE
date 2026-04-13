@@ -183,6 +183,11 @@ app.get('/api/auth/google/callback', async (c) => {
     // Use Lax for same-site access; None only needed for cross-site (desktop app flows)
     setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 7*24*3600, path: '/' })
 
+    // Ensure user record exists in D1 on every Google sign-in (new users and returning)
+    if (c.env?.DB) {
+      try { await upsertUser(c.env.DB, profile.email, profile.name, profile.picture, 'google') } catch (_) {}
+    }
+
     // If this auth was initiated from a desktop app, forward to that app's callback
     if (appCtx.app === 'fsaudio') {
       const cbUrl = `/api/fsaudio/auth/callback?state=${encodeURIComponent(appCtx.state || '')}&redirect=${encodeURIComponent(appCtx.redirect || 'fsaudio://auth')}`
@@ -346,11 +351,20 @@ app.get('/api/auth/slack-status', async (c) => {
 // ─── GitHub OAuth ─────────────────────────────────────────────────────────────
 app.get('/api/auth/github', async (c) => {
   const clientId = c.env?.GITHUB_CLIENT_ID || ''
-  if (!clientId) return c.html(authErrorPage('GitHub OAuth not configured.'))
+  if (!clientId) return c.html(authErrorPage('GitHub OAuth not configured. Please contact support.'))
   const baseUrl = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
   const state   = btoa(Math.random().toString(36).slice(2) + Date.now())
-  setCookie(c, 'github_state', state, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' })
-  const params  = new URLSearchParams({ client_id: clientId, redirect_uri: baseUrl + '/api/auth/github/callback', scope: 'read:user repo', state })
+  // sameSite: 'None' required because this endpoint is opened in a popup window —
+  // the callback redirect from GitHub arrives as a cross-site navigation to the popup,
+  // which means Lax cookies are NOT sent back to the opener domain context.
+  setCookie(c, 'github_state', state, { httpOnly: true, secure: true, sameSite: 'None', maxAge: 600, path: '/' })
+  const params  = new URLSearchParams({
+    client_id:    clientId,
+    redirect_uri: baseUrl + '/api/auth/github/callback',
+    scope:        'read:user repo',
+    state,
+    allow_signup: 'true',  // let new users create a GitHub account if they don't have one
+  })
   return c.redirect('https://github.com/login/oauth/authorize?' + params)
 })
 
@@ -1631,15 +1645,18 @@ app.get('/api/behavior/insight', async (c) => {
 
 // ─── Magic Link Auth ──────────────────────────────────────────────────────────
 app.post('/api/auth/magic-link', async (c) => {
-  const { email } = await c.req.json()
+  const body = await c.req.json()
+  const { email, app: appParam = '', state: appState = '', redirect: appRedirect = '' } = body
   if (!email || !email.includes('@')) return c.json({ error: 'invalid_email' }, 400)
   const resendKey = c.env?.RESEND_API_KEY
   const name = email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+  const baseUrl = c.env?.CANONICAL_ORIGIN || new URL(c.req.url).origin
+
   if (resendKey) {
-    // Send real magic link email via Resend
-    const baseUrl = new URL(c.req.url).origin
-    const token = btoa(JSON.stringify({ email, name, exp: Date.now() + 15 * 60 * 1000 }))
+    // Embed app context into the token so desktop app users are forwarded after verify
+    const token = btoa(JSON.stringify({ email, name, exp: Date.now() + 15 * 60 * 1000, app: appParam, state: appState, redirect: appRedirect }))
     const magicUrl = `${baseUrl}/api/auth/magic-link/verify?token=${encodeURIComponent(token)}`
+    const appNote = appParam ? `<p style="color:#a855f7;font-size:13px;font-weight:700;margin-bottom:12px">Signing in to use ${appParam === 'fsaudio' ? 'FS Audio' : appParam === '264pro' ? '264 Pro' : appParam}</p>` : ''
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
@@ -1651,6 +1668,7 @@ app.post('/api/auth/magic-link', async (c) => {
           <div style="font-family:system-ui,sans-serif;background:#0f0f1a;color:#f0f0f0;padding:40px;max-width:480px;margin:0 auto;border-radius:16px">
             <div style="font-size:32px;margin-bottom:8px">⚡</div>
             <h1 style="font-size:22px;font-weight:800;margin-bottom:8px">Sign in to FlowState</h1>
+            ${appNote}
             <p style="color:#888;margin-bottom:24px">Click the button below to sign in. This link expires in 15 minutes.</p>
             <a href="${magicUrl}" style="display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:14px 32px;border-radius:12px;font-weight:700;font-size:15px">Sign in to FlowState →</a>
             <p style="color:#555;font-size:12px;margin-top:24px">If you didn't request this, you can safely ignore this email.</p>
@@ -1660,9 +1678,13 @@ app.post('/api/auth/magic-link', async (c) => {
     })
     return c.json({ success: true, message: 'Magic link sent! Check your email.' })
   } else {
-    // Fallback: auto-sign-in (dev/demo mode)
+    // Fallback: auto-sign-in (dev/demo mode — no Resend key)
     const session = { name, email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
     setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
+    // Upsert user even in fallback path
+    if (c.env?.DB) {
+      try { await upsertUser(c.env.DB, email, name, '', 'magic_link') } catch (_) {}
+    }
     return c.json({ success: true, user: { name, email } })
   }
 })
@@ -1672,11 +1694,22 @@ app.get('/api/auth/magic-link/verify', async (c) => {
   if (!token) return c.html(authErrorPage('Invalid or missing token.'))
   try {
     const data = JSON.parse(atob(decodeURIComponent(token)))
-    if (Date.now() > data.exp) return c.html(authErrorPage('This link has expired. Please request a new one.'))
+    if (Date.now() > data.exp) return c.html(authErrorPage('This link has expired. Please request a new one at <a href="/auth" style="color:#a855f7">flowst8.cc/auth</a>.'))
     const session = { name: data.name, email: data.email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
-    setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'None', maxAge: 604800, path: '/' })
-    return c.html(authSuccessPage(data.name, ''))
-  } catch { return c.html(authErrorPage('Invalid token. Please request a new sign-in link.')) }
+    setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
+    // Upsert user into D1 so their profile exists (critical — magic link users never hit Google callback)
+    if (c.env?.DB) {
+      try { await upsertUser(c.env.DB, data.email, data.name, '', 'magic_link') } catch (_) {}
+    }
+    // If this was a desktop app magic-link, forward to the app's callback
+    if (data.app === 'fsaudio') {
+      return c.redirect(`/api/fsaudio/auth/callback?state=${encodeURIComponent(data.state || '')}&redirect=${encodeURIComponent(data.redirect || 'fsaudio://auth')}`)
+    }
+    if (data.app === '264pro') {
+      return c.redirect(`/api/264pro/auth/callback?state=${encodeURIComponent(data.state || '')}&redirect=${encodeURIComponent(data.redirect || '264pro://auth')}`)
+    }
+    return c.html(magicLinkSuccessPage(data.name))
+  } catch { return c.html(authErrorPage('Invalid token. Please request a new sign-in link at <a href="/auth" style="color:#a855f7">flowst8.cc/auth</a>.')) }
 })
 
 // ─── Stripe Billing ───────────────────────────────────────────────────────────
@@ -5634,7 +5667,22 @@ function authSuccessPage(name: string, picture: string): string {
   const avatar = picture
     ? `<img class="av" src="${picture}" alt="${name}" onerror="this.style.display='none'">`
     : `<div style="font-size:56px;margin-bottom:16px">✅</div>`
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Signed in — FlowState</title>${AUTH_PAGE_STYLE}${AUTH_REDIRECT_SCRIPT}</head><body><div class="card">${avatar}<h1>Welcome back, ${name}!</h1><p style="color:#10b981;font-size:15px;font-weight:600">You're signed in to FlowState.</p><p>Google Calendar is synced.</p><button class="btn">Back to FlowState ✓</button><div class="sub">This window will close automatically.</div></div></body></html>`
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Signed in — FlowState</title>${AUTH_PAGE_STYLE}${AUTH_REDIRECT_SCRIPT}</head><body><div class="card">${avatar}<h1>Welcome back, ${name}!</h1><p style="color:#10b981;font-size:15px;font-weight:600">You're signed in to FlowState.</p><p>Google Calendar is synced. You can close this window.</p><button class="btn">Open FlowState ✓</button><div class="sub">Redirecting automatically…</div></div></body></html>`
+}
+
+function magicLinkSuccessPage(name: string): string {
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Signed in — FlowState</title>${AUTH_PAGE_STYLE}
+<script>
+(function(){
+  // Magic link verify always opens in the same tab — redirect to app
+  document.addEventListener('DOMContentLoaded', function(){
+    var btn = document.querySelector('.btn');
+    if (btn) { btn.textContent = 'Open FlowState →'; btn.onclick = function(){ window.location.href='/'; }; }
+  });
+  setTimeout(function(){ window.location.href = '/'; }, 2000);
+})();
+</script>
+</head><body><div class="card"><div style="font-size:56px;margin-bottom:16px">✅</div><h1>You're signed in!</h1><p style="color:#10b981;font-size:15px;font-weight:600">Welcome to FlowState, ${name}.</p><button class="btn" onclick="window.location.href='/'">Open FlowState →</button><div class="sub">Redirecting automatically…</div></div></body></html>`
 }
 function notionSuccessPage(workspace: string): string {
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Notion Connected — FlowState</title>${AUTH_PAGE_STYLE}
@@ -5758,12 +5806,13 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
       : 'The intelligent workspace for focused teams.'}
   </p>
 
-  <a class="btn-google" href="${googleUrl}">
+  <a class="btn-google" href="${googleUrl}" id="btn-google-signin" onclick="this.innerHTML='<svg viewBox=&quot;0 0 48 48&quot; width=&quot;20&quot; height=&quot;20&quot;><path fill=&quot;#EA4335&quot; d=&quot;M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z&quot;/><path fill=&quot;#4285F4&quot; d=&quot;M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z&quot;/><path fill=&quot;#FBBC05&quot; d=&quot;M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z&quot;/><path fill=&quot;#34A853&quot; d=&quot;M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z&quot;/></svg>Redirecting to Google…';this.style.opacity='.7'">
     <svg viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
     Continue with Google
   </a>
+  <div style="font-size:11px;color:var(--sub);margin-top:-8px;margin-bottom:4px;text-align:center">Signs in with <strong>your own</strong> Google account</div>
 
-  <div class="divider">or</div>
+  <div class="divider">or sign in with email</div>
 
   <div class="magic-form" id="magic-form">
     <input class="magic-input" id="magic-email" type="email" placeholder="your@email.com" autocomplete="email">
@@ -5772,11 +5821,11 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
     </button>
   </div>
   <div class="magic-sent" id="magic-sent">
-    <div style="font-size:22px;margin-bottom:6px">✅</div>
-    <div style="font-size:15px;font-weight:700;margin-bottom:4px">Check your inbox</div>
+    <div style="font-size:22px;margin-bottom:6px">✉️</div>
+    <div style="font-size:15px;font-weight:700;margin-bottom:4px">Check your inbox!</div>
     <div id="magic-sent-email" style="font-size:13px;opacity:.85;margin-bottom:8px"></div>
-    <div style="font-size:12px;opacity:.65;line-height:1.5">The link expires in 15 minutes.<br>Don't see it? Check your spam or junk folder.</div>
-    <button onclick="document.getElementById('magic-sent').style.display='none';document.getElementById('magic-form').style.display='flex';document.getElementById('magic-email').focus()" style="margin-top:12px;background:none;border:1px solid rgba(16,185,129,.4);color:#10b981;border-radius:8px;padding:6px 16px;font-size:12px;cursor:pointer">Use a different email</button>
+    <div style="font-size:12px;opacity:.65;line-height:1.6">We sent a sign-in link to your email.<br>The link expires in 15 minutes.<br>Don't see it? Check your spam folder.</div>
+    <button onclick="document.getElementById('magic-sent').style.display='none';document.getElementById('magic-form').style.display='flex';document.getElementById('magic-email').value='';document.getElementById('magic-email').focus()" style="margin-top:12px;background:none;border:1px solid rgba(16,185,129,.4);color:#10b981;border-radius:8px;padding:6px 16px;font-size:12px;cursor:pointer">✉️ Resend or use a different email</button>
   </div>
 
   <div class="features">
@@ -7814,9 +7863,9 @@ em{color:var(--accent);font-style:italic}
       <p style="font-size:18px;color:var(--text-s);margin:0 0 8px;line-height:1.6">Professional AI Video Editor. Desktop Native.</p>
       <p style="font-size:14px;color:var(--text-m);margin:0 0 32px">A standalone desktop video editor with AI-powered tools &mdash; timeline editing, colour grading, audio mixing, AI upscale, AI denoise, slow-mo, face enhance, and Clawbot integration. Download and run it locally.</p>
       <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
-        <a href="https://github.com/mkbrown261/264-pro-video-editor/releases/latest/download/264Pro-mac.dmg" class="aud-dl-btn aud-mac"><i class="fab fa-apple"></i> Download for macOS</a>
-        <a href="https://github.com/mkbrown261/264-pro-video-editor/releases/latest/download/264Pro-win.exe" class="aud-dl-btn aud-win"><i class="fab fa-windows"></i> Download for Windows</a>
-        <a href="https://github.com/mkbrown261/264-pro-video-editor/releases/latest/download/264Pro-linux.AppImage" class="aud-dl-btn aud-linux"><i class="fab fa-linux"></i> Download for Linux</a>
+        <a href="https://github.com/mkbrown261/264-pro-video-editor/releases/latest/download/264-Pro-1.1.67-arm64-mac.zip" class="aud-dl-btn aud-mac"><i class="fab fa-apple"></i> macOS (Apple Silicon)</a>
+        <a href="https://github.com/mkbrown261/264-pro-video-editor/releases/latest/download/264-Pro-1.1.67-x64-mac.zip" class="aud-dl-btn aud-mac" style="background:linear-gradient(135deg,#059669,#0284c7)"><i class="fab fa-apple"></i> macOS (Intel)</a>
+        <a href="https://github.com/mkbrown261/264-pro-video-editor/releases/latest/download/264-Pro-Setup-1.1.67.exe" class="aud-dl-btn aud-win"><i class="fab fa-windows"></i> Download for Windows</a>
       </div>
       <div style="margin-top:16px;font-size:12px;color:var(--text-m)">Free to download &nbsp;&#xB7;&nbsp; ClawFlow subscription unlocks AI tools &nbsp;&#xB7;&nbsp; <a href="https://github.com/mkbrown261/264-pro-video-editor" target="_blank" style="color:var(--accent)">View on GitHub</a></div>
     </div>
@@ -7866,12 +7915,12 @@ em{color:var(--accent);font-style:italic}
       <img src="/static/fs-audio-logo.png" alt="Flowstate Audio" style="max-width:480px;width:90%;margin:0 auto 24px;display:block;border-radius:16px">
       <p style="font-size:18px;color:var(--text-s);margin:0 0 8px;line-height:1.6">Professional DAW. AI-Powered. Yours.</p>
       <p style="font-size:14px;color:var(--text-m);margin:0 0 32px">A standalone desktop DAW with multi-track recording, VST/AU plugins, a full piano roll, mixer console, AI music generation, and deep Clawbot integration. Download and run it locally.</p>
-      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
-        <a href="https://github.com/mkbrown261/FS-AUDIO/releases/latest/download/FlowstateAudio-mac.dmg" class="aud-dl-btn aud-mac"><i class="fab fa-apple"></i> Download for macOS</a>
-        <a href="https://github.com/mkbrown261/FS-AUDIO/releases/latest/download/FlowstateAudio-win.exe" class="aud-dl-btn aud-win"><i class="fab fa-windows"></i> Download for Windows</a>
-        <a href="https://github.com/mkbrown261/FS-AUDIO/releases/latest/download/FlowstateAudio-linux.AppImage" class="aud-dl-btn aud-linux"><i class="fab fa-linux"></i> Download for Linux</a>
+      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap" id="fsaudio-dl-btns">
+        <button class="aud-dl-btn aud-mac" style="cursor:not-allowed;opacity:.6" title="Release coming soon"><i class="fab fa-apple"></i> macOS — Coming Soon</button>
+        <button class="aud-dl-btn aud-win" style="cursor:not-allowed;opacity:.6" title="Release coming soon"><i class="fab fa-windows"></i> Windows — Coming Soon</button>
       </div>
-      <div style="margin-top:16px;font-size:12px;color:var(--text-m)">Free to download &nbsp;&#xB7;&nbsp; ClawFlow subscription unlocks AI features &nbsp;&#xB7;&nbsp; <a href="https://github.com/mkbrown261/FS-AUDIO" target="_blank" style="color:var(--accent)">View on GitHub</a></div>
+      <div style="margin-top:12px;display:inline-flex;align-items:center;gap:8px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:8px 16px;font-size:12px;color:#10b981"><i class="fas fa-bell"></i> Downloads will appear here automatically when the first release is published.</div>
+      <div style="margin-top:12px;font-size:12px;color:var(--text-m)">Free to download &nbsp;&#xB7;&nbsp; ClawFlow subscription unlocks AI features &nbsp;&#xB7;&nbsp; <a href="https://github.com/mkbrown261/FS-AUDIO" target="_blank" style="color:var(--accent)">View on GitHub</a></div>
     </div>
 
     <!-- Feature grid -->
