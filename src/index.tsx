@@ -74,6 +74,8 @@ type Bindings = {
   UNITEDMASTERS_CLIENT_ID: string; UNITEDMASTERS_CLIENT_SECRET: string
   // SubmitHub: public API key from submithub.com/api-settings
   SUBMITHUB_API_KEY: string
+  // GitHub OAuth — connect user GitHub accounts for AI code workspace
+  GITHUB_CLIENT_ID: string; GITHUB_CLIENT_SECRET: string
   // Canonical public domain — pins OAuth redirect_uri so it never varies by access domain
   CANONICAL_ORIGIN: string
   // ── Cloudflare D1 — Permanent relational store ──────────────────────────────
@@ -339,6 +341,169 @@ app.get('/api/auth/slack-status', async (c) => {
   const token = decodeSession(getCookie(c, 'fs_slack') || '')
   if (!token) return c.json({ connected: false })
   return c.json({ connected: true, team: token.team_name })
+})
+
+// ─── GitHub OAuth ─────────────────────────────────────────────────────────────
+app.get('/api/auth/github', async (c) => {
+  const clientId = c.env?.GITHUB_CLIENT_ID || ''
+  if (!clientId) return c.html(authErrorPage('GitHub OAuth not configured.'))
+  const baseUrl = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
+  const state   = btoa(Math.random().toString(36).slice(2) + Date.now())
+  setCookie(c, 'github_state', state, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/' })
+  const params  = new URLSearchParams({ client_id: clientId, redirect_uri: baseUrl + '/api/auth/github/callback', scope: 'read:user repo', state })
+  return c.redirect('https://github.com/login/oauth/authorize?' + params)
+})
+
+app.get('/api/auth/github/callback', async (c) => {
+  const { code, state, error } = c.req.query() as any
+  const savedState = getCookie(c, 'github_state') || ''
+  deleteCookie(c, 'github_state', { path: '/' })
+  if (error || !code || state !== savedState) return c.html(authErrorPage('GitHub authorization failed or state mismatch.'))
+  const baseUrl = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
+  try {
+    // Exchange code for access token
+    const tokenRes: any = await (await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ client_id: c.env?.GITHUB_CLIENT_ID, client_secret: c.env?.GITHUB_CLIENT_SECRET, code, redirect_uri: baseUrl + '/api/auth/github/callback' }),
+    })).json()
+    if (tokenRes.error || !tokenRes.access_token) throw new Error(tokenRes.error_description || 'Token exchange failed')
+    // Fetch GitHub user profile
+    const ghUser: any = await (await fetch('https://api.github.com/user', {
+      headers: { 'Authorization': `Bearer ${tokenRes.access_token}`, 'User-Agent': 'FlowState-App' }
+    })).json()
+    setCookie(c, 'fs_github', encodeSession({
+      access_token: tokenRes.access_token,
+      login: ghUser.login,
+      name: ghUser.name || ghUser.login,
+      avatar_url: ghUser.avatar_url,
+      public_repos: ghUser.public_repos,
+    }), { httpOnly: true, secure: true, sameSite: 'None', maxAge: 30*24*3600, path: '/' })
+    // Return success page that closes the popup and notifies parent
+    return c.html(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>GitHub Connected</title>
+<style>body{font-family:system-ui;background:#0f0f1a;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.card{background:#1a1a2e;border:1px solid rgba(16,185,129,.3);border-radius:16px;padding:32px;text-align:center;max-width:360px}
+.icon{font-size:48px;margin-bottom:12px}.title{font-size:20px;font-weight:800;color:#10b981;margin-bottom:8px}
+.sub{color:#9ca3af;font-size:14px}</style></head>
+<body><div class="card"><div class="icon">✅</div>
+<div class="title">GitHub Connected!</div>
+<div class="sub">Signed in as <strong style="color:#fff">@${ghUser.login}</strong>.<br>You can close this window.</div></div>
+<script>
+  setTimeout(()=>{
+    if(window.opener){ window.opener.postMessage({type:'github_connected',login:'${ghUser.login}',name:'${(ghUser.name||ghUser.login).replace(/'/g,"\\'")}',avatar:'${ghUser.avatar_url}'},'*'); }
+    window.close();
+  }, 1200);
+</script></body></html>`)
+  } catch(err: any) { return c.html(authErrorPage('GitHub authentication failed: ' + err.message)) }
+})
+
+app.get('/api/auth/github/status', async (c) => {
+  const gh = decodeSession(getCookie(c, 'fs_github') || '')
+  if (!gh?.access_token) return c.json({ connected: false })
+  return c.json({ connected: true, login: gh.login, name: gh.name, avatar_url: gh.avatar_url, public_repos: gh.public_repos })
+})
+
+app.get('/api/auth/github/disconnect', async (c) => {
+  deleteCookie(c, 'fs_github', { path: '/' })
+  return c.json({ ok: true })
+})
+
+// GET /api/github/repos — list user's repos
+app.get('/api/github/repos', async (c) => {
+  const gh = decodeSession(getCookie(c, 'fs_github') || '')
+  if (!gh?.access_token) return c.json({ error: 'not_connected' }, 401)
+  const res = await fetch('https://api.github.com/user/repos?sort=updated&per_page=50&type=all', {
+    headers: { 'Authorization': `Bearer ${gh.access_token}`, 'User-Agent': 'FlowState-App' }
+  })
+  const repos: any[] = await res.json()
+  if (!Array.isArray(repos)) return c.json({ error: 'github_api_error', repos: [] })
+  return c.json({ repos: repos.map(r => ({ id: r.id, name: r.name, full_name: r.full_name, description: r.description, private: r.private, language: r.language, updated_at: r.updated_at, default_branch: r.default_branch, url: r.html_url, stars: r.stargazers_count })) })
+})
+
+// GET /api/github/tree?repo=owner/name&branch=main — file tree
+app.get('/api/github/tree', async (c) => {
+  const gh = decodeSession(getCookie(c, 'fs_github') || '')
+  if (!gh?.access_token) return c.json({ error: 'not_connected' }, 401)
+  const { repo, branch = 'main' } = c.req.query() as any
+  if (!repo) return c.json({ error: 'missing_repo' }, 400)
+  const res = await fetch(`https://api.github.com/repos/${repo}/git/trees/${branch}?recursive=1`, {
+    headers: { 'Authorization': `Bearer ${gh.access_token}`, 'User-Agent': 'FlowState-App' }
+  })
+  const data: any = await res.json()
+  if (data.message) return c.json({ error: data.message })
+  return c.json({ tree: data.tree || [] })
+})
+
+// GET /api/github/file?repo=owner/name&path=src/index.js&branch=main — file content
+app.get('/api/github/file', async (c) => {
+  const gh = decodeSession(getCookie(c, 'fs_github') || '')
+  if (!gh?.access_token) return c.json({ error: 'not_connected' }, 401)
+  const { repo, path, branch = 'main' } = c.req.query() as any
+  if (!repo || !path) return c.json({ error: 'missing_params' }, 400)
+  const res = await fetch(`https://api.github.com/repos/${repo}/contents/${path}?ref=${branch}`, {
+    headers: { 'Authorization': `Bearer ${gh.access_token}`, 'User-Agent': 'FlowState-App' }
+  })
+  const data: any = await res.json()
+  if (data.message) return c.json({ error: data.message })
+  const content = data.encoding === 'base64' ? atob(data.content.replace(/\n/g,'')) : data.content
+  return c.json({ content, sha: data.sha, path: data.path, size: data.size })
+})
+
+// POST /api/github/commit — create or update a file in a repo
+app.post('/api/github/commit', async (c) => {
+  const gh = decodeSession(getCookie(c, 'fs_github') || '')
+  if (!gh?.access_token) return c.json({ error: 'not_connected' }, 401)
+  const { repo, path, content, message, branch = 'main', sha } = await c.req.json()
+  if (!repo || !path || content === undefined) return c.json({ error: 'missing_params' }, 400)
+  const encoded = btoa(unescape(encodeURIComponent(content)))
+  const body: any = { message: message || `Update ${path} via FlowState AI`, content: encoded, branch }
+  if (sha) body.sha = sha
+  const res = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${gh.access_token}`, 'User-Agent': 'FlowState-App', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data: any = await res.json()
+  if (data.message && !data.content) return c.json({ error: data.message })
+  return c.json({ ok: true, sha: data.content?.sha, url: data.content?.html_url })
+})
+
+// POST /api/github/ai-code — AI generates code for a file/feature, streams result
+app.post('/api/github/ai-code', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const gh = decodeSession(getCookie(c, 'fs_github') || '')
+  const { prompt, repo, file, language, existingCode } = await c.req.json()
+  if (!prompt) return c.json({ error: 'missing_prompt' }, 400)
+
+  const apiKey = c.env?.OPENAI_API_KEY || c.env?.GEMINI_API_KEY || ''
+  const systemPrompt = `You are an expert software engineer. Generate clean, production-ready code.
+${repo ? `Working in repo: ${repo}` : ''}
+${file ? `File: ${file}` : ''}
+${language ? `Language: ${language}` : ''}
+Respond with ONLY the code — no markdown fences, no explanation. Just the raw file content.`
+
+  const userMsg = existingCode
+    ? `Existing code:\n\`\`\`\n${existingCode}\n\`\`\`\n\nTask: ${prompt}`
+    : prompt
+
+  // Try Gemini first (already configured), fallback message if no key
+  const geminiKey = c.env?.GEMINI_API_KEY || ''
+  if (!geminiKey) return c.json({ error: 'no_ai_key', code: '// AI key not configured' })
+
+  const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: systemPrompt + '\n\n' + userMsg }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 8192 }
+    })
+  })
+  const geminiData: any = await geminiRes.json()
+  const code = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '// Could not generate code'
+  // Strip markdown fences if AI added them anyway
+  const clean = code.replace(/^```[\w]*\n?/,'').replace(/\n?```$/,'').trim()
+  return c.json({ ok: true, code: clean })
 })
 
 // ─── Onboarding ───────────────────────────────────────────────────────────────
@@ -5621,11 +5786,13 @@ app.get('/', (c) => {
   const session   = decodeSession(getCookie(c, 'fs_session') || '')
   const notionSes = decodeSession(getCookie(c, 'fs_notion')  || '')
   const slackSes  = decodeSession(getCookie(c, 'fs_slack')   || '')
+  const githubSes = decodeSession(getCookie(c, 'fs_github')  || '')
   const onboarding = decodeSession(getCookie(c, 'fs_onboarded') || '')
 
   const userJson     = session     ? JSON.stringify({ name: session.name, email: session.email, picture: session.picture, role: session.role || 'member', tier: session.tier || 'free', provider: session.provider }) : 'null'
   const notionJson   = notionSes   ? JSON.stringify({ workspace: notionSes.workspace_name }) : 'null'
   const slackJson    = slackSes    ? JSON.stringify({ team: slackSes.team_name }) : 'null'
+  const githubJson   = githubSes   ? JSON.stringify({ login: githubSes.login, name: githubSes.name, avatar_url: githubSes.avatar_url, public_repos: githubSes.public_repos }) : 'null'
   // Tie onboarding to the signed-in user's email so different users
   // on the same browser each go through onboarding exactly once
   const onboardedForUser = onboarding?.completed && onboarding?.email === session?.email
@@ -6032,7 +6199,60 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .gen-sidebar-section{padding-top:10px;border-top:1px solid var(--border)}
 .gen-sidebar-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);margin-bottom:6px}
 .gen-sidebar-row{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--text-s);padding:3px 0}
-/* ── Higgsfield AI cards ── */
+/* ── AI Code Workspace ── */
+.code-workspace{display:flex;flex:1;overflow:hidden;height:100%}
+.code-sidebar{width:220px;flex-shrink:0;background:rgba(8,8,18,.7);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.code-gh-header{padding:10px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+.code-btn-connect{display:flex;align-items:center;gap:7px;width:100%;padding:8px 12px;border-radius:9px;background:var(--grad);border:none;color:#fff;font-size:12px;font-weight:700;cursor:pointer;justify-content:center;transition:.18s}
+.code-btn-connect:hover{opacity:.88}
+.code-select{width:100%;background:var(--bg-card);border:1px solid var(--border);border-radius:7px;padding:6px 9px;font-size:11px;color:var(--text-p);outline:none}
+.code-select:focus{border-color:var(--accent)}
+.code-file-explorer{flex:1;overflow-y:auto;padding:8px 0;min-height:0}
+.code-generated-files{flex-shrink:0;max-height:180px;overflow-y:auto;border-top:1px solid var(--border);padding:8px 0}
+.code-panel-label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-m);padding:4px 12px 6px;display:flex;align-items:center;gap:6px}
+.code-file-tree{display:flex;flex-direction:column}
+.code-file-empty{font-size:11px;color:var(--text-m);padding:12px;text-align:center;line-height:1.6}
+.code-file-item{display:flex;align-items:center;gap:6px;padding:5px 12px;font-size:11px;color:var(--text-s);cursor:pointer;transition:.12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border:none;background:transparent;text-align:left;width:100%}
+.code-file-item:hover{background:rgba(168,85,247,.1);color:var(--text-p)}
+.code-file-item.active{background:rgba(168,85,247,.18);color:var(--accent)}
+.code-file-item.ai-generated{color:#a855f7}
+.code-file-item i{font-size:10px;flex-shrink:0;width:12px}
+.code-file-dir{font-weight:700;color:var(--text-m)}
+.code-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.code-toolbar{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-bottom:1px solid var(--border);background:rgba(10,10,20,.5);flex-shrink:0}
+.code-toolbar-left{display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden}
+.code-toolbar-right{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.code-file-badge{font-size:11px;color:var(--text-s);display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.code-file-badge i{color:var(--accent);flex-shrink:0}
+.code-icon-btn{background:transparent;border:1px solid var(--border);border-radius:7px;padding:5px 9px;font-size:11px;color:var(--text-s);cursor:pointer;transition:.15s;display:flex;align-items:center;gap:5px;white-space:nowrap}
+.code-icon-btn:hover{border-color:var(--accent);color:var(--text-p)}
+.code-editor-wrap{flex:1;overflow-y:auto;position:relative;background:#0a0a12;font-family:'Fira Code','Consolas','Monaco',monospace}
+.code-welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:40px}
+.code-content{padding:16px;font-size:12px;line-height:1.7;color:#e2e8f0;white-space:pre-wrap;word-break:break-all;tab-size:2}
+.code-content .kw{color:#c084fc}.code-content .str{color:#86efac}.code-content .cm{color:#64748b;font-style:italic}.code-content .num{color:#fb923c}.code-content .fn{color:#67e8f9}
+.code-generating{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:14px;color:var(--text-s);font-size:13px}
+.code-gen-pulse{width:48px;height:48px;border-radius:50%;border:3px solid rgba(168,85,247,.3);border-top-color:#a855f7;animation:spin 1s linear infinite}
+.code-prompt-bar{border-top:1px solid var(--border);padding:10px 14px;background:rgba(10,10,20,.6);flex-shrink:0}
+.code-prompt-wrap{display:flex;flex-direction:column;gap:8px}
+.code-prompt-input{width:100%;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:10px 13px;font-size:12px;color:var(--text-p);outline:none;resize:none;font-family:inherit;line-height:1.5}
+.code-prompt-input:focus{border-color:var(--accent)}
+.code-prompt-actions{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.code-lang-select{background:var(--bg-card);border:1px solid var(--border);border-radius:7px;padding:5px 9px;font-size:11px;color:var(--text-s);outline:none}
+.code-btn-generate{display:flex;align-items:center;gap:7px;padding:8px 18px;border-radius:9px;background:linear-gradient(135deg,#10b981,#a855f7);border:none;color:#fff;font-size:12px;font-weight:700;cursor:pointer;transition:.18s}
+.code-btn-generate:hover{opacity:.88;transform:translateY(-1px)}
+.code-btn-generate:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.code-log-panel{width:200px;flex-shrink:0;background:rgba(8,8,18,.7);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;padding-top:4px}
+.code-activity-log{flex:1;overflow-y:auto;padding:4px 8px;display:flex;flex-direction:column;gap:5px;min-height:0}
+.code-log-empty{font-size:11px;color:var(--text-m);padding:12px 4px;text-align:center;line-height:1.6}
+.code-log-entry{padding:6px 9px;border-radius:7px;font-size:11px;line-height:1.5;animation:fadeUp .2s ease}
+.code-log-info{background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.2);color:var(--text-s)}
+.code-log-success{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);color:#10b981}
+.code-log-error{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);color:#ef4444}
+.code-log-ai{background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.2);color:#fbbf24}
+.code-gh-status{padding:6px 12px;font-size:11px}
+.code-commit-log{padding:4px 8px;display:flex;flex-direction:column;gap:5px}
+.code-commit-entry{padding:6px 9px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.15);border-radius:7px;font-size:10px;color:var(--text-s);line-height:1.5}
+/* Higgsfield AI cards ── */
 .higgs-model-card{background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.15);border-radius:12px;padding:12px 14px;cursor:pointer;transition:.18s;position:relative}
 .higgs-model-card:hover{background:rgba(0,212,255,.09);border-color:rgba(0,212,255,.35);transform:translateY(-1px)}
 .higgs-model-card.active{background:rgba(0,212,255,.12);border-color:#00d4ff;box-shadow:0 0 14px rgba(0,212,255,.2)}
@@ -6730,6 +6950,7 @@ em{color:var(--accent);font-style:italic}
     <button class="gen-subtab-btn"        id="gsub-tts"       onclick="switchGenSub('tts')"><i class="fas fa-microphone"></i> Text to Speech</button>
     <button class="gen-subtab-btn"        id="gsub-filetools" onclick="switchGenSub('filetools')"><i class="fas fa-folder-open"></i> File Tools</button>
     <button class="gen-subtab-btn"        id="gsub-higgsfield" onclick="switchGenSub('higgsfield')" style="background:linear-gradient(135deg,rgba(0,212,255,.12),rgba(0,255,163,.10));border-color:rgba(0,212,255,.3);color:#00d4ff"><i class="fas fa-film"></i> ✦ Higgsfield AI</button>
+    <button class="gen-subtab-btn"        id="gsub-code"       onclick="switchGenSub('code')" style="background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(168,85,247,.10));border-color:rgba(16,185,129,.3);color:#10b981"><i class="fas fa-code"></i> ✦ AI Code</button>
   </div>
 
   <!-- ── Body: generator area + sidebar ──────────────────── -->
@@ -7382,7 +7603,117 @@ em{color:var(--accent);font-style:italic}
     </div>
 
   </div><!-- /gen-body-wrap -->
-</div>
+
+  <!-- ═══════════════════════ AI CODE WORKSPACE ═══════════════════════ -->
+  <div class="gen-sub-pane" id="gen-pane-code" style="display:none;flex:1;overflow:hidden">
+    <div class="code-workspace">
+
+      <!-- LEFT: File Explorer + GitHub Panel -->
+      <div class="code-sidebar">
+        <!-- GitHub Connection Header -->
+        <div class="code-gh-header" id="code-gh-header">
+          <div id="code-gh-connected" style="display:none">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <img id="code-gh-avatar" src="" style="width:28px;height:28px;border-radius:50%;border:2px solid #10b981" alt="">
+              <div>
+                <div id="code-gh-name" style="font-size:12px;font-weight:700;color:var(--text-p)"></div>
+                <div id="code-gh-login" style="font-size:11px;color:#10b981"></div>
+              </div>
+              <button class="code-icon-btn" onclick="codeGHDisconnect()" title="Disconnect GitHub" style="margin-left:auto;color:var(--text-m)"><i class="fas fa-unlink"></i></button>
+            </div>
+            <select class="code-select" id="code-repo-select" onchange="codeSelectRepo(this.value)">
+              <option value="">— Select a repository —</option>
+            </select>
+          </div>
+          <div id="code-gh-disconnected">
+            <div style="font-size:12px;color:var(--text-s);margin-bottom:8px;line-height:1.5"><i class="fab fa-github" style="color:var(--text-m);margin-right:5px"></i>Connect GitHub to browse repos and push AI-generated code directly.</div>
+            <button class="code-btn-connect" onclick="codeConnectGitHub()"><i class="fab fa-github"></i> Connect GitHub</button>
+          </div>
+        </div>
+
+        <!-- File Explorer -->
+        <div class="code-file-explorer">
+          <div class="code-panel-label"><i class="fas fa-folder-tree"></i> File Explorer</div>
+          <div id="code-file-tree" class="code-file-tree">
+            <div class="code-file-empty">No repository selected</div>
+          </div>
+        </div>
+
+        <!-- AI Generated Files -->
+        <div class="code-generated-files" id="code-generated-files-panel" style="display:none">
+          <div class="code-panel-label" style="color:#a855f7"><i class="fas fa-sparkles"></i> AI Generated</div>
+          <div id="code-gen-file-list" class="code-file-tree"></div>
+        </div>
+      </div>
+
+      <!-- CENTER: Code Editor / Preview -->
+      <div class="code-main">
+        <!-- Toolbar -->
+        <div class="code-toolbar">
+          <div class="code-toolbar-left">
+            <span class="code-file-badge" id="code-active-file"><i class="fas fa-file-code"></i> No file open</span>
+          </div>
+          <div class="code-toolbar-right" id="code-toolbar-actions" style="display:none">
+            <button class="code-icon-btn" onclick="codeCopyContent()" title="Copy code"><i class="fas fa-copy"></i></button>
+            <button class="code-icon-btn" onclick="codePushToGitHub()" title="Push to GitHub" id="btn-code-push"><i class="fab fa-github"></i> Push</button>
+          </div>
+        </div>
+
+        <!-- Code display -->
+        <div class="code-editor-wrap" id="code-editor-wrap">
+          <div class="code-welcome">
+            <div style="font-size:32px;margin-bottom:12px">⚡</div>
+            <div style="font-size:16px;font-weight:800;color:var(--text-p);margin-bottom:8px">AI Code Workspace</div>
+            <div style="font-size:13px;color:var(--text-s);line-height:1.7;max-width:320px">Connect your GitHub, select a repo, then describe what you want the AI to build. Watch it generate files in real time.</div>
+          </div>
+        </div>
+
+        <!-- AI Prompt Bar -->
+        <div class="code-prompt-bar">
+          <div class="code-prompt-wrap">
+            <textarea class="code-prompt-input" id="code-prompt-input" rows="2" placeholder="Describe what to build or modify… e.g. 'Add a dark mode toggle to the navbar' or 'Create a REST API endpoint for user auth'"></textarea>
+            <div class="code-prompt-actions">
+              <select class="code-lang-select" id="code-lang-select">
+                <option value="">Auto-detect</option>
+                <option value="javascript">JavaScript</option>
+                <option value="typescript">TypeScript</option>
+                <option value="python">Python</option>
+                <option value="html">HTML</option>
+                <option value="css">CSS</option>
+                <option value="rust">Rust</option>
+                <option value="go">Go</option>
+                <option value="sql">SQL</option>
+              </select>
+              <button class="code-btn-generate" id="btn-code-generate" onclick="codeGenerate()">
+                <i class="fas fa-wand-magic-sparkles"></i> Generate
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: Live Status / Activity Log -->
+      <div class="code-log-panel">
+        <div class="code-panel-label"><i class="fas fa-bolt"></i> Live Status</div>
+        <div id="code-activity-log" class="code-activity-log">
+          <div class="code-log-empty">Activity will appear here as the AI works…</div>
+        </div>
+        <!-- GitHub Status -->
+        <div class="code-panel-label" style="margin-top:12px"><i class="fab fa-github"></i> GitHub Status</div>
+        <div id="code-gh-status-panel" class="code-gh-status">
+          <div style="font-size:11px;color:var(--text-m)">Not connected</div>
+        </div>
+        <!-- Commit Log -->
+        <div id="code-commit-log-wrap" style="display:none">
+          <div class="code-panel-label" style="margin-top:12px"><i class="fas fa-code-commit"></i> Recent Pushes</div>
+          <div id="code-commit-log" class="code-commit-log"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div><!-- /tab-pane-generate -->
 
 <!-- 264 PRO TAB — Download / Landing Page -->
 <div class="tab-pane" id="tab-pane-264" style="display:none;padding:0;overflow-y:auto">
@@ -7696,6 +8027,7 @@ em{color:var(--accent);font-style:italic}
 const FS_USER     = ${userJson};
 const FS_NOTION   = ${notionJson};
 const FS_SLACK    = ${slackJson};
+const FS_GITHUB   = ${githubJson};
 const FS_ONBOARDED= ${onboardedJson};
 </script>
 <script src="/static/app.js"></script>

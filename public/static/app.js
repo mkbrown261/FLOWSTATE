@@ -815,6 +815,7 @@ function switchGenSub(sub) {
   if (sub==='i2v')       { setTimeout(()=>buildGenPicker('i2v'), 30); }
   if (sub==='tts')       { loadTTSVoices(); }
   if (sub==='higgsfield'){ initHiggsfield(); }
+  if (sub==='code')      { initCodeWorkspace(); }
 }
 
 // ── Gen sidebar log helper ────────────────────────────────────────────────────
@@ -9586,4 +9587,368 @@ const _origOpenSettingsModal = openSettingsModal;
 window.openFlowCoach = openFlowCoach;
 window.openPairingModal = openPairingModal;
 window.openGroupFlowModal = openGroupFlowModal;
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AI CODE WORKSPACE — GitHub OAuth + AI Code Generation
+// ══════════════════════════════════════════════════════════════════════════════
+let _codeState = {
+  ghConnected: false, ghUser: null,
+  repos: [], selectedRepo: null, selectedBranch: 'main',
+  fileTree: [], activeFile: null, activeFileSha: null, activeFileContent: '',
+  generatedFiles: {},   // path → { content, sha }
+  generating: false,
+};
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+function initCodeWorkspace() {
+  // Use server-injected FS_GITHUB if available
+  if (typeof FS_GITHUB !== 'undefined' && FS_GITHUB) {
+    _codeState.ghConnected = true;
+    _codeState.ghUser = FS_GITHUB;
+    _codeRenderConnected();
+    _codeLoadRepos();
+  } else {
+    _codeRenderDisconnected();
+  }
+  _codeUpdateGHStatus();
+}
+
+function _codeRenderConnected() {
+  const conn = document.getElementById('code-gh-connected');
+  const disc = document.getElementById('code-gh-disconnected');
+  if (conn) conn.style.display = 'block';
+  if (disc) disc.style.display = 'none';
+  const u = _codeState.ghUser;
+  if (!u) return;
+  const av = document.getElementById('code-gh-avatar');
+  const nm = document.getElementById('code-gh-name');
+  const lg = document.getElementById('code-gh-login');
+  if (av) av.src = u.avatar_url || '';
+  if (nm) nm.textContent = u.name || u.login;
+  if (lg) lg.textContent = '@' + u.login;
+}
+
+function _codeRenderDisconnected() {
+  const conn = document.getElementById('code-gh-connected');
+  const disc = document.getElementById('code-gh-disconnected');
+  if (conn) conn.style.display = 'none';
+  if (disc) disc.style.display = 'block';
+}
+
+// ── GitHub Connect ────────────────────────────────────────────────────────────
+function codeConnectGitHub() {
+  const w = window.open('/api/auth/github', 'github_oauth', 'width=600,height=700,scrollbars=yes');
+  const handler = (e) => {
+    if (e.data?.type === 'github_connected') {
+      window.removeEventListener('message', handler);
+      _codeState.ghConnected = true;
+      _codeState.ghUser = { login: e.data.login, name: e.data.name, avatar_url: e.data.avatar };
+      _codeRenderConnected();
+      _codeLoadRepos();
+      _codeUpdateGHStatus();
+      codeLog('✅ GitHub connected as @' + e.data.login, 'success');
+    }
+  };
+  window.addEventListener('message', handler);
+  // Also poll for window close in case postMessage doesn't fire
+  const poll = setInterval(() => {
+    if (w?.closed) { clearInterval(poll); window.removeEventListener('message', handler); }
+  }, 500);
+}
+
+async function codeGHDisconnect() {
+  await fetch('/api/auth/github/disconnect', { credentials: 'include' });
+  _codeState.ghConnected = false;
+  _codeState.ghUser = null;
+  _codeState.repos = [];
+  _codeState.selectedRepo = null;
+  _codeState.fileTree = [];
+  _codeRenderDisconnected();
+  _codeRenderFileTree([]);
+  _codeUpdateGHStatus();
+  codeLog('GitHub disconnected', 'info');
+}
+
+// ── Repos ─────────────────────────────────────────────────────────────────────
+async function _codeLoadRepos() {
+  codeLog('Loading repositories…', 'info');
+  try {
+    const res  = await fetch('/api/github/repos', { credentials: 'include' });
+    const data = await res.json();
+    if (data.error) { codeLog('Could not load repos: ' + data.error, 'error'); return; }
+    _codeState.repos = data.repos || [];
+    const sel = document.getElementById('code-repo-select');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— Select a repository —</option>' +
+      _codeState.repos.map(r =>
+        `<option value="${escHtml(r.full_name)}">${escHtml(r.full_name)}${r.private ? ' 🔒' : ''} ${r.language ? '· ' + r.language : ''}</option>`
+      ).join('');
+    codeLog(`Loaded ${_codeState.repos.length} repositories`, 'success');
+    _codeUpdateGHStatus();
+  } catch(e) { codeLog('Network error loading repos', 'error'); }
+}
+
+async function codeSelectRepo(fullName) {
+  if (!fullName) { _codeState.selectedRepo = null; _codeRenderFileTree([]); return; }
+  const repo = _codeState.repos.find(r => r.full_name === fullName);
+  _codeState.selectedRepo = repo || { full_name: fullName, default_branch: 'main' };
+  _codeState.selectedBranch = _codeState.selectedRepo.default_branch || 'main';
+  codeLog(`Loading file tree for ${fullName}…`, 'info');
+  _codeRenderFileTree(null); // show loading
+  try {
+    const res  = await fetch(`/api/github/tree?repo=${encodeURIComponent(fullName)}&branch=${_codeState.selectedBranch}`, { credentials: 'include' });
+    const data = await res.json();
+    if (data.error) { codeLog('Could not load file tree: ' + data.error, 'error'); _codeRenderFileTree([]); return; }
+    _codeState.fileTree = data.tree || [];
+    _codeRenderFileTree(_codeState.fileTree);
+    codeLog(`Loaded ${_codeState.fileTree.length} files from ${fullName}`, 'success');
+  } catch(e) { codeLog('Error loading file tree', 'error'); _codeRenderFileTree([]); }
+}
+
+// ── File Tree ─────────────────────────────────────────────────────────────────
+function _codeRenderFileTree(tree) {
+  const el = document.getElementById('code-file-tree');
+  if (!el) return;
+  if (tree === null) { el.innerHTML = '<div class="code-file-empty"><i class="fas fa-spinner fa-spin"></i> Loading…</div>'; return; }
+  if (!tree.length)  { el.innerHTML = '<div class="code-file-empty">No files found</div>'; return; }
+  // Only show blobs (files), group dirs
+  const files = tree.filter(f => f.type === 'blob').slice(0, 200);
+  el.innerHTML = files.map(f => {
+    const icon = _codeFileIcon(f.path);
+    const isAI = _codeState.generatedFiles[f.path];
+    return `<button class="code-file-item${isAI ? ' ai-generated' : ''}" onclick="codeOpenFile('${escHtml(f.path).replace(/'/g,"\\'")}')">
+      <i class="${icon}"></i><span style="overflow:hidden;text-overflow:ellipsis">${escHtml(f.path)}</span>
+    </button>`;
+  }).join('');
+}
+
+function _codeFileIcon(path) {
+  const ext = path.split('.').pop().toLowerCase();
+  const map = { js:'fab fa-js-square', ts:'fab fa-js-square', jsx:'fab fa-react', tsx:'fab fa-react',
+    html:'fab fa-html5', css:'fab fa-css3-alt', scss:'fab fa-css3-alt', less:'fab fa-css3-alt',
+    py:'fab fa-python', rb:'fas fa-gem', php:'fab fa-php', go:'fas fa-code',
+    md:'fas fa-file-alt', json:'fas fa-brackets-curly', yaml:'fas fa-file-code', yml:'fas fa-file-code',
+    sql:'fas fa-database', sh:'fas fa-terminal', env:'fas fa-key', gitignore:'fab fa-git-alt',
+    png:'fas fa-image', jpg:'fas fa-image', svg:'fas fa-image', gif:'fas fa-image',
+    txt:'fas fa-file-lines', pdf:'fas fa-file-pdf', zip:'fas fa-file-zipper',
+  };
+  return map[ext] || 'fas fa-file-code';
+}
+
+// ── Open file from GitHub ─────────────────────────────────────────────────────
+async function codeOpenFile(path) {
+  if (!_codeState.selectedRepo) return;
+  // Check if we already have it in generated files
+  if (_codeState.generatedFiles[path]) {
+    _codeState.activeFile = path;
+    _codeState.activeFileContent = _codeState.generatedFiles[path].content;
+    _codeState.activeFileSha = _codeState.generatedFiles[path].sha || null;
+    _codeRenderCode(_codeState.activeFileContent, path);
+    return;
+  }
+  codeLog(`Opening ${path}…`, 'info');
+  _codeSetActiveBadge(path);
+  const editor = document.getElementById('code-editor-wrap');
+  if (editor) editor.innerHTML = '<div class="code-generating"><div class="code-gen-pulse"></div><span>Loading file…</span></div>';
+  try {
+    const res  = await fetch(`/api/github/file?repo=${encodeURIComponent(_codeState.selectedRepo.full_name)}&path=${encodeURIComponent(path)}&branch=${_codeState.selectedBranch}`, { credentials: 'include' });
+    const data = await res.json();
+    if (data.error) { codeLog('Could not load file: ' + data.error, 'error'); return; }
+    _codeState.activeFile = path;
+    _codeState.activeFileContent = data.content;
+    _codeState.activeFileSha = data.sha;
+    _codeRenderCode(data.content, path);
+    codeLog(`Opened ${path}`, 'success');
+  } catch(e) { codeLog('Error loading file', 'error'); }
+}
+
+function _codeRenderCode(content, path) {
+  const editor = document.getElementById('code-editor-wrap');
+  const actions = document.getElementById('code-toolbar-actions');
+  if (actions) actions.style.display = 'flex';
+  if (!editor) return;
+  // Simple syntax highlight by escaping HTML then colorizing keywords
+  const escaped = content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  editor.innerHTML = `<div class="code-content">${escaped}</div>`;
+  _codeSetActiveBadge(path);
+  // Highlight active file in tree
+  document.querySelectorAll('.code-file-item').forEach(el => {
+    el.classList.toggle('active', el.textContent.trim().includes(path.split('/').pop()));
+  });
+}
+
+function _codeSetActiveBadge(path) {
+  const badge = document.getElementById('code-active-file');
+  if (badge) badge.innerHTML = `<i class="${_codeFileIcon(path)}"></i> ${escHtml(path)}`;
+}
+
+// ── AI Code Generation ────────────────────────────────────────────────────────
+async function codeGenerate() {
+  if (_codeState.generating) return;
+  if (!FS_USER) { notify('Sign in to use AI Code Workspace', 'info'); return; }
+  const prompt = document.getElementById('code-prompt-input')?.value?.trim();
+  if (!prompt) { notify('Describe what you want to build', 'warning'); return; }
+  const lang = document.getElementById('code-lang-select')?.value || '';
+
+  _codeState.generating = true;
+  const btn = document.getElementById('btn-code-generate');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating…'; }
+
+  const editor = document.getElementById('code-editor-wrap');
+  if (editor) editor.innerHTML = `<div class="code-generating"><div class="code-gen-pulse"></div><span>AI is writing your code…</span></div>`;
+
+  codeLog('🤖 AI generating: ' + prompt.slice(0,60) + (prompt.length>60?'…':''), 'ai');
+  if (_codeState.selectedRepo) codeLog('Repo: ' + _codeState.selectedRepo.full_name, 'info');
+
+  try {
+    const res = await fetch('/api/github/ai-code', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        repo: _codeState.selectedRepo?.full_name || '',
+        file: _codeState.activeFile || '',
+        language: lang,
+        existingCode: _codeState.activeFile ? _codeState.activeFileContent : '',
+      })
+    });
+    const data = await res.json();
+    if (data.error) { codeLog('AI error: ' + data.error, 'error'); return; }
+
+    // Determine file path for generated code
+    const filePath = _codeState.activeFile || _codeGuessFileName(prompt, lang);
+    _codeState.activeFile = filePath;
+    _codeState.activeFileContent = data.code;
+    _codeState.generatedFiles[filePath] = { content: data.code, sha: _codeState.activeFileSha };
+
+    _codeRenderCode(data.code, filePath);
+    _codeAddGeneratedFileToPanel(filePath);
+    codeLog('✅ Code generated — ' + data.code.split('\n').length + ' lines', 'success');
+
+    // Prompt clear
+    const inp = document.getElementById('code-prompt-input');
+    if (inp) inp.value = '';
+  } catch(e) {
+    codeLog('Network error during generation', 'error');
+    if (editor) editor.innerHTML = '<div class="code-welcome"><div style="font-size:32px">⚠️</div><div style="color:var(--text-s);font-size:13px;margin-top:12px">Generation failed. Try again.</div></div>';
+  } finally {
+    _codeState.generating = false;
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Generate'; }
+  }
+}
+
+function _codeGuessFileName(prompt, lang) {
+  const p = prompt.toLowerCase();
+  const extMap = { javascript:'js', typescript:'ts', python:'py', html:'html', css:'css', rust:'rs', go:'go', sql:'sql' };
+  const ext = extMap[lang] || 'js';
+  if (p.includes('api') || p.includes('endpoint') || p.includes('route')) return `src/api/${Date.now()}.${ext}`;
+  if (p.includes('component') || p.includes('button') || p.includes('navbar')) return `src/components/${Date.now()}.${ext}`;
+  if (p.includes('auth') || p.includes('login')) return `src/auth.${ext}`;
+  if (p.includes('style') || p.includes('css')) return `src/styles.css`;
+  if (p.includes('test')) return `src/__tests__/${Date.now()}.test.${ext}`;
+  return `src/generated-${Date.now()}.${ext}`;
+}
+
+function _codeAddGeneratedFileToPanel(path) {
+  const panel = document.getElementById('code-generated-files-panel');
+  const list  = document.getElementById('code-gen-file-list');
+  if (!panel || !list) return;
+  panel.style.display = 'block';
+  // Remove existing entry for same path
+  list.querySelectorAll('.code-file-item').forEach(el => { if (el.dataset.path === path) el.remove(); });
+  const btn = document.createElement('button');
+  btn.className = 'code-file-item ai-generated';
+  btn.dataset.path = path;
+  btn.innerHTML = `<i class="${_codeFileIcon(path)}"></i><span style="overflow:hidden;text-overflow:ellipsis">${escHtml(path)}</span>`;
+  btn.onclick = () => codeOpenFile(path);
+  list.insertBefore(btn, list.firstChild);
+}
+
+// ── Push to GitHub ────────────────────────────────────────────────────────────
+async function codePushToGitHub() {
+  if (!_codeState.ghConnected) { notify('Connect GitHub first', 'warning'); return; }
+  if (!_codeState.selectedRepo) { notify('Select a repository first', 'warning'); return; }
+  if (!_codeState.activeFile || !_codeState.activeFileContent) { notify('No file to push', 'warning'); return; }
+  const btn = document.getElementById('btn-code-push');
+  if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Pushing…'; btn.disabled = true; }
+  codeLog(`Pushing ${_codeState.activeFile} to ${_codeState.selectedRepo.full_name}…`, 'info');
+  try {
+    const res = await fetch('/api/github/commit', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repo: _codeState.selectedRepo.full_name,
+        path: _codeState.activeFile,
+        content: _codeState.activeFileContent,
+        message: `AI: Update ${_codeState.activeFile} via FlowState`,
+        branch: _codeState.selectedBranch,
+        sha: _codeState.activeFileSha || undefined,
+      })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      _codeState.activeFileSha = data.sha;
+      if (_codeState.generatedFiles[_codeState.activeFile]) {
+        _codeState.generatedFiles[_codeState.activeFile].sha = data.sha;
+      }
+      codeLog(`✅ Pushed to GitHub: ${_codeState.activeFile}`, 'success');
+      notify('Pushed to GitHub!', 'success');
+      _codeAddCommitEntry(_codeState.activeFile, data.url);
+    } else {
+      codeLog('Push failed: ' + (data.error || 'Unknown error'), 'error');
+      notify('Push failed: ' + (data.error || 'Check console'), 'warning');
+    }
+  } catch(e) {
+    codeLog('Network error during push', 'error');
+  } finally {
+    if (btn) { btn.innerHTML = '<i class="fab fa-github"></i> Push'; btn.disabled = false; }
+  }
+}
+
+function _codeAddCommitEntry(path, url) {
+  const wrap = document.getElementById('code-commit-log-wrap');
+  const log  = document.getElementById('code-commit-log');
+  if (!wrap || !log) return;
+  wrap.style.display = 'block';
+  const el = document.createElement('div');
+  el.className = 'code-commit-entry';
+  el.innerHTML = `<i class="fas fa-check" style="color:#10b981;margin-right:5px"></i>${escHtml(path)}<br>
+    <span style="color:var(--text-m)">${new Date().toLocaleTimeString()}</span>
+    ${url ? ` · <a href="${url}" target="_blank" style="color:#10b981;text-decoration:none">View</a>` : ''}`;
+  log.insertBefore(el, log.firstChild);
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function codeLog(msg, type='info') {
+  const log = document.getElementById('code-activity-log');
+  if (!log) return;
+  const empty = log.querySelector('.code-log-empty');
+  if (empty) empty.remove();
+  const el = document.createElement('div');
+  el.className = `code-log-entry code-log-${type}`;
+  el.textContent = msg;
+  log.insertBefore(el, log.firstChild);
+  // Keep last 40 entries
+  while (log.children.length > 40) log.removeChild(log.lastChild);
+}
+
+function codeCopyContent() {
+  if (!_codeState.activeFileContent) return;
+  navigator.clipboard.writeText(_codeState.activeFileContent).then(() => notify('Code copied!', 'success'));
+}
+
+function _codeUpdateGHStatus() {
+  const panel = document.getElementById('code-gh-status-panel');
+  if (!panel) return;
+  if (_codeState.ghConnected && _codeState.ghUser) {
+    const repoCount = _codeState.repos.length;
+    panel.innerHTML = `<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#10b981"><i class="fas fa-circle" style="font-size:7px"></i> Connected as @${escHtml(_codeState.ghUser.login)}</div>
+    ${repoCount ? `<div style="font-size:10px;color:var(--text-m);margin-top:3px">${repoCount} repos loaded</div>` : ''}
+    ${_codeState.selectedRepo ? `<div style="font-size:10px;color:var(--accent);margin-top:3px"><i class="fas fa-code-branch"></i> ${escHtml(_codeState.selectedRepo.full_name)}</div>` : ''}`;
+  } else {
+    panel.innerHTML = `<div style="font-size:11px;color:var(--text-m)"><i class="fas fa-circle" style="font-size:7px;color:#ef4444;margin-right:5px"></i>Not connected</div>`;
+  }
+}
 
