@@ -9776,17 +9776,26 @@ window.openPairingModal = openPairingModal;
 window.openGroupFlowModal = openGroupFlowModal;
 
 // ══════════════════════════════════════════════════════════════════════════════
-// AI CODE WORKSPACE — GitHub OAuth + AI Code Generation
+// AI CODE WORKSPACE — Builder mode: structured file ops + conversation memory + live preview
 // ══════════════════════════════════════════════════════════════════════════════
 let _codeState = {
+  // GitHub
   ghConnected: false, ghUser: null,
   repos: [], selectedRepo: null, selectedBranch: 'main',
-  fileTree: [], activeFile: null, activeFileSha: null, activeFileContent: '',
-  generatedFiles: {},   // path → { content, sha }
+  fileTree: [],
+  // Active file in editor
+  activeFile: null, activeFileSha: null, activeFileContent: '',
+  // ALL generated files this session: path → { content, sha }
+  generatedFiles: {},
+  // Conversation history for AI context: [{role, content}]
+  conversationHistory: [],
+  // State flags
   generating: false,
-  agent: 'gemini',      // active AI agent id
+  projectStarted: false,
+  currentView: 'code',    // 'code' | 'preview'
+  // Agent
+  agent: 'gemini',
   agentName: 'Gemini 2.0 Flash',
-  projectStarted: false, // true once first generation has occurred in this session
   agentPickerOpen: false,
 };
 
@@ -10016,15 +10025,12 @@ function _codeFileIcon(path) {
 
 // ── Open file from GitHub ─────────────────────────────────────────────────────
 async function codeOpenFile(path) {
-  if (!_codeState.selectedRepo) return;
-  // Check if we already have it in generated files
+  // Check generated files first (no repo required)
   if (_codeState.generatedFiles[path]) {
-    _codeState.activeFile = path;
-    _codeState.activeFileContent = _codeState.generatedFiles[path].content;
-    _codeState.activeFileSha = _codeState.generatedFiles[path].sha || null;
-    _codeRenderCode(_codeState.activeFileContent, path);
+    _codeOpenGeneratedFile(path);
     return;
   }
+  if (!_codeState.selectedRepo) return;
   codeLog(`Opening ${path}…`, 'info');
   _codeSetActiveBadge(path);
   const editor = document.getElementById('code-editor-wrap');
@@ -10061,7 +10067,8 @@ function _codeSetActiveBadge(path) {
   if (badge) badge.innerHTML = `<i class="${_codeFileIcon(path)}"></i> ${escHtml(path)}`;
 }
 
-// ── AI Code Generation ────────────────────────────────────────────────────────
+// ── AI Code Generation — BUILDER MODE ────────────────────────────────────────
+// Flow: user prompt → inject full context → AI returns [{path,content}] → write files → preview
 async function codeGenerate() {
   if (_codeState.generating) return;
   if (!FS_USER) { notify('Sign in to use AI Code Workspace', 'info'); return; }
@@ -10071,13 +10078,25 @@ async function codeGenerate() {
 
   _codeState.generating = true;
   const btn = document.getElementById('btn-code-generate');
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating…'; }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Building…'; }
 
-  const editor = document.getElementById('code-editor-wrap');
-  if (editor) editor.innerHTML = `<div class="code-generating"><div class="code-gen-pulse"></div><span>AI is writing your code…</span></div>`;
+  // Show building state in editor only if nothing is open yet
+  if (!_codeState.activeFile) {
+    const editor = document.getElementById('code-editor-wrap');
+    if (editor) editor.innerHTML = `<div class="code-generating"><div class="code-gen-pulse"></div><span>AI is building your project…</span></div>`;
+  }
 
-  codeLog('🤖 AI generating: ' + prompt.slice(0,60) + (prompt.length>60?'…':''), 'ai');
-  if (_codeState.selectedRepo) codeLog('Repo: ' + _codeState.selectedRepo.full_name, 'info');
+  // Hide previous AI message
+  const msgEl = document.getElementById('code-ai-message');
+  if (msgEl) msgEl.style.display = 'none';
+
+  codeLog('🤖 ' + prompt.slice(0,70) + (prompt.length > 70 ? '…' : ''), 'ai');
+
+  // Build context snapshot of all current file contents for the AI
+  const generatedContents = {};
+  Object.entries(_codeState.generatedFiles).forEach(([path, fd]) => {
+    generatedContents[path] = fd.content;
+  });
 
   try {
     const res = await fetch('/api/github/ai-code', {
@@ -10087,83 +10106,364 @@ async function codeGenerate() {
       body: JSON.stringify({
         prompt,
         repo: _codeState.selectedRepo?.full_name || '',
-        file: _codeState.activeFile || '',
-        language: lang,
-        existingCode: _codeState.activeFile ? _codeState.activeFileContent : '',
         agent: _codeState.agent,
+        language: lang,
+        conversationHistory: _codeState.conversationHistory,
+        fileTree: _codeState.fileTree,
+        generatedFiles: generatedContents,
       })
     });
     const data = await res.json();
-    if (data.error) { codeLog('AI error: ' + data.error, 'error'); return; }
 
-    // Determine file path for generated code
-    const filePath = _codeState.activeFile || _codeGuessFileName(prompt, lang);
-    _codeState.activeFile = filePath;
-    _codeState.activeFileContent = data.code;
-    _codeState.generatedFiles[filePath] = { content: data.code, sha: _codeState.activeFileSha };
-    _codeState.projectStarted = true; // mark project as started so agent switch triggers new-project flow
+    if (!res.ok || data.error) {
+      const errMsg = data.message || data.error || 'Generation failed';
+      codeLog('❌ ' + errMsg, 'error');
+      notify(errMsg, 'warning');
+      return;
+    }
 
-    _codeRenderCode(data.code, filePath);
-    _codeAddGeneratedFileToPanel(filePath);
-    codeLog(`✅ Code generated (${_codeState.agentName}) — ${data.code.split('\n').length} lines`, 'success');
+    const files = data.files || [];
+    if (!files.length) {
+      codeLog('⚠️ AI returned no files', 'error');
+      return;
+    }
 
-    // Prompt clear
+    // ── Write each file the AI produced ──────────────────────────────────────
+    codeLog(`📁 Writing ${files.length} file${files.length > 1 ? 's' : ''}…`, 'info');
+
+    files.forEach(({ path, content }) => {
+      if (!path || content === undefined) return;
+      // Store in generatedFiles
+      const existingSha = _codeState.generatedFiles[path]?.sha || null;
+      _codeState.generatedFiles[path] = { content, sha: existingSha };
+      // Update file panel
+      _codeAddFileToPanel(path);
+      codeLog(`  ✏️ ${path} (${content.split('\n').length} lines)`, 'success');
+    });
+
+    // ── Open the most important file (first HTML, then first JS, then first) ─
+    const preferredFile = files.find(f => f.path.endsWith('.html'))
+      || files.find(f => f.path.endsWith('.jsx') || f.path.endsWith('.tsx'))
+      || files[0];
+
+    _codeState.activeFile = preferredFile.path;
+    _codeState.activeFileContent = preferredFile.content;
+    _codeState.activeFileSha = _codeState.generatedFiles[preferredFile.path]?.sha || null;
+    _codeState.projectStarted = true;
+
+    // Render the active file in code view
+    _codeRenderCode(preferredFile.content, preferredFile.path);
+
+    // ── Update conversation history (memory) ──────────────────────────────────
+    const filesSummary = files.map(f => `${f.path} (${f.content.split('\n').length} lines)`).join(', ');
+    _codeState.conversationHistory.push({ role: 'user', content: prompt });
+    _codeState.conversationHistory.push({
+      role: 'assistant',
+      content: `${data.message || 'Done.'} Files written: ${filesSummary}`
+    });
+    // Keep history from bloating — last 20 messages
+    if (_codeState.conversationHistory.length > 20) {
+      _codeState.conversationHistory = _codeState.conversationHistory.slice(-20);
+    }
+
+    // ── Show AI message ───────────────────────────────────────────────────────
+    if (data.message) {
+      const msgText = document.getElementById('code-ai-message-text');
+      if (msgText) msgText.textContent = data.message;
+      if (msgEl) msgEl.style.display = 'block';
+    }
+
+    // ── Auto-preview if there's an HTML file ─────────────────────────────────
+    const hasHtml = files.some(f => f.path.endsWith('.html'));
+    const hasCss  = files.some(f => f.path.endsWith('.css'));
+    const hasJs   = files.some(f => f.path.endsWith('.js') || f.path.endsWith('.jsx') || f.path.endsWith('.ts') || f.path.endsWith('.tsx'));
+    if (hasHtml || (hasCss && hasJs)) {
+      _codeUpdatePreview();
+      // Show preview toggle
+      const toggle = document.getElementById('code-view-toggle');
+      if (toggle) toggle.style.display = 'flex';
+      // Auto-switch to preview on first build
+      if (!_codeState.projectStarted || files.length > 1) {
+        setTimeout(() => codeSetView('preview'), 300);
+      }
+    }
+
+    // ── Show push buttons ─────────────────────────────────────────────────────
+    const copyBtn = document.getElementById('btn-code-copy');
+    const pushBtn = document.getElementById('btn-code-push');
+    if (copyBtn) copyBtn.style.display = 'flex';
+    if (pushBtn && _codeState.ghConnected) pushBtn.style.display = 'flex';
+    if (_codeState.ghConnected && _codeState.selectedRepo) {
+      const pushAllWrap = document.getElementById('code-push-all-wrap');
+      if (pushAllWrap) pushAllWrap.style.display = 'block';
+    }
+
+    // ── Update session badge ──────────────────────────────────────────────────
+    _codeUpdateSessionBadge();
+
+    codeLog(`✅ Done — ${_codeState.agentName} wrote ${files.length} file${files.length>1?'s':''}`, 'success');
+
+    // Clear prompt
     const inp = document.getElementById('code-prompt-input');
     if (inp) inp.value = '';
+
   } catch(e) {
-    codeLog('Network error during generation', 'error');
-    if (editor) editor.innerHTML = '<div class="code-welcome"><div style="font-size:32px">⚠️</div><div style="color:var(--text-s);font-size:13px;margin-top:12px">Generation failed. Try again.</div></div>';
+    codeLog('Network error: ' + e.message, 'error');
+    notify('Build failed — check your connection', 'warning');
   } finally {
     _codeState.generating = false;
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Generate'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Build'; }
   }
 }
 
-function _codeGuessFileName(prompt, lang) {
-  const p = prompt.toLowerCase();
-  const extMap = { javascript:'js', typescript:'ts', python:'py', html:'html', css:'css', rust:'rs', go:'go', sql:'sql' };
-  const ext = extMap[lang] || 'js';
-  if (p.includes('api') || p.includes('endpoint') || p.includes('route')) return `src/api/${Date.now()}.${ext}`;
-  if (p.includes('component') || p.includes('button') || p.includes('navbar')) return `src/components/${Date.now()}.${ext}`;
-  if (p.includes('auth') || p.includes('login')) return `src/auth.${ext}`;
-  if (p.includes('style') || p.includes('css')) return `src/styles.css`;
-  if (p.includes('test')) return `src/__tests__/${Date.now()}.test.${ext}`;
-  return `src/generated-${Date.now()}.${ext}`;
+// ── Session management ────────────────────────────────────────────────────────
+function codeNewSession() {
+  if (_codeState.projectStarted) {
+    if (!confirm('Start a new session? This clears the AI\'s memory of the current project. Files stay visible.')) return;
+  }
+  _codeState.conversationHistory = [];
+  _codeState.generatedFiles = {};
+  _codeState.activeFile = null;
+  _codeState.activeFileSha = null;
+  _codeState.activeFileContent = '';
+  _codeState.projectStarted = false;
+  _codeState.currentView = 'code';
+
+  // Reset editor
+  const editor = document.getElementById('code-editor-wrap');
+  if (editor) editor.innerHTML = `<div class="code-welcome">
+    <div style="font-size:36px;margin-bottom:14px">⚡</div>
+    <div style="font-size:16px;font-weight:800;color:var(--text-p);margin-bottom:8px">AI Code Builder</div>
+    <div style="font-size:13px;color:var(--text-s);line-height:1.7;max-width:340px;margin-bottom:16px">Describe what you want to build. The AI writes real files, remembers your project, and shows a live preview.</div>
+    <div style="display:flex;flex-direction:column;gap:7px;width:100%;max-width:300px">
+      <div class="code-example-prompt" onclick="codeUseExample(this)">Build a todo app with HTML, CSS and JS</div>
+      <div class="code-example-prompt" onclick="codeUseExample(this)">Create a landing page with a hero section and navbar</div>
+      <div class="code-example-prompt" onclick="codeUseExample(this)">Make a React counter component with hooks</div>
+    </div>
+  </div>`;
+
+  // Reset file list
+  const list = document.getElementById('code-gen-file-list');
+  if (list) list.innerHTML = '<div class="code-file-empty">Files appear here as the AI builds…</div>';
+
+  // Hide preview
+  codeSetView('code');
+  const toggle = document.getElementById('code-view-toggle');
+  if (toggle) toggle.style.display = 'none';
+  const msgEl = document.getElementById('code-ai-message');
+  if (msgEl) msgEl.style.display = 'none';
+
+  _codeUpdateSessionBadge();
+  codeLog('🔄 New session started', 'info');
 }
 
-function _codeAddGeneratedFileToPanel(path) {
-  const panel = document.getElementById('code-generated-files-panel');
-  const list  = document.getElementById('code-gen-file-list');
-  if (!panel || !list) return;
-  panel.style.display = 'block';
-  // Remove existing entry for same path
+function _codeUpdateSessionBadge() {
+  const badge = document.getElementById('code-session-badge');
+  const label = document.getElementById('code-session-label');
+  const newBtn = document.getElementById('btn-code-new-session');
+  const fileCount = Object.keys(_codeState.generatedFiles).length;
+  const turnCount = Math.floor(_codeState.conversationHistory.length / 2);
+  if (badge) badge.style.display = fileCount > 0 ? 'flex' : 'none';
+  if (label) label.textContent = `${fileCount} file${fileCount!==1?'s':''} · ${turnCount} turn${turnCount!==1?'s':''}`;
+  if (newBtn) newBtn.style.display = fileCount > 0 ? 'flex' : 'none';
+}
+
+// ── Example prompt shortcuts ──────────────────────────────────────────────────
+function codeUseExample(el) {
+  const inp = document.getElementById('code-prompt-input');
+  if (inp) { inp.value = el.textContent; inp.focus(); }
+}
+
+// ── View toggle: Code ↔ Preview ───────────────────────────────────────────────
+function codeSetView(view) {
+  _codeState.currentView = view;
+  const editorWrap  = document.getElementById('code-editor-wrap');
+  const previewWrap = document.getElementById('code-preview-wrap');
+  const btnCode     = document.getElementById('btn-view-code');
+  const btnPreview  = document.getElementById('btn-view-preview');
+  if (view === 'preview') {
+    if (editorWrap)  editorWrap.style.display  = 'none';
+    if (previewWrap) previewWrap.style.display = 'block';
+    if (btnCode)    btnCode.classList.remove('active');
+    if (btnPreview) btnPreview.classList.add('active');
+    _codeUpdatePreview();
+  } else {
+    if (editorWrap)  editorWrap.style.display  = '';
+    if (previewWrap) previewWrap.style.display = 'none';
+    if (btnCode)    btnCode.classList.add('active');
+    if (btnPreview) btnPreview.classList.remove('active');
+  }
+}
+
+// ── Live Preview ──────────────────────────────────────────────────────────────
+// Builds a self-contained srcdoc combining all project files
+function _codeUpdatePreview() {
+  const frame = document.getElementById('code-preview-frame');
+  if (!frame) return;
+
+  const files = _codeState.generatedFiles;
+  const paths = Object.keys(files);
+
+  // Collect file types
+  const htmlFiles = paths.filter(p => p.endsWith('.html'));
+  const cssFiles  = paths.filter(p => p.endsWith('.css'));
+  const jsFiles   = paths.filter(p => p.endsWith('.js') || p.endsWith('.jsx'));
+  const tsFiles   = paths.filter(p => p.endsWith('.ts') || p.endsWith('.tsx'));
+
+  let srcdoc = '';
+
+  if (htmlFiles.length > 0) {
+    // Strategy A: HTML-first — inject CSS and JS inline into the HTML
+    let html = files[htmlFiles[0]].content;
+
+    // Inline external CSS references
+    cssFiles.forEach(cssPath => {
+      const fname = cssPath.split('/').pop();
+      const cssContent = files[cssPath]?.content || '';
+      // Replace <link href="...cssPath..."> or <link href="...fname...">
+      html = html.replace(
+        new RegExp(`<link[^>]*href=["'][^"']*${fname.replace('.','\\.')}["'][^>]*>`, 'gi'),
+        `<style>${cssContent}</style>`
+      );
+    });
+
+    // Inline external JS references
+    jsFiles.forEach(jsPath => {
+      const fname = jsPath.split('/').pop();
+      const jsContent = files[jsPath]?.content || '';
+      html = html.replace(
+        new RegExp(`<script[^>]*src=["'][^"']*${fname.replace('.','\\.')}["'][^>]*>\\s*</script>`, 'gi'),
+        `<script>${jsContent}</script>`
+      );
+    });
+
+    // If CSS still has links not replaced, append them inline
+    const hasUnlinkedCss = cssFiles.some(p => !html.includes(files[p]?.content?.slice(0,30) || '~~'));
+    if (hasUnlinkedCss) {
+      const allCss = cssFiles.map(p => files[p]?.content || '').join('\n');
+      html = html.replace('</head>', `<style>${allCss}</style>\n</head>`);
+    }
+
+    // If JS still has scripts not replaced, append them inline
+    const hasUnlinkedJs = jsFiles.some(p => !html.includes(files[p]?.content?.slice(0,30) || '~~'));
+    if (hasUnlinkedJs) {
+      const allJs = jsFiles.map(p => files[p]?.content || '').join('\n');
+      html = html.replace('</body>', `<script>${allJs}</script>\n</body>`);
+    }
+
+    srcdoc = html;
+
+  } else if (tsFiles.length > 0 || jsFiles.some(p => files[p].content.includes('import React') || files[p].content.includes('from "react"') || files[p].content.includes("from 'react'"))) {
+    // Strategy B: React/TSX — use esm.sh to import React without a build step
+    const mainFile = tsFiles[0] || jsFiles[0];
+    let componentCode = files[mainFile]?.content || '';
+
+    // Rewrite local imports to esm.sh
+    componentCode = componentCode
+      .replace(/import\s+React.*from\s+['"]react['"]/g, "import React from 'https://esm.sh/react@18'")
+      .replace(/import\s+\{([^}]+)\}\s+from\s+['"]react['"]/g, "import {$1} from 'https://esm.sh/react@18'")
+      .replace(/from\s+['"]react-dom['"]/g, "from 'https://esm.sh/react-dom@18'")
+      .replace(/from\s+['"]react-dom\/client['"]/g, "from 'https://esm.sh/react-dom@18/client'");
+
+    // Strip TypeScript annotations for browser ESM (basic stripping)
+    componentCode = componentCode
+      .replace(/:\s*(string|number|boolean|any|void|never|unknown|React\.\w+|FC|ReactNode|MouseEvent)[^,;)\n]*/g, '')
+      .replace(/<[A-Z]\w*>/g, '')
+      .replace(/interface\s+\w+\s*\{[^}]*\}/g, '')
+      .replace(/type\s+\w+\s*=\s*[^;]+;/g, '');
+
+    const cssContent = cssFiles.map(p => files[p]?.content || '').join('\n');
+
+    srcdoc = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif}
+${cssContent}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+${componentCode}
+// Auto-mount if a default export exists
+if (typeof App !== 'undefined') {
+  import { createRoot } from 'https://esm.sh/react-dom@18/client';
+  import React from 'https://esm.sh/react@18';
+  createRoot(document.getElementById('root')).render(React.createElement(App));
+}
+</script>
+</body>
+</html>`;
+
+  } else if (cssFiles.length > 0 || jsFiles.length > 0) {
+    // Strategy C: CSS + JS only — wrap in minimal HTML shell
+    const allCss = cssFiles.map(p => files[p]?.content || '').join('\n');
+    const allJs  = jsFiles.map(p => files[p]?.content || '').join('\n');
+    srcdoc = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>*{box-sizing:border-box}body{font-family:system-ui,sans-serif;padding:20px}
+${allCss}</style>
+</head>
+<body>
+<div id="app"></div>
+<script>${allJs}</script>
+</body>
+</html>`;
+  }
+
+  if (srcdoc) {
+    frame.srcdoc = srcdoc;
+  }
+}
+
+// ── File panel ─────────────────────────────────────────────────────────────────
+function _codeAddFileToPanel(path) {
+  const list = document.getElementById('code-gen-file-list');
+  if (!list) return;
+  // Remove empty message
+  const empty = list.querySelector('.code-file-empty');
+  if (empty) empty.remove();
+  // Remove duplicate
   list.querySelectorAll('.code-file-item').forEach(el => { if (el.dataset.path === path) el.remove(); });
   const btn = document.createElement('button');
   btn.className = 'code-file-item ai-generated';
   btn.dataset.path = path;
-  btn.innerHTML = `<i class="${_codeFileIcon(path)}"></i><span style="overflow:hidden;text-overflow:ellipsis">${escHtml(path)}</span>`;
-  btn.onclick = () => codeOpenFile(path);
+  btn.onclick = () => _codeOpenGeneratedFile(path);
+  btn.innerHTML = `<i class="${_codeFileIcon(path)}"></i><span style="overflow:hidden;text-overflow:ellipsis;flex:1">${escHtml(path)}</span>`;
   list.insertBefore(btn, list.firstChild);
 }
 
-// ── Push to GitHub ────────────────────────────────────────────────────────────
+function _codeOpenGeneratedFile(path) {
+  const fd = _codeState.generatedFiles[path];
+  if (!fd) return;
+  _codeState.activeFile = path;
+  _codeState.activeFileContent = fd.content;
+  _codeState.activeFileSha = fd.sha || null;
+  _codeRenderCode(fd.content, path);
+  // Switch to code view when clicking a file
+  codeSetView('code');
+}
+
+// ── Push active file to GitHub ────────────────────────────────────────────────
 async function codePushToGitHub() {
   if (!_codeState.ghConnected) { notify('Connect GitHub first', 'warning'); return; }
   if (!_codeState.selectedRepo) { notify('Select a repository first', 'warning'); return; }
-  if (!_codeState.activeFile || !_codeState.activeFileContent) { notify('No file to push', 'warning'); return; }
+  if (!_codeState.activeFile || !_codeState.activeFileContent) { notify('No file open', 'warning'); return; }
   const btn = document.getElementById('btn-code-push');
-  if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Pushing…'; btn.disabled = true; }
-  codeLog(`Pushing ${_codeState.activeFile} to ${_codeState.selectedRepo.full_name}…`, 'info');
+  if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; btn.disabled = true; }
+  codeLog(`Pushing ${_codeState.activeFile}…`, 'info');
   try {
     const res = await fetch('/api/github/commit', {
-      method: 'POST',
-      credentials: 'include',
+      method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         repo: _codeState.selectedRepo.full_name,
         path: _codeState.activeFile,
         content: _codeState.activeFileContent,
-        message: `AI: Update ${_codeState.activeFile} via FlowState`,
+        message: `AI: ${_codeState.activeFile} via FlowState`,
         branch: _codeState.selectedBranch,
         sha: _codeState.activeFileSha || undefined,
       })
@@ -10174,18 +10474,53 @@ async function codePushToGitHub() {
       if (_codeState.generatedFiles[_codeState.activeFile]) {
         _codeState.generatedFiles[_codeState.activeFile].sha = data.sha;
       }
-      codeLog(`✅ Pushed to GitHub: ${_codeState.activeFile}`, 'success');
-      notify('Pushed to GitHub!', 'success');
+      codeLog(`✅ Pushed: ${_codeState.activeFile}`, 'success');
+      notify('Pushed!', 'success');
       _codeAddCommitEntry(_codeState.activeFile, data.url);
     } else {
-      codeLog('Push failed: ' + (data.error || 'Unknown error'), 'error');
-      notify('Push failed: ' + (data.error || 'Check console'), 'warning');
+      codeLog('Push failed: ' + (data.error || 'Unknown'), 'error');
+      notify('Push failed', 'warning');
     }
-  } catch(e) {
-    codeLog('Network error during push', 'error');
-  } finally {
-    if (btn) { btn.innerHTML = '<i class="fab fa-github"></i> Push'; btn.disabled = false; }
+  } catch(e) { codeLog('Network error pushing file', 'error'); }
+  finally { if (btn) { btn.innerHTML = '<i class="fab fa-github"></i> Push'; btn.disabled = false; } }
+}
+
+// ── Push ALL generated files to GitHub ───────────────────────────────────────
+async function codePushAllToGitHub() {
+  if (!_codeState.ghConnected) { notify('Connect GitHub first', 'warning'); return; }
+  if (!_codeState.selectedRepo) { notify('Select a repository first', 'warning'); return; }
+  const files = Object.entries(_codeState.generatedFiles);
+  if (!files.length) { notify('No files to push', 'warning'); return; }
+  const btn = document.getElementById('btn-code-push-all');
+  if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Pushing…'; btn.disabled = true; }
+  codeLog(`Pushing ${files.length} files to ${_codeState.selectedRepo.full_name}…`, 'info');
+  let pushed = 0, failed = 0;
+  for (const [path, fd] of files) {
+    try {
+      const res = await fetch('/api/github/commit', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo: _codeState.selectedRepo.full_name,
+          path,
+          content: fd.content,
+          message: `AI: ${path} via FlowState`,
+          branch: _codeState.selectedBranch,
+          sha: fd.sha || undefined,
+        })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        _codeState.generatedFiles[path].sha = data.sha;
+        if (_codeState.activeFile === path) _codeState.activeFileSha = data.sha;
+        pushed++;
+        codeLog(`  ✅ ${path}`, 'success');
+      } else { failed++; codeLog(`  ❌ ${path}: ${data.error}`, 'error'); }
+    } catch { failed++; codeLog(`  ❌ ${path}: network error`, 'error'); }
   }
+  codeLog(`Push complete: ${pushed} ok, ${failed} failed`, pushed > 0 ? 'success' : 'error');
+  notify(`Pushed ${pushed}/${files.length} files`, pushed === files.length ? 'success' : 'warning');
+  if (btn) { btn.innerHTML = '<i class="fab fa-github"></i> Push All Files'; btn.disabled = false; }
 }
 
 function _codeAddCommitEntry(path, url) {
@@ -10211,22 +10546,20 @@ function codeLog(msg, type='info') {
   el.className = `code-log-entry code-log-${type}`;
   el.textContent = msg;
   log.insertBefore(el, log.firstChild);
-  // Keep last 40 entries
-  while (log.children.length > 40) log.removeChild(log.lastChild);
+  while (log.children.length > 50) log.removeChild(log.lastChild);
 }
 
 function codeCopyContent() {
   if (!_codeState.activeFileContent) return;
-  navigator.clipboard.writeText(_codeState.activeFileContent).then(() => notify('Code copied!', 'success'));
+  navigator.clipboard.writeText(_codeState.activeFileContent).then(() => notify('Copied!', 'success'));
 }
 
 function _codeUpdateGHStatus() {
   const panel = document.getElementById('code-gh-status-panel');
   if (!panel) return;
   if (_codeState.ghConnected && _codeState.ghUser) {
-    const repoCount = _codeState.repos.length;
-    panel.innerHTML = `<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#10b981"><i class="fas fa-circle" style="font-size:7px"></i> Connected as @${escHtml(_codeState.ghUser.login)}</div>
-    ${repoCount ? `<div style="font-size:10px;color:var(--text-m);margin-top:3px">${repoCount} repos loaded</div>` : ''}
+    panel.innerHTML = `<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#10b981"><i class="fas fa-circle" style="font-size:7px"></i> @${escHtml(_codeState.ghUser.login)}</div>
+    ${_codeState.repos.length ? `<div style="font-size:10px;color:var(--text-m);margin-top:3px">${_codeState.repos.length} repos</div>` : ''}
     ${_codeState.selectedRepo ? `<div style="font-size:10px;color:var(--accent);margin-top:3px"><i class="fas fa-code-branch"></i> ${escHtml(_codeState.selectedRepo.full_name)}</div>` : ''}`;
   } else {
     panel.innerHTML = `<div style="font-size:11px;color:var(--text-m)"><i class="fas fa-circle" style="font-size:7px;color:#ef4444;margin-right:5px"></i>Not connected</div>`;

@@ -499,117 +499,185 @@ app.post('/api/github/commit', async (c) => {
   return c.json({ ok: true, sha: data.content?.sha, url: data.content?.html_url })
 })
 
-// POST /api/github/ai-code — AI generates code for a file/feature
+// POST /api/github/ai-code — AI builder: returns structured file operations + message
+// Body: { prompt, repo, agent, conversationHistory, fileTree, generatedFiles, language }
 app.post('/api/github/ai-code', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
-  const { prompt, repo, file, language, existingCode, agent = 'gemini' } = await c.req.json()
+
+  const {
+    prompt,
+    repo          = '',
+    agent         = 'gemini',
+    conversationHistory = [],   // [{role:'user'|'assistant', content:string}]
+    fileTree      = [],         // [{path, type}] from GitHub or local
+    generatedFiles = {},        // {path: content} — everything built this session
+    language      = '',
+  } = await c.req.json()
+
   if (!prompt) return c.json({ error: 'missing_prompt' }, 400)
 
-  const systemPrompt = `You are an expert software engineer. Generate clean, production-ready code.
-${repo ? `Working in repo: ${repo}` : ''}
-${file ? `File: ${file}` : ''}
-${language ? `Language: ${language}` : ''}
-Respond with ONLY the code — no markdown fences, no explanation. Just the raw file content.`
+  // ── Build full project context for the AI ──────────────────────────────────
+  const fileList = fileTree.length
+    ? fileTree.filter((f: any) => f.type === 'blob').map((f: any) => f.path).slice(0, 150).join('\n')
+    : Object.keys(generatedFiles).join('\n')
 
-  const userMsg = existingCode
-    ? `Existing code:\n\`\`\`\n${existingCode}\n\`\`\`\n\nTask: ${prompt}`
-    : prompt
+  const generatedContext = Object.keys(generatedFiles).length
+    ? Object.entries(generatedFiles)
+        .slice(-8) // last 8 files to keep context size reasonable
+        .map(([path, content]: [string, any]) =>
+          `\n### FILE: ${path}\n\`\`\`\n${String(content).slice(0, 2000)}\n\`\`\``)
+        .join('')
+    : ''
 
-  let code = '// Could not generate code'
+  // ── System prompt: builder identity + output format ──────────────────────
+  const systemPrompt = `You are an expert AI software engineer and builder — like Cursor, Devin, or Bolt.
+You BUILD code by creating and modifying files directly. You never just talk about code.
 
-  // ── Gemini 2.0 Flash (default) ──────────────────────────────────────────────
+${repo ? `REPO: ${repo}` : 'STANDALONE PROJECT (no repo connected)'}
+${language ? `PRIMARY LANGUAGE: ${language}` : ''}
+
+${fileList ? `PROJECT FILE STRUCTURE:\n${fileList}` : ''}
+${generatedContext ? `\nCURRENT FILE CONTENTS (most recently modified):${generatedContext}` : ''}
+
+RULES:
+1. ALWAYS respond with a JSON object — no prose, no markdown outside JSON.
+2. The JSON must have this exact shape:
+   {
+     "message": "Brief description of what you did (1-2 sentences, shown to user)",
+     "files": [
+       { "path": "src/index.html", "content": "...full file content..." },
+       { "path": "src/styles.css", "content": "...full file content..." }
+     ]
+   }
+3. Always write COMPLETE file contents — never truncate, never use "// ... rest of file".
+4. For HTML/CSS/JS projects: use self-contained files. Import React from "https://esm.sh/react@18" if needed.
+5. Build on existing files — read the context above and MODIFY what exists, don't restart from scratch.
+6. Create multiple files when the task requires it (e.g. HTML + CSS + JS as separate files).
+7. File paths should be relative (e.g. "index.html", "src/app.js", "styles/main.css").`
+
+  // ── Build messages array with full conversation history ───────────────────
+  // History gives the AI memory of everything built so far
+  const historyMessages = conversationHistory.slice(-10) // last 10 exchanges max
+    .map((m: any) => ({ role: m.role, content: m.content }))
+
+  const currentUserMsg = `Task: ${prompt}`
+
+  let rawResponse = ''
+
+  // ── Helper: call chat completions style API ────────────────────────────────
+  async function callChatAPI(apiUrl: string, apiKey: string, modelId: string, extraHeaders: Record<string,string> = {}) {
+    const r = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`, ...extraHeaders },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...historyMessages,
+          { role: 'user', content: currentUserMsg }
+        ],
+        temperature: 0.2,
+        max_tokens: 16000,
+        response_format: { type: 'json_object' },
+      })
+    })
+    const d: any = await r.json()
+    return d?.choices?.[0]?.message?.content || ''
+  }
+
+  // ── Gemini 2.0 Flash ───────────────────────────────────────────────────────
   if (agent === 'gemini') {
     const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
-    if (!geminiKey) return c.json({ error: 'no_ai_key', code: '// Add GEMINI_API_KEY or GOOGLE_AI_KEY to your Cloudflare secrets to enable Gemini code generation.' })
+    if (!geminiKey) return c.json({ error: 'no_ai_key', message: 'Add GEMINI_API_KEY to Cloudflare secrets.' })
+    // Gemini doesn't use messages array the same way — flatten history into content
+    const flatHistory = historyMessages.map((m: any) =>
+      `[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')
+    const fullPrompt = `${systemPrompt}\n\n${flatHistory ? flatHistory + '\n\n' : ''}[USER]: ${currentUserMsg}`
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: systemPrompt + '\n\n' + userMsg }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 8192 }
+        contents: [{ parts: [{ text: fullPrompt }] }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 16000,
+          responseMimeType: 'application/json',
+        }
       })
     })
     const d: any = await r.json()
-    code = d?.candidates?.[0]?.content?.parts?.[0]?.text || code
+    rawResponse = d?.candidates?.[0]?.content?.parts?.[0]?.text || ''
 
-  // ── GPT-4o (direct OpenAI, falls back to OpenRouter) ───────────────────────
+  // ── GPT-4o ─────────────────────────────────────────────────────────────────
   } else if (agent === 'gpt4o') {
     const openaiKey = c.env?.OPENAI_API_KEY || ''
     const orKey     = c.env?.OPENROUTER_API_KEY || ''
-    if (!openaiKey && !orKey) return c.json({ error: 'no_ai_key', code: '// Add OPENAI_API_KEY or OPENROUTER_API_KEY to enable GPT-4o code generation.' })
-    const apiKey = openaiKey || orKey
-    const apiUrl = openaiKey ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'
+    if (!openaiKey && !orKey) return c.json({ error: 'no_ai_key', message: 'Add OPENAI_API_KEY to Cloudflare secrets.' })
+    const apiKey  = openaiKey || orKey
+    const apiUrl  = openaiKey ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'
     const modelId = openaiKey ? 'gpt-4o' : 'openai/gpt-4o'
-    const r = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }],
-        temperature: 0.3, max_tokens: 8192
-      })
-    })
-    const d: any = await r.json()
-    code = d?.choices?.[0]?.message?.content || code
+    rawResponse = await callChatAPI(apiUrl, apiKey, modelId)
 
-  // ── Claude 3.5 Sonnet (direct Anthropic, falls back to OpenRouter) ──────────
+  // ── Claude 3.5 Sonnet ──────────────────────────────────────────────────────
   } else if (agent === 'claude') {
     const claudeKey = c.env?.ANTHROPIC_API_KEY || ''
     const orKey     = c.env?.OPENROUTER_API_KEY || ''
-    if (!claudeKey && !orKey) return c.json({ error: 'no_ai_key', code: '// Add ANTHROPIC_API_KEY or OPENROUTER_API_KEY to enable Claude code generation.' })
+    if (!claudeKey && !orKey) return c.json({ error: 'no_ai_key', message: 'Add ANTHROPIC_API_KEY to Cloudflare secrets.' })
     if (claudeKey) {
       const r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({
           model: 'claude-3-5-sonnet-20241022',
-          max_tokens: 8192,
+          max_tokens: 16000,
           system: systemPrompt,
-          messages: [{ role: 'user', content: userMsg }]
+          messages: [...historyMessages, { role: 'user', content: currentUserMsg }]
         })
       })
       const d: any = await r.json()
-      code = d?.content?.[0]?.text || code
+      rawResponse = d?.content?.[0]?.text || ''
     } else {
-      // Fallback: Claude via OpenRouter
-      const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${orKey}` },
-        body: JSON.stringify({
-          model: 'anthropic/claude-3-5-sonnet',
-          messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }],
-          temperature: 0.3, max_tokens: 8192
-        })
-      })
-      const d: any = await r.json()
-      code = d?.choices?.[0]?.message?.content || code
+      rawResponse = await callChatAPI('https://openrouter.ai/api/v1/chat/completions', orKey, 'anthropic/claude-3-5-sonnet')
     }
 
-  // ── DeepSeek Coder (via Together AI or OpenRouter) ───────────────────────────
+  // ── DeepSeek Coder ─────────────────────────────────────────────────────────
   } else if (agent === 'deepseek') {
     const togetherKey = c.env?.TOGETHER_API_KEY || ''
     const orKey       = c.env?.OPENROUTER_API_KEY || ''
-    if (!togetherKey && !orKey) return c.json({ error: 'no_ai_key', code: '// Add TOGETHER_API_KEY or OPENROUTER_API_KEY to enable DeepSeek code generation.' })
-    const apiKey = togetherKey || orKey
-    const apiUrl = togetherKey ? 'https://api.together.xyz/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'
+    if (!togetherKey && !orKey) return c.json({ error: 'no_ai_key', message: 'Add TOGETHER_API_KEY or OPENROUTER_API_KEY to Cloudflare secrets.' })
+    const apiKey  = togetherKey || orKey
+    const apiUrl  = togetherKey ? 'https://api.together.xyz/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'
     const modelId = togetherKey ? 'deepseek-ai/DeepSeek-Coder-V2-Instruct' : 'deepseek/deepseek-coder'
-    const r = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }],
-        temperature: 0.3, max_tokens: 8192
-      })
-    })
-    const d: any = await r.json()
-    code = d?.choices?.[0]?.message?.content || code
+    rawResponse = await callChatAPI(apiUrl, apiKey, modelId)
   }
 
-  // Strip markdown fences if AI added them anyway
-  const clean = code.replace(/^```[\w]*\n?/,'').replace(/\n?```$/,'').trim()
-  return c.json({ ok: true, code: clean })
+  // ── Parse the structured JSON response ────────────────────────────────────
+  let parsed: { message?: string; files?: Array<{ path: string; content: string }> } = {}
+  try {
+    // Strip any accidental markdown fences the model might wrap around JSON
+    const cleaned = rawResponse
+      .replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/,'').trim()
+    parsed = JSON.parse(cleaned)
+  } catch {
+    // Fallback: if the AI didn't produce valid JSON, wrap whatever it returned
+    // as a single file so the user still gets something useful
+    const fallbackContent = rawResponse.trim() || '// AI did not return valid code'
+    const ext = language ? ({ javascript:'js', typescript:'ts', python:'py', html:'html', css:'css', go:'go', rust:'rs', sql:'sql' } as any)[language] || 'js' : 'js'
+    parsed = {
+      message: 'Generated code (raw — AI skipped structured format)',
+      files: [{ path: `generated.${ext}`, content: fallbackContent }]
+    }
+  }
+
+  return c.json({
+    ok: true,
+    message: parsed.message || 'Done.',
+    files: (parsed.files || []).map(f => ({
+      path: (f.path || 'generated.js').replace(/^\/+/, ''), // strip leading slash
+      content: f.content || '',
+    })),
+  })
 })
 
 // ─── Onboarding ───────────────────────────────────────────────────────────────
@@ -6470,6 +6538,12 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .code-btn-generate{display:flex;align-items:center;gap:7px;padding:8px 18px;border-radius:9px;background:linear-gradient(135deg,#10b981,#a855f7);border:none;color:#fff;font-size:12px;font-weight:700;cursor:pointer;transition:.18s}
 .code-btn-generate:hover{opacity:.88;transform:translateY(-1px)}
 .code-btn-generate:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.code-view-toggle{display:flex;background:rgba(0,0,0,.3);border-radius:7px;padding:2px;gap:2px}
+.code-view-btn{padding:4px 10px;border-radius:5px;border:none;font-size:11px;font-weight:600;cursor:pointer;transition:.15s;color:var(--text-m);background:transparent;display:flex;align-items:center;gap:5px}
+.code-view-btn.active{background:rgba(168,85,247,.25);color:var(--accent)}
+.code-view-btn:hover:not(.active){color:var(--text-p)}
+.code-example-prompt{padding:8px 14px;background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:8px;font-size:12px;color:var(--text-s);cursor:pointer;transition:.15s;text-align:left}
+.code-example-prompt:hover{background:rgba(168,85,247,.14);color:var(--text-p);border-color:rgba(168,85,247,.4)}
 .code-log-panel{width:200px;flex-shrink:0;background:rgba(8,8,18,.7);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;padding-top:4px}
 .code-activity-log{flex:1;overflow-y:auto;padding:4px 8px;display:flex;flex-direction:column;gap:5px;min-height:0}
 .code-log-empty{font-size:11px;color:var(--text-m);padding:12px 4px;text-align:center;line-height:1.6}
@@ -7916,29 +7990,33 @@ em{color:var(--accent);font-style:italic}
       <!-- Agent / Model selector bar -->
       <div class="code-agent-bar" id="code-agent-bar">
         <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);flex-shrink:0;margin-right:4px">AI Agent</div>
-        <!-- Pill-style model picker (same style as Kling 1.6 in Video Gen) -->
-        <div class="gs-gen-picker" id="code-agent-pill-wrap" style="position:relative;flex-shrink:0"></div>
-        <!-- Legacy agent cards (still functional via onclick) -->
         <div class="code-agent-card active" onclick="selectCodeAgent('gemini','Gemini 2.0 Flash')" data-agent="gemini">
           <div class="code-agent-badge">FAST · MULTIMODAL</div>
           <div class="code-agent-name">Gemini 2.0 Flash</div>
-          <div class="code-agent-desc">Google · context-aware · multi-file</div>
+          <div class="code-agent-desc">Google · multi-file · builder</div>
         </div>
         <div class="code-agent-card" onclick="selectCodeAgent('gpt4o','GPT-4o')" data-agent="gpt4o">
           <div class="code-agent-badge">OPENAI · SMART</div>
           <div class="code-agent-name">GPT-4o</div>
-          <div class="code-agent-desc">Best for complex logic &amp; refactoring</div>
+          <div class="code-agent-desc">Complex logic &amp; refactoring</div>
         </div>
         <div class="code-agent-card" onclick="selectCodeAgent('claude','Claude 3.5 Sonnet')" data-agent="claude">
           <div class="code-agent-badge">ANTHROPIC · PRECISE</div>
           <div class="code-agent-name">Claude 3.5 Sonnet</div>
-          <div class="code-agent-desc">Long context · detailed explanations</div>
+          <div class="code-agent-desc">Long context · detailed</div>
         </div>
         <div class="code-agent-card" onclick="selectCodeAgent('deepseek','DeepSeek Coder')" data-agent="deepseek">
           <div class="code-agent-badge">CODE SPECIALIST</div>
           <div class="code-agent-name">DeepSeek Coder</div>
-          <div class="code-agent-desc">Optimised for code generation &amp; bugs</div>
+          <div class="code-agent-desc">Optimised for code &amp; bugs</div>
         </div>
+        <!-- Session memory indicator -->
+        <div id="code-session-badge" style="margin-left:auto;flex-shrink:0;display:none;align-items:center;gap:6px;font-size:10px;color:#10b981;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.25);border-radius:7px;padding:4px 9px;white-space:nowrap">
+          <i class="fas fa-brain" style="font-size:9px"></i> <span id="code-session-label">0 files · 0 turns</span>
+        </div>
+        <button id="btn-code-new-session" onclick="codeNewSession()" style="display:none;flex-shrink:0;padding:5px 10px;border-radius:7px;border:1px solid rgba(239,68,68,.3);background:rgba(239,68,68,.08);color:#ef4444;font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap" title="Clear session memory and start fresh">
+          <i class="fas fa-rotate-right"></i> New Session
+        </button>
       </div>
 
       <!-- Three-column workspace body -->
@@ -7962,66 +8040,95 @@ em{color:var(--accent);font-style:italic}
             </select>
           </div>
           <div id="code-gh-disconnected">
-            <div style="font-size:12px;color:var(--text-s);margin-bottom:8px;line-height:1.5"><i class="fab fa-github" style="color:var(--text-m);margin-right:5px"></i>Connect GitHub to browse repos and push AI-generated code directly.</div>
+            <div style="font-size:12px;color:var(--text-s);margin-bottom:8px;line-height:1.5"><i class="fab fa-github" style="color:var(--text-m);margin-right:5px"></i>Optional: connect GitHub to push files directly.</div>
             <button class="code-btn-connect" onclick="codeConnectGitHub()"><i class="fab fa-github"></i> Connect GitHub</button>
           </div>
         </div>
 
-        <!-- File Explorer -->
+        <!-- AI Generated Files — always visible once building starts -->
         <div class="code-file-explorer">
-          <div class="code-panel-label"><i class="fas fa-folder-tree"></i> File Explorer</div>
-          <div id="code-file-tree" class="code-file-tree">
-            <div class="code-file-empty">No repository selected</div>
+          <div class="code-panel-label"><i class="fas fa-sparkles" style="color:#a855f7"></i> Project Files</div>
+          <div id="code-gen-file-list" class="code-file-tree">
+            <div class="code-file-empty">Files appear here as the AI builds…</div>
           </div>
         </div>
 
-        <!-- AI Generated Files -->
+        <!-- GitHub File Explorer — only shown when repo selected -->
         <div class="code-generated-files" id="code-generated-files-panel" style="display:none">
-          <div class="code-panel-label" style="color:#a855f7"><i class="fas fa-sparkles"></i> AI Generated</div>
-          <div id="code-gen-file-list" class="code-file-tree"></div>
+          <div class="code-panel-label"><i class="fas fa-folder-tree"></i> Repo Files</div>
+          <div id="code-file-tree" class="code-file-tree"></div>
+        </div>
+
+        <!-- Push all button -->
+        <div style="padding:8px 10px;border-top:1px solid var(--border);flex-shrink:0;display:none" id="code-push-all-wrap">
+          <button onclick="codePushAllToGitHub()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:8px;border-radius:9px;background:linear-gradient(135deg,#10b981,#059669);border:none;color:#fff;font-size:12px;font-weight:700;cursor:pointer" id="btn-code-push-all">
+            <i class="fab fa-github"></i> Push All Files
+          </button>
         </div>
       </div>
 
-      <!-- CENTER: Code Editor / Preview -->
+      <!-- CENTER: Code Editor + Live Preview -->
       <div class="code-main">
         <!-- Toolbar -->
         <div class="code-toolbar">
           <div class="code-toolbar-left">
             <span class="code-file-badge" id="code-active-file"><i class="fas fa-file-code"></i> No file open</span>
           </div>
-          <div class="code-toolbar-right" id="code-toolbar-actions" style="display:none">
-            <button class="code-icon-btn" onclick="codeCopyContent()" title="Copy code"><i class="fas fa-copy"></i></button>
-            <button class="code-icon-btn" onclick="codePushToGitHub()" title="Push to GitHub" id="btn-code-push"><i class="fab fa-github"></i> Push</button>
+          <div class="code-toolbar-right" id="code-toolbar-actions">
+            <!-- View toggle: Code / Preview -->
+            <div class="code-view-toggle" id="code-view-toggle" style="display:none">
+              <button class="code-view-btn active" id="btn-view-code" onclick="codeSetView('code')"><i class="fas fa-code"></i> Code</button>
+              <button class="code-view-btn" id="btn-view-preview" onclick="codeSetView('preview')"><i class="fas fa-eye"></i> Preview</button>
+            </div>
+            <button class="code-icon-btn" onclick="codeCopyContent()" title="Copy current file" id="btn-code-copy" style="display:none"><i class="fas fa-copy"></i></button>
+            <button class="code-icon-btn" onclick="codePushToGitHub()" title="Push active file to GitHub" id="btn-code-push" style="display:none"><i class="fab fa-github"></i> Push</button>
           </div>
         </div>
 
         <!-- Code display -->
         <div class="code-editor-wrap" id="code-editor-wrap">
           <div class="code-welcome">
-            <div style="font-size:32px;margin-bottom:12px">⚡</div>
-            <div style="font-size:16px;font-weight:800;color:var(--text-p);margin-bottom:8px">AI Code Workspace</div>
-            <div style="font-size:13px;color:var(--text-s);line-height:1.7;max-width:320px">Connect your GitHub, select a repo, then describe what you want the AI to build. Watch it generate files in real time.</div>
+            <div style="font-size:36px;margin-bottom:14px">⚡</div>
+            <div style="font-size:16px;font-weight:800;color:var(--text-p);margin-bottom:8px">AI Code Builder</div>
+            <div style="font-size:13px;color:var(--text-s);line-height:1.7;max-width:340px;margin-bottom:16px">Describe what you want to build. The AI writes real files, remembers your project, and shows a live preview.</div>
+            <div style="display:flex;flex-direction:column;gap:7px;width:100%;max-width:300px">
+              <div class="code-example-prompt" onclick="codeUseExample(this)">Build a todo app with HTML, CSS and JS</div>
+              <div class="code-example-prompt" onclick="codeUseExample(this)">Create a landing page with a hero section and navbar</div>
+              <div class="code-example-prompt" onclick="codeUseExample(this)">Make a React counter component with hooks</div>
+            </div>
           </div>
+        </div>
+
+        <!-- Live preview iframe (hidden until preview mode) -->
+        <div id="code-preview-wrap" style="display:none;flex:1;overflow:hidden;background:#fff">
+          <iframe id="code-preview-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+            style="width:100%;height:100%;border:none;background:#fff"></iframe>
         </div>
 
         <!-- AI Prompt Bar -->
         <div class="code-prompt-bar">
+          <!-- AI message (shown after each generation) -->
+          <div id="code-ai-message" style="display:none;padding:8px 12px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);border-radius:8px;font-size:12px;color:#10b981;margin-bottom:8px;line-height:1.5">
+            <i class="fas fa-robot" style="margin-right:6px;opacity:.7"></i><span id="code-ai-message-text"></span>
+          </div>
           <div class="code-prompt-wrap">
-            <textarea class="code-prompt-input" id="code-prompt-input" rows="2" placeholder="Describe what to build or modify… e.g. 'Add a dark mode toggle to the navbar' or 'Create a REST API endpoint for user auth'"></textarea>
+            <textarea class="code-prompt-input" id="code-prompt-input" rows="2"
+              placeholder="Describe what to build or change… e.g. 'Add a dark mode toggle' or 'Create a login form'"
+              onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();codeGenerate();}"></textarea>
             <div class="code-prompt-actions">
               <select class="code-lang-select" id="code-lang-select">
                 <option value="">Auto-detect</option>
                 <option value="javascript">JavaScript</option>
                 <option value="typescript">TypeScript</option>
-                <option value="python">Python</option>
                 <option value="html">HTML</option>
                 <option value="css">CSS</option>
-                <option value="rust">Rust</option>
+                <option value="python">Python</option>
                 <option value="go">Go</option>
                 <option value="sql">SQL</option>
               </select>
+              <span style="font-size:10px;color:var(--text-m);flex:1;text-align:right;padding-right:4px">⌘↵ to send</span>
               <button class="code-btn-generate" id="btn-code-generate" onclick="codeGenerate()">
-                <i class="fas fa-wand-magic-sparkles"></i> Generate
+                <i class="fas fa-wand-magic-sparkles"></i> Build
               </button>
             </div>
           </div>
@@ -8030,12 +8137,12 @@ em{color:var(--accent);font-style:italic}
 
       <!-- RIGHT: Live Status / Activity Log -->
       <div class="code-log-panel">
-        <div class="code-panel-label"><i class="fas fa-bolt"></i> Live Status</div>
+        <div class="code-panel-label"><i class="fas fa-bolt"></i> Build Log</div>
         <div id="code-activity-log" class="code-activity-log">
-          <div class="code-log-empty">Activity will appear here as the AI works…</div>
+          <div class="code-log-empty">Build activity appears here…</div>
         </div>
         <!-- GitHub Status -->
-        <div class="code-panel-label" style="margin-top:12px"><i class="fab fa-github"></i> GitHub Status</div>
+        <div class="code-panel-label" style="margin-top:12px"><i class="fab fa-github"></i> GitHub</div>
         <div id="code-gh-status-panel" class="code-gh-status">
           <div style="font-size:11px;color:var(--text-m)">Not connected</div>
         </div>
