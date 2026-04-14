@@ -2741,7 +2741,14 @@ app.post('/api/clawbot/chat', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
 
-  const { message, app: appCtx = 'flowstate_hub', history = [] } = await c.req.json()
+  const {
+    message,
+    app: appCtx = 'flowstate_hub',
+    history = [],
+    context = '',           // live context snapshot from frontend _clawBuildContextSnapshot()
+    availableActions = [],  // list of action types CLAW can suggest
+    connectedIntegrations = [],
+  } = await c.req.json()
   if (!message?.trim()) return c.json({ error: 'message_required' }, 400)
 
   // ── Paywall check — must have active ClawFlow subscription in Redis ────────
@@ -2759,7 +2766,7 @@ app.post('/api/clawbot/chat', async (c) => {
     return c.json({ error: 'clawflow_required', promo: declareClawFlowPromo(), reply: null }, 402)
   }
 
-  const systemPrompt = declareClawbotSystemPrompt(appCtx, 'clawflow')
+  const systemPrompt = declareClawbotSystemPrompt(appCtx, 'clawflow', context, availableActions)
   const coinEntry    = declareCoinLedgerEntry('chat_message', appCtx, 2, 'clawbot')
 
   // Use OpenRouter for Clawbot — routes to Claude Sonnet 4.5 (best for agentic tasks)
@@ -2811,14 +2818,33 @@ app.post('/api/clawbot/chat', async (c) => {
       const data: any = await res.json()
       reply = data.choices?.[0]?.message?.content || 'No response from Clawbot.'
     }
+    // ── Parse <action> tags from reply into structured actions array ──────────
+    const actions: any[] = []
+    const actionTagRegex = /<action\s+type="([^"]+)"\s+params='([^']+)'\s+label="([^"]+)"\s+description="([^"]+)"\s*\/>/g
+    let match
+    let cleanReply = reply
+    while ((match = actionTagRegex.exec(reply)) !== null) {
+      try {
+        actions.push({
+          type: match[1],
+          params: JSON.parse(match[2]),
+          label: match[3],
+          description: match[4],
+        })
+      } catch { /* skip malformed */ }
+    }
+    // Remove action tags from displayed reply text
+    cleanReply = reply.replace(actionTagRegex, '').trim()
+
     return c.json({
-      reply,
+      reply: cleanReply,
+      actions,
       model: useDirectAnthropic ? 'claude-3-5-sonnet' : 'claude-sonnet-4-5 (OpenRouter)',
       coinCost: coinEntry.coinCost,
       app: appCtx,
     })
   } catch (err: any) {
-    return c.json({ reply: _demoClaw(message, appCtx), model: 'clawbot-fallback', coinCost: 0, app: appCtx })
+    return c.json({ reply: _demoClaw(message, appCtx), actions: [], model: 'clawbot-fallback', coinCost: 0, app: appCtx })
   }
 })
 

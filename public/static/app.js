@@ -1707,6 +1707,9 @@ function startTimer() {
   // YouTube/Spotify Pomodoro integration
   if (state.timer.phase==='focus') startPomodoroMusic();
   state.timer.running=true;
+  _flowContext.timerRunning = true;
+  _flowContext.timerPhase = state.timer.phase || 'focus';
+  _flowContext.timerMinutes = state.timer.focusMin || 25;
   document.getElementById('btn-icon')?.setAttribute('class','fas fa-pause');
   document.getElementById('t-glow')?.classList.add('on');
   document.getElementById('b-ring')?.classList.add('on');
@@ -1720,6 +1723,7 @@ function startTimer() {
 
 function pauseTimer() {
   state.timer.running=false;
+  _flowContext.timerRunning = false;
   clearInterval(state.timer.intervalId);
   document.getElementById('btn-icon')?.setAttribute('class','fas fa-play');
   document.getElementById('t-glow')?.classList.remove('on');
@@ -6776,6 +6780,9 @@ function pollHiggsfield(requestId, prompt, attempt) {
 }
 
 function showHiggsResult(videoUrl, prompt) {
+  // Track for CLAW context
+  _clawTrackAction('generated_video', { type: 'video', url: videoUrl, model: _higgsModelName, prompt });
+
   const btn    = document.getElementById('btn-higgs-gen');
   const prog   = document.getElementById('higgs-progress');
   const result = document.getElementById('higgs-result');
@@ -7064,8 +7071,279 @@ function renderActionCards(actions) {
   }).join('');
 }
 
-// ── Updated sendClawbotMessage — injects integrations + parses action cards ──
-// We override the previous version
+// ══════════════════════════════════════════════════════════════════════════════
+// CLAW CONTEXT ENGINE — live awareness of what the user is doing right now
+// This is the bridge between the UI and CLAW's intelligence.
+// Every message CLAW receives includes a full snapshot of the user's current state.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Single source of truth for what CLAW knows about the current session
+const _flowContext = {
+  activeTab: 'focus',          // which tab the user is on right now
+  lastTab: null,               // where they were before
+  lastAction: null,            // e.g. 'generated_video', 'generated_image', 'deployed_project'
+  lastAsset: null,             // { type, url, model, prompt } — last thing generated
+  lastGenPrompt: null,         // last prompt used in generate tab
+  timerRunning: false,         // is focus timer active?
+  timerPhase: 'focus',         // 'focus' | 'break'
+  timerMinutes: 25,            // current session length
+  codeFilesCount: 0,           // how many files in AI Code Workspace
+  codeProjectName: null,       // name of current code project
+  codeLastDeployed: null,      // URL of last deployed project
+  higgsLastVideo: null,        // last Higgsfield video URL
+  sessionStarted: false,       // has the user started a focus session today?
+  tabHistory: [],              // last 5 tabs visited
+};
+
+// Hook into switchTab so _flowContext.activeTab is always current
+const _origSwitchTab = switchTab;
+window.switchTab = switchTab = function(id) {
+  _flowContext.lastTab = _flowContext.activeTab;
+  _flowContext.activeTab = id;
+  _flowContext.tabHistory = [..._flowContext.tabHistory.slice(-4), id];
+  _origSwitchTab(id);
+  // Proactive CLAW suggestion when arriving at key tabs (after slight delay)
+  if (id === 'clawbot') return; // don't suggest when they open CLAW itself
+  _clawProactiveSuggest(id);
+};
+
+// Call this whenever something is generated / deployed
+function _clawTrackAction(action, asset = null) {
+  _flowContext.lastAction = action;
+  _flowContext.lastAsset = asset;
+  if (action === 'generated_video' && asset?.url) _flowContext.higgsLastVideo = asset.url;
+  if (action === 'deployed_project' && asset?.url) _flowContext.codeLastDeployed = asset.url;
+  if (action === 'code_generated')  _flowContext.codeFilesCount = Object.keys(_codeState?.generatedFiles || {}).length;
+}
+
+// Build a compact context string injected into every CLAW system prompt
+function _clawBuildContextSnapshot() {
+  const lines = [];
+  lines.push(`ACTIVE TAB: ${_flowContext.activeTab}`);
+  if (_flowContext.lastTab) lines.push(`PREVIOUS TAB: ${_flowContext.lastTab}`);
+  if (_flowContext.tabHistory.length > 1) lines.push(`TAB HISTORY: ${_flowContext.tabHistory.join(' → ')}`);
+
+  if (_flowContext.timerRunning) {
+    lines.push(`FOCUS TIMER: RUNNING · ${_flowContext.timerMinutes}min ${_flowContext.timerPhase} session`);
+  } else {
+    lines.push(`FOCUS TIMER: idle`);
+  }
+
+  if (_flowContext.lastAction) {
+    lines.push(`LAST ACTION: ${_flowContext.lastAction}`);
+  }
+  if (_flowContext.lastAsset) {
+    const a = _flowContext.lastAsset;
+    lines.push(`LAST ASSET: type=${a.type}${a.model ? ` model=${a.model}` : ''}${a.prompt ? ` prompt="${a.prompt.slice(0,60)}"` : ''}${a.url ? ` url=${a.url}` : ''}`);
+  }
+  if (_flowContext.codeFilesCount > 0) {
+    lines.push(`AI CODE WORKSPACE: ${_flowContext.codeFilesCount} file(s) generated${_flowContext.codeProjectName ? ` · project: ${_flowContext.codeProjectName}` : ''}`);
+  }
+  if (_flowContext.codeLastDeployed) {
+    lines.push(`LAST DEPLOYED: ${_flowContext.codeLastDeployed}`);
+  }
+  if (_flowContext.higgsLastVideo) {
+    lines.push(`LAST VIDEO: ${_flowContext.higgsLastVideo}`);
+  }
+
+  // User info
+  if (FS_USER) lines.push(`USER: ${FS_USER.name || FS_USER.email} · tier: ${FS_USER.tier || 'free'}`);
+
+  return lines.join('\n');
+}
+
+// ── Proactive CLAW suggestions ─────────────────────────────────────────────
+// CLAW speaks first when user arrives at a tab in a relevant context.
+// Only fires if CLAW is initialised + user has ClawFlow.
+let _clawLastProactive = 0;
+function _clawProactiveSuggest(tab) {
+  if (!clawbotSubscriptionActive) return;           // only for ClawFlow users
+  if (Date.now() - _clawLastProactive < 60_000) return; // max once per minute
+  const msg = _clawProactiveMsg(tab);
+  if (!msg) return;
+  _clawLastProactive = Date.now();
+  // Show as a subtle nudge bubble in the corner — not a full CLAW message
+  _clawShowNudge(msg);
+}
+
+function _clawProactiveMsg(tab) {
+  const ctx = _flowContext;
+  // After generating a video → suggest cover art or music video
+  if (tab === 'generate' && ctx.lastAction === 'generated_video') {
+    return '🎬 Nice video! Want me to generate cover art or a music video concept for it?';
+  }
+  // After deploying → suggest sharing
+  if (tab === 'generate' && ctx.lastAction === 'deployed_project' && ctx.codeLastDeployed) {
+    return `🚀 Your app is live! Want me to write a launch tweet or README for it?`;
+  }
+  // Coming to code tab with no files yet
+  if (tab === '264' && ctx.higgsLastVideo) {
+    return '🎥 You have a video ready. Want to build something around it — cover art, a landing page?';
+  }
+  // Arriving at focus tab with timer not running
+  if (tab === 'focus' && !ctx.timerRunning && ctx.lastAction) {
+    return `⚡ Ready to focus? I can set up a ${ctx.timerMinutes}min session for you.`;
+  }
+  return null;
+}
+
+// Nudge bubble — appears bottom-right, auto-dismisses in 8s
+function _clawShowNudge(message) {
+  // Remove existing nudge
+  document.getElementById('claw-nudge')?.remove();
+  const el = document.createElement('div');
+  el.id = 'claw-nudge';
+  el.innerHTML = `
+    <div style="display:flex;align-items:flex-start;gap:8px">
+      <img src="/static/clawbot-mascot.png" style="width:28px;height:28px;object-fit:contain;flex-shrink:0;margin-top:2px">
+      <div style="flex:1">
+        <div style="font-size:12px;color:var(--text-p);line-height:1.5">${escHtml(message)}</div>
+        <div style="display:flex;gap:7px;margin-top:7px">
+          <button onclick="clawNudgeAccept()" style="padding:4px 12px;border-radius:6px;border:none;background:linear-gradient(135deg,#a855f7,#06b6d4);color:#fff;font-size:11px;font-weight:700;cursor:pointer">Open CLAW</button>
+          <button onclick="document.getElementById('claw-nudge')?.remove()" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-s);font-size:11px;cursor:pointer">Dismiss</button>
+        </div>
+      </div>
+    </div>`;
+  el.style.cssText = 'position:fixed;bottom:72px;right:16px;z-index:99995;background:var(--bg-card);border:1px solid rgba(168,85,247,.35);border-radius:13px;padding:12px 14px;max-width:280px;box-shadow:0 8px 32px rgba(0,0,0,.4);animation:slideUp .3s ease';
+  document.body.appendChild(el);
+  // Auto-dismiss after 8s
+  setTimeout(() => el.remove(), 8000);
+}
+
+function clawNudgeAccept() {
+  document.getElementById('claw-nudge')?.remove();
+  switchTab('clawbot');
+}
+
+// ── CLAW Executable Actions (hardcoded safe list) ─────────────────────────
+// These are the ONLY things CLAW can trigger. No dynamic action creation.
+const CLAW_ACTIONS = {
+  generate_image: {
+    label: 'Generate Image',
+    icon: '🖼️',
+    desc: 'Generate an AI image in the Generate tab',
+    execute: (params) => {
+      switchTab('generate');
+      // Pre-fill the prompt if provided
+      setTimeout(() => {
+        const promptEl = document.getElementById('imggen-prompt');
+        if (promptEl && params.prompt) { promptEl.value = params.prompt; }
+        notify('💡 CLAW opened Generate → add your prompt and hit Generate!', 'info');
+      }, 400);
+    }
+  },
+  generate_video: {
+    label: 'Generate Video',
+    icon: '🎬',
+    desc: 'Open the video generator with a pre-filled prompt',
+    execute: (params) => {
+      switchTab('generate');
+      setTimeout(() => {
+        // Switch to video gen sub-tab
+        if (typeof switchGenSub === 'function') switchGenSub('vidgen');
+        const promptEl = document.getElementById('vidgen-prompt') || document.getElementById('gen-vid-prompt');
+        if (promptEl && params.prompt) { promptEl.value = params.prompt; }
+        notify('🎬 CLAW opened Video Generator — review the prompt and generate!', 'info');
+      }, 400);
+    }
+  },
+  open_code_workspace: {
+    label: 'Open AI Code Workspace',
+    icon: '💻',
+    desc: 'Switch to the AI Code Workspace and pre-fill a prompt',
+    execute: (params) => {
+      switchTab('264'); // code workspace is in 264 tab
+      setTimeout(() => {
+        const promptEl = document.getElementById('code-prompt-input');
+        if (promptEl && params.prompt) { promptEl.value = params.prompt; promptEl.focus(); }
+        notify('💻 CLAW opened Code Workspace — hit ⌘↵ to build!', 'info');
+      }, 400);
+    }
+  },
+  deploy_project: {
+    label: 'Deploy to Cloudflare',
+    icon: '🚀',
+    desc: 'Deploy the current AI Code project to Cloudflare',
+    execute: async (params) => {
+      if (typeof codeDeployToCloudflare === 'function') {
+        switchTab('264');
+        setTimeout(codeDeployToCloudflare, 400);
+      } else {
+        notify('Open the AI Code Workspace first, then deploy', 'info');
+      }
+    }
+  },
+  start_focus: {
+    label: 'Start Focus Session',
+    icon: '⚡',
+    desc: 'Start a focus timer session',
+    execute: (params) => {
+      switchTab('focus');
+      setTimeout(() => {
+        if (params.minutes && typeof updateFocusDur === 'function') {
+          // Don't close modal here, just update duration silently
+          state.timer.focusMin = parseInt(params.minutes) || 25;
+        }
+        const startBtn = document.getElementById('btn-start-focus') || document.querySelector('[onclick*="startTimer"]');
+        if (startBtn) {
+          notify(`⚡ CLAW starting your ${params.minutes || 25}min focus session!`, 'success');
+          setTimeout(() => startBtn.click(), 600);
+        } else {
+          notify('⚡ CLAW switched to Focus — press Start when ready!', 'info');
+        }
+      }, 400);
+    }
+  },
+  slack_post: {
+    label: 'Post to Slack',
+    icon: '💬',
+    desc: 'Post a message to your Slack workspace',
+    execute: (params) => executeClawAction('slack_post', params)
+  },
+  notion_create_task: {
+    label: 'Create Notion Task',
+    icon: '📝',
+    desc: 'Create a task in your Notion workspace',
+    execute: (params) => executeClawAction('notion_create_task', params)
+  },
+};
+
+// Render action confirmation cards (updated to use CLAW_ACTIONS)
+function renderActionCards(actions) {
+  if (!actions || !actions.length) return '';
+  return `<div style="display:flex;flex-direction:column;gap:7px;margin-top:9px">` +
+    actions.map(a => {
+      const def = CLAW_ACTIONS[a.type] || {};
+      const icon = def.icon || '⚡';
+      const label = a.label || def.label || a.type;
+      const paramsJson = escHtml(JSON.stringify(a.params || {}));
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:9px;gap:10px">
+        <div>
+          <div style="font-size:12px;font-weight:700;color:var(--text-p)">${icon} ${escHtml(label)}</div>
+          ${a.description ? `<div style="font-size:11px;color:var(--text-s);margin-top:2px">${escHtml(a.description)}</div>` : ''}
+        </div>
+        <button onclick="clawExecuteConfirmed('${a.type}', ${paramsJson})"
+          style="padding:6px 14px;border-radius:7px;border:none;background:linear-gradient(135deg,#a855f7,#7c3aed);color:#fff;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0">
+          ${icon} Do it
+        </button>
+      </div>`;
+    }).join('') + `</div>`;
+}
+
+// Safe action executor — called from action card buttons
+async function clawExecuteConfirmed(actionType, params) {
+  const action = CLAW_ACTIONS[actionType];
+  if (!action) { notify('Unknown action: ' + actionType, 'warning'); return; }
+  appendClawbotMsg('ai', `${action.icon || '⚡'} Executing: **${action.label}**…`, 'Clawbot');
+  try {
+    await action.execute(params || {});
+    _clawTrackAction(actionType, params);
+  } catch(e) {
+    appendClawbotMsg('ai', `❌ Action failed: ${e.message || 'Unknown error'}`, 'Clawbot');
+  }
+}
+
+// ── Updated sendClawbotMessage — injects full live context ────────────────
 async function sendClawbotMessage() {
   const inp = document.getElementById('clawbot-in');
   const msg = inp ? inp.value.trim() : '';
@@ -7076,6 +7354,9 @@ async function sendClawbotMessage() {
   const appCtx = _clawCtx || 'flowstate_hub';
   const connectedIntegrations = getConnectedIntegrations();
 
+  // Build full live context snapshot — this is what makes CLAW actually smart
+  const contextSnapshot = _clawBuildContextSnapshot();
+
   try {
     const res = await fetch('/api/clawbot/chat', {
       method: 'POST',
@@ -7085,6 +7366,10 @@ async function sendClawbotMessage() {
         app: appCtx,
         history: clawbotHistory.slice(-8),
         connectedIntegrations,
+        // Live context — injected into system prompt on backend
+        context: contextSnapshot,
+        // Available actions CLAW can suggest
+        availableActions: Object.keys(CLAW_ACTIONS),
       }),
     });
     const data = await res.json();
@@ -7099,7 +7384,6 @@ async function sendClawbotMessage() {
     }
 
     const reply = data.reply || 'No response.';
-    // Append message with optional action cards
     appendClawbotMsgWithActions('ai', reply, `Clawbot · ${data.coinCost || 0} coins`, data.actions || []);
     clawbotHistory.push({ role: 'user', content: msg }, { role: 'assistant', content: reply });
 
@@ -10325,6 +10609,14 @@ async function codeGenerate() {
     _codeUpdateSessionBadge();
 
     codeLog(`✅ Done — ${_codeState.agentName} wrote ${files.length} file${files.length>1?'s':''}`, 'success');
+    // Track for CLAW context
+    _clawTrackAction('code_generated', {
+      type: 'code', files: files.length,
+      prompt: prompt.slice(0, 80),
+      model: _codeState.agentName,
+    });
+    _flowContext.codeFilesCount = Object.keys(_codeState.generatedFiles).length;
+    _flowContext.codeProjectName = files[0]?.path?.split('/')[0] || null;
 
     // Clear prompt
     const inp = document.getElementById('code-prompt-input');
@@ -10648,6 +10940,7 @@ async function codeDeployToCloudflare() {
 
     if (d.ok && d.url) {
       codeLog(`✅ Live at: ${d.url}`, 'success');
+      _clawTrackAction('deployed_project', { type: 'deployment', url: d.url, projectName: d.projectName });
       notify('Deployed! 🎉', 'success');
       if (urlEl) { urlEl.textContent = d.url; urlEl.href = d.url; }
       if (openBtn) openBtn.href = d.url;
