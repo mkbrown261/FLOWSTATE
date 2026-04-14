@@ -11059,26 +11059,19 @@ function _codeUpdateGHStatus() {
 // ── ClawFlow Developer Page ───────────────────────────────────────────────────
 
 // Open the ClawFlow Developer page — check subscription first
-async function openClawflowPage() {
-  // Check if user is signed in
-  const session = window._fsSession;
-  if (!session) {
-    notify('Sign in to access ClawFlow Developer', 'warning');
+function openClawflowPage() {
+  // If not signed in at all, prompt sign-in
+  if (!FS_USER) {
+    notify('Sign in first to access ClawFlow Developer', 'warning');
     return;
   }
-  // Check subscription
-  try {
-    const status = await fetch('/api/clawbot/status').then(r => r.json());
-    if (!status.active) {
-      // Show upgrade prompt inline
-      notify('ClawFlow subscription required — upgrade in Pricing tab', 'warning');
-      // Optionally switch to pricing tab
-      return;
-    }
-  } catch(e) {
-    // If check fails, still open the page — gate is on the server
+  // If already checked and subscription is inactive, nudge — but still allow navigation
+  // (server-side gate handles unauthenticated/unsubscribed users)
+  if (typeof clawbotSubscriptionActive !== 'undefined' && !clawbotSubscriptionActive) {
+    notify('ClawFlow subscription required — upgrade in the Pricing tab', 'warning');
+    return;
   }
-  // Open in current tab (full page navigation)
+  // Navigate to the dedicated ClawFlow Developer page
   window.location.href = '/clawflow';
 }
 
