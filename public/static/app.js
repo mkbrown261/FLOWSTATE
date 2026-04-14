@@ -10931,7 +10931,7 @@ async function codeDeployToCloudflare() {
 
   try {
     const payload = {
-      files: files.map(([path, fd]) => ({ path, content: (fd as any).content })),
+      files: files.map(([path, fd]) => ({ path, content: fd.content })),
       projectName,
     };
     const r = await fetch('/api/deploy/cloudflare', {
