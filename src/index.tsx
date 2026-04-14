@@ -835,70 +835,89 @@ RULES:
     return d?.choices?.[0]?.message?.content || ''
   }
 
-  // ── Gemini 2.0 Flash ───────────────────────────────────────────────────────
-  if (agent === 'gemini') {
+  // ── Model routing — all via OpenRouter (with direct API fallbacks) ──────────
+  // OpenRouter model IDs for every agent option
+  const OR_MODEL_MAP: Record<string, string> = {
+    // Google
+    'gemini-2-5-pro':   'google/gemini-2.5-pro-preview',
+    'gemini-2-5-flash': 'google/gemini-2.5-flash-preview',
+    'gemini':           'google/gemini-2.0-flash-001',
+    // OpenAI
+    'gpt4o':            'openai/gpt-4o',
+    'o4-mini':          'openai/o4-mini',
+    'o3':               'openai/o3',
+    'gpt4-1':           'openai/gpt-4.1',
+    // Anthropic
+    'claude-opus-4':    'anthropic/claude-opus-4-5',
+    'claude-sonnet-4':  'anthropic/claude-sonnet-4-5',
+    'claude':           'anthropic/claude-3-5-sonnet',
+    'claude-haiku-4':   'anthropic/claude-haiku-4-5',
+    // Meta
+    'llama-4-maverick': 'meta-llama/llama-4-maverick',
+    'llama-4-scout':    'meta-llama/llama-4-scout',
+    // DeepSeek
+    'deepseek-r1':      'deepseek/deepseek-r1',
+    'deepseek':         'deepseek/deepseek-chat-v3-0324',
+    // Mistral
+    'codestral':        'mistralai/codestral-2501',
+    'mistral-large':    'mistralai/mistral-large',
+  }
+
+  const orKey = c.env?.OPENROUTER_API_KEY || ''
+
+  // Special case: Gemini direct API (faster, no OR overhead)
+  if ((agent === 'gemini' || agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash') && (c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY)) {
     const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
-    if (!geminiKey) return c.json({ error: 'no_ai_key', message: 'Add GEMINI_API_KEY to Cloudflare secrets.' })
-    // Gemini doesn't use messages array the same way — flatten history into content
-    const flatHistory = historyMessages.map((m: any) =>
-      `[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')
+    const geminiModelMap: Record<string,string> = {
+      'gemini':           'gemini-2.0-flash',
+      'gemini-2-5-pro':   'gemini-2.5-pro-preview-05-06',
+      'gemini-2-5-flash': 'gemini-2.5-flash-preview-04-17',
+    }
+    const geminiModel = geminiModelMap[agent] || 'gemini-2.0-flash'
+    const flatHistory = historyMessages.map((m: any) => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')
     const fullPrompt = `${systemPrompt}\n\n${flatHistory ? flatHistory + '\n\n' : ''}[USER]: ${currentUserMsg}`
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: fullPrompt }] }],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 16000,
-          responseMimeType: 'application/json',
-        }
+        generationConfig: { temperature: 0.2, maxOutputTokens: 16000, responseMimeType: 'application/json' }
       })
     })
     const d: any = await r.json()
     rawResponse = d?.candidates?.[0]?.content?.parts?.[0]?.text || ''
 
-  // ── GPT-4o ─────────────────────────────────────────────────────────────────
-  } else if (agent === 'gpt4o') {
-    const openaiKey = c.env?.OPENAI_API_KEY || ''
-    const orKey     = c.env?.OPENROUTER_API_KEY || ''
-    if (!openaiKey && !orKey) return c.json({ error: 'no_ai_key', message: 'Add OPENAI_API_KEY to Cloudflare secrets.' })
-    const apiKey  = openaiKey || orKey
-    const apiUrl  = openaiKey ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'
-    const modelId = openaiKey ? 'gpt-4o' : 'openai/gpt-4o'
-    rawResponse = await callChatAPI(apiUrl, apiKey, modelId)
-
-  // ── Claude 3.5 Sonnet ──────────────────────────────────────────────────────
-  } else if (agent === 'claude') {
+  // Special case: Claude direct Anthropic API
+  } else if ((agent === 'claude' || agent === 'claude-opus-4' || agent === 'claude-sonnet-4' || agent === 'claude-haiku-4') && c.env?.ANTHROPIC_API_KEY) {
     const claudeKey = c.env?.ANTHROPIC_API_KEY || ''
-    const orKey     = c.env?.OPENROUTER_API_KEY || ''
-    if (!claudeKey && !orKey) return c.json({ error: 'no_ai_key', message: 'Add ANTHROPIC_API_KEY to Cloudflare secrets.' })
-    if (claudeKey) {
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: 'claude-3-5-sonnet-20241022',
-          max_tokens: 16000,
-          system: systemPrompt,
-          messages: [...historyMessages, { role: 'user', content: currentUserMsg }]
-        })
-      })
-      const d: any = await r.json()
-      rawResponse = d?.content?.[0]?.text || ''
-    } else {
-      rawResponse = await callChatAPI('https://openrouter.ai/api/v1/chat/completions', orKey, 'anthropic/claude-3-5-sonnet')
+    const claudeModelMap: Record<string,string> = {
+      'claude':           'claude-3-5-sonnet-20241022',
+      'claude-opus-4':    'claude-opus-4-5',
+      'claude-sonnet-4':  'claude-sonnet-4-5',
+      'claude-haiku-4':   'claude-haiku-4-5',
     }
+    const claudeModel = claudeModelMap[agent] || 'claude-3-5-sonnet-20241022'
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: claudeModel,
+        max_tokens: 16000,
+        system: systemPrompt,
+        messages: [...historyMessages, { role: 'user', content: currentUserMsg }]
+      })
+    })
+    const d: any = await r.json()
+    rawResponse = d?.content?.[0]?.text || ''
 
-  // ── DeepSeek Coder ─────────────────────────────────────────────────────────
-  } else if (agent === 'deepseek') {
-    const togetherKey = c.env?.TOGETHER_API_KEY || ''
-    const orKey       = c.env?.OPENROUTER_API_KEY || ''
-    if (!togetherKey && !orKey) return c.json({ error: 'no_ai_key', message: 'Add TOGETHER_API_KEY or OPENROUTER_API_KEY to Cloudflare secrets.' })
-    const apiKey  = togetherKey || orKey
-    const apiUrl  = togetherKey ? 'https://api.together.xyz/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'
-    const modelId = togetherKey ? 'deepseek-ai/DeepSeek-Coder-V2-Instruct' : 'deepseek/deepseek-coder'
-    rawResponse = await callChatAPI(apiUrl, apiKey, modelId)
+  // All other models — route through OpenRouter
+  } else {
+    if (!orKey) return c.json({ error: 'no_ai_key', message: 'Add OPENROUTER_API_KEY to Cloudflare secrets to use this model.' })
+    const orModelId = OR_MODEL_MAP[agent] || 'google/gemini-2.0-flash-001'
+    rawResponse = await callChatAPI('https://openrouter.ai/api/v1/chat/completions', orKey, orModelId, {
+      'HTTP-Referer': 'https://flowst8.cc',
+      'X-Title': 'FlowState AI Code Workspace',
+    })
   }
 
   // ── Parse the structured JSON response ────────────────────────────────────
@@ -6765,7 +6784,7 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .gen-sidebar-row{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--text-s);padding:3px 0}
 /* ── AI Code Workspace ── */
 .code-workspace{display:flex;flex:1;overflow:hidden;height:100%;flex-direction:column}
-.code-agent-bar{flex-shrink:0;padding:10px 14px;border-bottom:1px solid var(--border);background:rgba(8,8,18,.85);display:flex;align-items:center;gap:10px;overflow-x:auto}
+.code-agent-bar{flex-shrink:0;padding:10px 14px;border-bottom:1px solid var(--border);background:rgba(8,8,18,.85);display:flex;align-items:center;gap:10px;overflow:visible}
 .code-agent-card{flex-shrink:0;background:rgba(16,185,129,.04);border:1px solid rgba(16,185,129,.15);border-radius:10px;padding:8px 12px;cursor:pointer;transition:.18s;min-width:130px;text-align:left}
 .code-agent-card:hover{background:rgba(16,185,129,.09);border-color:rgba(16,185,129,.35);transform:translateY(-1px)}
 .code-agent-card.active{background:rgba(16,185,129,.13);border-color:#10b981;box-shadow:0 0 12px rgba(16,185,129,.2)}
@@ -8267,29 +8286,8 @@ em{color:var(--accent);font-style:italic}
       <!-- Agent / Model selector bar -->
       <div class="code-agent-bar" id="code-agent-bar">
         <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);flex-shrink:0;margin-right:4px">AI Agent</div>
-        <!-- Pill-style model picker (same style as Kling 1.6 in Video Gen) -->
+        <!-- Pill-style model picker -->
         <div class="gs-gen-picker" id="code-agent-pill-wrap" style="position:relative;flex-shrink:0"></div>
-        <!-- Legacy agent cards (still functional via onclick) -->
-        <div class="code-agent-card active" onclick="selectCodeAgent('gemini','Gemini 2.0 Flash')" data-agent="gemini">
-          <div class="code-agent-badge">FAST · MULTIMODAL</div>
-          <div class="code-agent-name">Gemini 2.0 Flash</div>
-          <div class="code-agent-desc">Google · multi-file · builder</div>
-        </div>
-        <div class="code-agent-card" onclick="selectCodeAgent('gpt4o','GPT-4o')" data-agent="gpt4o">
-          <div class="code-agent-badge">OPENAI · SMART</div>
-          <div class="code-agent-name">GPT-4o</div>
-          <div class="code-agent-desc">Complex logic &amp; refactoring</div>
-        </div>
-        <div class="code-agent-card" onclick="selectCodeAgent('claude','Claude 3.5 Sonnet')" data-agent="claude">
-          <div class="code-agent-badge">ANTHROPIC · PRECISE</div>
-          <div class="code-agent-name">Claude 3.5 Sonnet</div>
-          <div class="code-agent-desc">Long context · detailed</div>
-        </div>
-        <div class="code-agent-card" onclick="selectCodeAgent('deepseek','DeepSeek Coder')" data-agent="deepseek">
-          <div class="code-agent-badge">CODE SPECIALIST</div>
-          <div class="code-agent-name">DeepSeek Coder</div>
-          <div class="code-agent-desc">Optimised for code &amp; bugs</div>
-        </div>
         <!-- Session memory indicator -->
         <div id="code-session-badge" style="margin-left:auto;flex-shrink:0;display:none;align-items:center;gap:6px;font-size:10px;color:#10b981;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.25);border-radius:7px;padding:4px 9px;white-space:nowrap">
           <i class="fas fa-brain" style="font-size:9px"></i> <span id="code-session-label">0 files · 0 turns</span>

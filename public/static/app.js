@@ -10204,37 +10204,70 @@ let _codeState = {
 
 // ── Code AI Agent models ──────────────────────────────────────────────────────
 const CODE_AGENTS = [
-  { id: 'gemini',   label: 'Gemini 2.0 Flash',   sub: 'Google · fast · multimodal · multi-file',  icon: 'google',  badge: 'FAST' },
-  { id: 'gpt4o',    label: 'GPT-4o',              sub: 'OpenAI · smart · best for complex logic',  icon: 'openai',  badge: 'SMART' },
-  { id: 'claude',   label: 'Claude 3.5 Sonnet',   sub: 'Anthropic · precise · long context',       icon: '🟠',      badge: 'PRECISE' },
-  { id: 'deepseek', label: 'DeepSeek Coder',       sub: 'Code specialist · bugs & optimisation',   icon: '🟣',      badge: 'CODE' },
+  // ── Google ──────────────────────────────────────────────────────────────────
+  { id: 'gemini-2-5-pro',   label: 'Gemini 2.5 Pro',      sub: 'Google · most capable · deep reasoning',     icon: 'google',   badge: 'BEST',    group: 'Google'     },
+  { id: 'gemini-2-5-flash', label: 'Gemini 2.5 Flash',    sub: 'Google · speed + intelligence balance',      icon: 'google',   badge: 'FAST',    group: 'Google'     },
+  { id: 'gemini',           label: 'Gemini 2.0 Flash',    sub: 'Google · multimodal · multi-file builder',   icon: 'google',   badge: 'SOLID',   group: 'Google'     },
+  // ── OpenAI ──────────────────────────────────────────────────────────────────
+  { id: 'gpt4o',            label: 'GPT-4o',              sub: 'OpenAI · smart · best for complex logic',    icon: 'openai',   badge: 'SMART',   group: 'OpenAI'     },
+  { id: 'o4-mini',          label: 'o4-mini',             sub: 'OpenAI · fast reasoning · cost-efficient',   icon: 'openai',   badge: 'REASON',  group: 'OpenAI'     },
+  { id: 'o3',               label: 'o3',                  sub: 'OpenAI · deep chain-of-thought reasoning',   icon: 'openai',   badge: 'DEEP',    group: 'OpenAI'     },
+  { id: 'gpt4-1',           label: 'GPT-4.1',             sub: 'OpenAI · latest GPT-4 generation',           icon: 'openai',   badge: 'NEW',     group: 'OpenAI'     },
+  // ── Anthropic ───────────────────────────────────────────────────────────────
+  { id: 'claude-opus-4',    label: 'Claude Opus 4',       sub: 'Anthropic · most intelligent Claude',        icon: 'claude',   badge: 'APEX',    group: 'Anthropic'  },
+  { id: 'claude-sonnet-4',  label: 'Claude Sonnet 4',     sub: 'Anthropic · balanced · long context',        icon: 'claude',   badge: 'PRECISE', group: 'Anthropic'  },
+  { id: 'claude',           label: 'Claude 3.5 Sonnet',   sub: 'Anthropic · reliable · detailed output',     icon: 'claude',   badge: 'STABLE',  group: 'Anthropic'  },
+  { id: 'claude-haiku-4',   label: 'Claude Haiku 4',      sub: 'Anthropic · fastest Claude · instant reply', icon: 'claude',   badge: 'QUICK',   group: 'Anthropic'  },
+  // ── Meta ────────────────────────────────────────────────────────────────────
+  { id: 'llama-4-maverick', label: 'Llama 4 Maverick',    sub: 'Meta · open source flagship · powerful',     icon: 'meta',     badge: 'OPEN',    group: 'Meta'       },
+  { id: 'llama-4-scout',    label: 'Llama 4 Scout',       sub: 'Meta · efficient · fast open model',         icon: 'meta',     badge: 'FAST',    group: 'Meta'       },
+  // ── DeepSeek ────────────────────────────────────────────────────────────────
+  { id: 'deepseek-r1',      label: 'DeepSeek R1',         sub: 'DeepSeek · advanced reasoning & math',       icon: 'deepseek', badge: 'REASON',  group: 'DeepSeek'   },
+  { id: 'deepseek',         label: 'DeepSeek V3',         sub: 'DeepSeek · code specialist · cost-efficient',icon: 'deepseek', badge: 'CODE',    group: 'DeepSeek'   },
+  // ── Mistral ─────────────────────────────────────────────────────────────────
+  { id: 'codestral',        label: 'Codestral',           sub: 'Mistral · best-in-class for code tasks',     icon: 'mistral',  badge: 'CODE',    group: 'Mistral'    },
+  { id: 'mistral-large',    label: 'Mistral Large',       sub: 'Mistral · European frontier model',          icon: 'mistral',  badge: 'EU',      group: 'Mistral'    },
 ];
 
-// ── Pill-style agent picker (same style as Kling 1.6 video picker) ────────────
+// ── Pill-style agent picker ───────────────────────────────────────────────────
 function buildCodeAgentPicker() {
   const el = document.getElementById('code-agent-pill-wrap');
   if (!el) return;
   const cur = CODE_AGENTS.find(a => a.id === _codeState.agent) || CODE_AGENTS[0];
-  el.innerHTML = `
-    <button class="gs-model-pill" onclick="toggleCodeAgentPicker(event)" id="code-agent-pill-btn" style="min-width:200px;max-width:260px">
-      ${modelIconHtml(cur.icon, 16)}
-      <span style="font-weight:600;font-size:13px;flex:1;text-align:left">${cur.label}</span>
-      <span style="font-size:9px;font-weight:800;letter-spacing:.6px;color:var(--accent);opacity:.8;white-space:nowrap">${cur.badge}</span>
-      <i class="fas fa-chevron-${_codeState.agentPickerOpen?'up':'down'}" style="font-size:9px;opacity:.6;margin-left:4px;flex-shrink:0"></i>
-    </button>
-    <div class="gs-model-dropdown" style="display:${_codeState.agentPickerOpen?'block':'none'};min-width:280px;left:0">
-      ${CODE_AGENTS.map(a => `
-        <div class="gs-model-row ${a.id===_codeState.agent?'gs-model-selected':''}" onclick="selectCodeAgent('${a.id}','${a.label}')">
-          <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
-            ${modelIconHtml(a.icon, 22)}
-            <div style="min-width:0">
-              <div style="font-weight:600;font-size:13px;color:var(--text-p)">${a.label}</div>
-              <div style="font-size:11px;color:var(--text-s);margin-top:2px">${a.sub}</div>
-            </div>
+
+  // Build grouped rows
+  let lastGroup = null;
+  const rows = CODE_AGENTS.map(a => {
+    let header = '';
+    if (a.group !== lastGroup) {
+      lastGroup = a.group;
+      header = `<div style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);padding:8px 12px 4px;margin-top:${header?'4px':'0'}">${a.group}</div>`;
+    }
+    return header + `
+      <div class="gs-model-row ${a.id===_codeState.agent?'gs-model-selected':''}" onclick="selectCodeAgent('${a.id}','${a.label}')">
+        <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
+          ${modelIconHtml(a.icon, 22)}
+          <div style="min-width:0">
+            <div style="font-weight:600;font-size:13px;color:var(--text-p)">${a.label}</div>
+            <div style="font-size:11px;color:var(--text-s);margin-top:2px">${a.sub}</div>
           </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+          <span style="font-size:8px;font-weight:800;letter-spacing:.6px;color:var(--accent);opacity:.7">${a.badge}</span>
           <div class="gs-radio ${a.id===_codeState.agent?'gs-radio-active':''}"></div>
         </div>
-      `).join('')}
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <button class="gs-model-pill" onclick="toggleCodeAgentPicker(event)" id="code-agent-pill-btn" style="min-width:220px;max-width:280px">
+      ${modelIconHtml(cur.icon, 16)}
+      <span style="font-weight:600;font-size:13px;flex:1;text-align:left">${cur.label}</span>
+      <span style="font-size:8px;font-weight:800;letter-spacing:.6px;color:var(--accent);opacity:.8;white-space:nowrap">${cur.badge}</span>
+      <i class="fas fa-chevron-${_codeState.agentPickerOpen?'up':'down'}" style="font-size:9px;opacity:.6;margin-left:4px;flex-shrink:0"></i>
+    </button>
+    <div class="gs-model-dropdown" id="code-agent-dropdown" style="display:${_codeState.agentPickerOpen?'block':'none'};min-width:300px;left:0;top:calc(100% + 6px);bottom:auto;position:absolute;z-index:999999;max-height:480px;overflow-y:auto">
+      ${rows}
     </div>`;
 }
 
