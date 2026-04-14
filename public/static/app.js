@@ -5658,6 +5658,29 @@ function openSettingsModal() {
     </div>
     ${isSigned ? `
     <div style="margin:14px 0">
+      <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">☁️ CLOUDFLARE DEPLOY</div>
+      <div id="cf-setup-wrap" style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+        <div id="cf-status-row" style="margin-bottom:10px"></div>
+        <div id="cf-instructions" style="font-size:11px;color:var(--text-s);line-height:1.7;margin-bottom:10px;background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.15);border-radius:8px;padding:10px 12px">
+          <strong style="color:var(--text-p);font-size:12px">How to get your API token:</strong><br>
+          1. Go to <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" style="color:#a855f7">dash.cloudflare.com → My Profile → API Tokens</a><br>
+          2. Click <strong>"Create Token"</strong> → choose the <strong>"Edit Cloudflare Workers"</strong> template<br>
+          3. Under Account Resources → select your account → click <strong>Continue → Create Token</strong><br>
+          4. Copy the token and paste it below ↓
+        </div>
+        <div style="display:flex;gap:7px;align-items:center">
+          <input id="cf-token-input" type="password" placeholder="Paste your Cloudflare API token…"
+            style="flex:1;background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:8px 11px;color:var(--text-p);font-size:12px;font-family:monospace"
+            onkeydown="if(event.key==='Enter')cfSaveToken()">
+          <button onclick="cfSaveToken()" id="cf-save-btn"
+            style="padding:8px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,#a855f7,#7c3aed);color:#fff;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">
+            Save
+          </button>
+        </div>
+        <div id="cf-validation-result" style="margin-top:8px;font-size:11px;min-height:18px"></div>
+      </div>
+    </div>
+    <div style="margin:14px 0">
       <div style="font-size:12px;font-weight:700;color:var(--text-m);margin-bottom:8px">PROFILE & REFERRAL</div>
       <div style="display:flex;flex-direction:column;gap:7px">
         <button class="btn-sm" style="justify-content:flex-start;gap:7px" onclick="closeModal();openInviteModal()"><i class="fas fa-user-plus"></i> Invite friends — earn tokens</button>
@@ -5681,6 +5704,102 @@ function updateFocusDur(m) {
   saveLocalState(); closeModal();
   notify(`Focus duration: ${m} min`,'success');
 }
+
+// ── Cloudflare Deploy: Settings helpers ───────────────────────────────────────
+// Called when Settings modal opens — load existing token status
+async function cfLoadTokenStatus() {
+  const wrap = document.getElementById('cf-status-row');
+  const instructions = document.getElementById('cf-instructions');
+  const inputWrap = document.getElementById('cf-token-input')?.parentElement;
+  if (!wrap) return;
+  try {
+    const r = await fetch('/api/cloudflare/token', { credentials: 'include' });
+    const d = await r.json();
+    if (d.has_token) {
+      wrap.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);font-size:11px;color:#10b981;font-weight:700">
+              <i class="fas fa-circle" style="font-size:7px"></i> Valid
+            </span>
+            <span style="font-size:11px;color:var(--text-s);font-family:monospace">${escHtml(d.masked)}</span>
+          </div>
+          <button onclick="cfRemoveToken()" style="font-size:10px;padding:4px 10px;border-radius:6px;border:1px solid var(--danger);background:transparent;color:var(--danger);cursor:pointer;font-weight:600">Remove</button>
+        </div>`;
+      // Hide instructions and input if token already saved
+      if (instructions) instructions.style.display = 'none';
+      if (inputWrap) inputWrap.style.display = 'none';
+      const resultEl = document.getElementById('cf-validation-result');
+      if (resultEl) resultEl.innerHTML = `<span style="color:#10b981"><i class="fas fa-check-circle"></i> You can now deploy projects to Cloudflare from the AI Code Workspace.</span>`;
+    } else {
+      wrap.innerHTML = `<div style="font-size:12px;color:var(--text-s)">No token saved yet.</div>`;
+    }
+  } catch(e) {}
+}
+
+async function cfSaveToken() {
+  const input = document.getElementById('cf-token-input');
+  const btn = document.getElementById('cf-save-btn');
+  const result = document.getElementById('cf-validation-result');
+  const token = input?.value?.trim();
+  if (!token) { notify('Paste your Cloudflare API token first', 'warning'); return; }
+  if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; btn.disabled = true; }
+  if (result) result.innerHTML = `<span style="color:var(--text-s)">Validating…</span>`;
+  try {
+    const r = await fetch('/api/cloudflare/validate', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+    const d = await r.json();
+    if (d.valid) {
+      // Build permissions badges
+      const permBadges = (d.permissions || []).slice(0, 6).map(p =>
+        `<span style="padding:2px 7px;border-radius:10px;background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.25);font-size:10px;color:#a855f7;font-weight:600">${escHtml(p)}</span>`
+      ).join(' ');
+      if (result) result.innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="padding:3px 10px;border-radius:20px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);font-size:11px;color:#10b981;font-weight:700"><i class="fas fa-check-circle"></i> Valid</span>
+            <span style="font-size:11px;color:var(--text-s)">${d.accountCount} account${d.accountCount!==1?'s':''} · ${d.zoneCount} zone${d.zoneCount!==1?'s':''}</span>
+          </div>
+          ${permBadges ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:2px">${permBadges}</div>` : ''}
+          <div style="margin-top:4px;padding:8px 10px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);border-radius:7px;font-size:11px;color:#10b981">
+            <i class="fas fa-rocket" style="margin-right:5px"></i>You can now deploy projects to Cloudflare from the AI Code Workspace.
+          </div>
+        </div>`;
+      if (input) { input.value = ''; input.style.borderColor = '#10b981'; }
+      notify('Cloudflare token saved!', 'success');
+      // Store token status globally so code workspace knows
+      window._cfTokenValid = true;
+      setTimeout(cfLoadTokenStatus, 300);
+    } else {
+      if (result) result.innerHTML = `<span style="color:var(--danger)"><i class="fas fa-times-circle"></i> ${escHtml(d.error || 'Invalid token')}</span>`;
+      if (input) input.style.borderColor = 'var(--danger)';
+    }
+  } catch(e) {
+    if (result) result.innerHTML = `<span style="color:var(--danger)">Network error — try again</span>`;
+  } finally {
+    if (btn) { btn.innerHTML = 'Save'; btn.disabled = false; }
+  }
+}
+
+async function cfRemoveToken() {
+  if (!confirm('Remove your saved Cloudflare API token?')) return;
+  await fetch('/api/cloudflare/token', { method: 'DELETE', credentials: 'include' });
+  window._cfTokenValid = false;
+  notify('Cloudflare token removed', 'info');
+  // Refresh modal
+  closeModal(); setTimeout(openSettingsModal, 50);
+}
+
+// Patch openSettingsModal to load CF token status after modal opens
+const _origSettingsOpen = openSettingsModal;
+window.openSettingsModal = openSettingsModal = function() {
+  _origSettingsOpen();
+  // Load CF token status after modal renders
+  setTimeout(cfLoadTokenStatus, 80);
+};
 
 function connectSlack() {
   // If already connected, open the send modal instead of re-authenticating
@@ -10198,6 +10317,10 @@ async function codeGenerate() {
       if (pushAllWrap) pushAllWrap.style.display = 'block';
     }
 
+    // ── Show Deploy to Cloudflare button (always — user may have CF token) ────
+    const deployWrap = document.getElementById('code-deploy-cf-wrap');
+    if (deployWrap) deployWrap.style.display = 'block';
+
     // ── Update session badge ──────────────────────────────────────────────────
     _codeUpdateSessionBadge();
 
@@ -10252,6 +10375,14 @@ function codeNewSession() {
   if (toggle) toggle.style.display = 'none';
   const msgEl = document.getElementById('code-ai-message');
   if (msgEl) msgEl.style.display = 'none';
+
+  // Hide deploy button + result
+  const deployWrap = document.getElementById('code-deploy-cf-wrap');
+  if (deployWrap) deployWrap.style.display = 'none';
+  const deployResult = document.getElementById('code-deploy-result');
+  if (deployResult) deployResult.style.display = 'none';
+  const pushAllWrap = document.getElementById('code-push-all-wrap');
+  if (pushAllWrap) pushAllWrap.style.display = 'none';
 
   _codeUpdateSessionBadge();
   codeLog('🔄 New session started', 'info');
@@ -10483,6 +10614,67 @@ async function codePushToGitHub() {
     }
   } catch(e) { codeLog('Network error pushing file', 'error'); }
   finally { if (btn) { btn.innerHTML = '<i class="fab fa-github"></i> Push'; btn.disabled = false; } }
+}
+
+// ── Deploy to Cloudflare Pages (user's own account) ───────────────────────────
+async function codeDeployToCloudflare() {
+  const files = Object.entries(_codeState.generatedFiles);
+  if (!files.length) { notify('Generate some files first', 'warning'); return; }
+
+  const btn = document.getElementById('btn-code-deploy-cf');
+  const resultEl = document.getElementById('code-deploy-result');
+  const urlEl = document.getElementById('code-deploy-url');
+  const openBtn = document.getElementById('code-deploy-open-btn');
+
+  if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Deploying…'; btn.disabled = true; }
+  if (resultEl) resultEl.style.display = 'none';
+  codeLog('🚀 Deploying to Cloudflare Pages…', 'info');
+
+  // Build a project name from the first file or the agent prompt
+  const firstPath = files[0][0];
+  const projectName = firstPath.split('/')[0].replace(/\.[^.]+$/, '').replace(/[^a-z0-9]/gi, '-').toLowerCase() || 'my-project';
+
+  try {
+    const payload = {
+      files: files.map(([path, fd]) => ({ path, content: (fd as any).content })),
+      projectName,
+    };
+    const r = await fetch('/api/deploy/cloudflare', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+
+    if (d.ok && d.url) {
+      codeLog(`✅ Live at: ${d.url}`, 'success');
+      notify('Deployed! 🎉', 'success');
+      if (urlEl) { urlEl.textContent = d.url; urlEl.href = d.url; }
+      if (openBtn) openBtn.href = d.url;
+      if (resultEl) resultEl.style.display = 'block';
+      if (d.warning) codeLog(`⚠️ ${d.warning}`, 'info');
+    } else if (d.error === 'no_cf_token') {
+      codeLog('❌ No Cloudflare token — add it in Settings first', 'error');
+      notify('Add your Cloudflare API token in Settings ⚙️', 'warning');
+      // Open settings to the CF section
+      setTimeout(openSettingsModal, 300);
+    } else {
+      const msg = d.message || d.error || 'Deploy failed';
+      codeLog('❌ ' + msg, 'error');
+      notify(msg, 'warning');
+    }
+  } catch(e) {
+    codeLog('❌ Network error during deploy', 'error');
+    notify('Deploy failed — check your connection', 'warning');
+  } finally {
+    if (btn) { btn.innerHTML = '<i class="fas fa-rocket"></i> Deploy to Cloudflare'; btn.disabled = false; }
+  }
+}
+
+function codeDeployCopyUrl() {
+  const url = document.getElementById('code-deploy-url')?.textContent;
+  if (!url) return;
+  navigator.clipboard.writeText(url).then(() => notify('URL copied!', 'success'));
 }
 
 // ── Push ALL generated files to GitHub ───────────────────────────────────────
