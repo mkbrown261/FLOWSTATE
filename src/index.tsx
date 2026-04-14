@@ -840,7 +840,7 @@ RULES:
   const OR_MODEL_MAP: Record<string, string> = {
     // Google
     'gemini-2-5-pro':   'google/gemini-2.5-pro-preview',
-    'gemini-2-5-flash': 'google/gemini-2.5-flash-preview',
+    'gemini-2-5-flash': 'google/gemini-2.5-flash',
     'gemini':           'google/gemini-2.0-flash-001',
     // OpenAI
     'gpt4o':            'openai/gpt-4o',
@@ -848,10 +848,10 @@ RULES:
     'o3':               'openai/o3',
     'gpt4-1':           'openai/gpt-4.1',
     // Anthropic
-    'claude-opus-4':    'anthropic/claude-opus-4-5',
-    'claude-sonnet-4':  'anthropic/claude-sonnet-4-5',
-    'claude':           'anthropic/claude-3-5-sonnet',
-    'claude-haiku-4':   'anthropic/claude-haiku-4-5',
+    'claude-opus-4':    'anthropic/claude-opus-4.6',
+    'claude-sonnet-4':  'anthropic/claude-sonnet-4.6',
+    'claude':           'anthropic/claude-sonnet-4',
+    'claude-haiku-4':   'anthropic/claude-haiku-4.5',
     // Meta
     'llama-4-maverick': 'meta-llama/llama-4-maverick',
     'llama-4-scout':    'meta-llama/llama-4-scout',
@@ -859,7 +859,7 @@ RULES:
     'deepseek-r1':      'deepseek/deepseek-r1',
     'deepseek':         'deepseek/deepseek-chat-v3-0324',
     // Mistral
-    'codestral':        'mistralai/codestral-2501',
+    'codestral':        'mistralai/codestral-2508',
     'mistral-large':    'mistralai/mistral-large',
   }
 
@@ -890,11 +890,12 @@ RULES:
   // Special case: Claude direct Anthropic API
   } else if ((agent === 'claude' || agent === 'claude-opus-4' || agent === 'claude-sonnet-4' || agent === 'claude-haiku-4') && c.env?.ANTHROPIC_API_KEY) {
     const claudeKey = c.env?.ANTHROPIC_API_KEY || ''
+    // Anthropic direct API model IDs (dated versioned names)
     const claudeModelMap: Record<string,string> = {
       'claude':           'claude-3-5-sonnet-20241022',
-      'claude-opus-4':    'claude-opus-4-5',
-      'claude-sonnet-4':  'claude-sonnet-4-5',
-      'claude-haiku-4':   'claude-haiku-4-5',
+      'claude-opus-4':    'claude-opus-4-5-20251101',
+      'claude-sonnet-4':  'claude-sonnet-4-5-20251101',
+      'claude-haiku-4':   'claude-haiku-4-5-20251101',
     }
     const claudeModel = claudeModelMap[agent] || 'claude-3-5-sonnet-20241022'
     const r = await fetch('https://api.anthropic.com/v1/messages', {

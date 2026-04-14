@@ -10205,28 +10205,28 @@ let _codeState = {
 // ── Code AI Agent models ──────────────────────────────────────────────────────
 const CODE_AGENTS = [
   // ── Google ──────────────────────────────────────────────────────────────────
-  { id: 'gemini-2-5-pro',   label: 'Gemini 2.5 Pro',      sub: 'Google · most capable · deep reasoning',     icon: 'google',   badge: 'BEST',    group: 'Google'     },
-  { id: 'gemini-2-5-flash', label: 'Gemini 2.5 Flash',    sub: 'Google · speed + intelligence balance',      icon: 'google',   badge: 'FAST',    group: 'Google'     },
-  { id: 'gemini',           label: 'Gemini 2.0 Flash',    sub: 'Google · multimodal · multi-file builder',   icon: 'google',   badge: 'SOLID',   group: 'Google'     },
+  { id: 'gemini-2-5-pro',   label: 'Gemini 2.5 Pro',      sub: 'Google · most capable · deep reasoning',      icon: 'google',   badge: 'BEST',    group: 'Google'    },
+  { id: 'gemini-2-5-flash', label: 'Gemini 2.5 Flash',    sub: 'Google · speed + intelligence balance',       icon: 'google',   badge: 'FAST',    group: 'Google'    },
+  { id: 'gemini',           label: 'Gemini 2.0 Flash',    sub: 'Google · multimodal · multi-file builder',    icon: 'google',   badge: 'SOLID',   group: 'Google'    },
   // ── OpenAI ──────────────────────────────────────────────────────────────────
-  { id: 'gpt4o',            label: 'GPT-4o',              sub: 'OpenAI · smart · best for complex logic',    icon: 'openai',   badge: 'SMART',   group: 'OpenAI'     },
-  { id: 'o4-mini',          label: 'o4-mini',             sub: 'OpenAI · fast reasoning · cost-efficient',   icon: 'openai',   badge: 'REASON',  group: 'OpenAI'     },
-  { id: 'o3',               label: 'o3',                  sub: 'OpenAI · deep chain-of-thought reasoning',   icon: 'openai',   badge: 'DEEP',    group: 'OpenAI'     },
-  { id: 'gpt4-1',           label: 'GPT-4.1',             sub: 'OpenAI · latest GPT-4 generation',           icon: 'openai',   badge: 'NEW',     group: 'OpenAI'     },
+  { id: 'gpt4o',            label: 'GPT-4o',              sub: 'OpenAI · smart · best for complex logic',     icon: 'openai',   badge: 'SMART',   group: 'OpenAI'    },
+  { id: 'o4-mini',          label: 'o4-mini',             sub: 'OpenAI · fast reasoning · cost-efficient',    icon: 'openai',   badge: 'REASON',  group: 'OpenAI'    },
+  { id: 'o3',               label: 'o3',                  sub: 'OpenAI · deep chain-of-thought reasoning',    icon: 'openai',   badge: 'DEEP',    group: 'OpenAI'    },
+  { id: 'gpt4-1',           label: 'GPT-4.1',             sub: 'OpenAI · latest GPT-4 generation',            icon: 'openai',   badge: 'NEW',     group: 'OpenAI'    },
   // ── Anthropic ───────────────────────────────────────────────────────────────
-  { id: 'claude-opus-4',    label: 'Claude Opus 4',       sub: 'Anthropic · most intelligent Claude',        icon: 'claude',   badge: 'APEX',    group: 'Anthropic'  },
-  { id: 'claude-sonnet-4',  label: 'Claude Sonnet 4',     sub: 'Anthropic · balanced · long context',        icon: 'claude',   badge: 'PRECISE', group: 'Anthropic'  },
-  { id: 'claude',           label: 'Claude 3.5 Sonnet',   sub: 'Anthropic · reliable · detailed output',     icon: 'claude',   badge: 'STABLE',  group: 'Anthropic'  },
-  { id: 'claude-haiku-4',   label: 'Claude Haiku 4',      sub: 'Anthropic · fastest Claude · instant reply', icon: 'claude',   badge: 'QUICK',   group: 'Anthropic'  },
+  { id: 'claude-opus-4',    label: 'Claude Opus 4.6',     sub: 'Anthropic · most intelligent · 1M context',   icon: 'claude',   badge: 'APEX',    group: 'Anthropic' },
+  { id: 'claude-sonnet-4',  label: 'Claude Sonnet 4.6',   sub: 'Anthropic · balanced · 1M context',           icon: 'claude',   badge: 'PRECISE', group: 'Anthropic' },
+  { id: 'claude',           label: 'Claude Sonnet 4',     sub: 'Anthropic · reliable · long context',         icon: 'claude',   badge: 'STABLE',  group: 'Anthropic' },
+  { id: 'claude-haiku-4',   label: 'Claude Haiku 4.5',    sub: 'Anthropic · fastest Claude · instant reply',  icon: 'claude',   badge: 'QUICK',   group: 'Anthropic' },
   // ── Meta ────────────────────────────────────────────────────────────────────
-  { id: 'llama-4-maverick', label: 'Llama 4 Maverick',    sub: 'Meta · open source flagship · powerful',     icon: 'meta',     badge: 'OPEN',    group: 'Meta'       },
-  { id: 'llama-4-scout',    label: 'Llama 4 Scout',       sub: 'Meta · efficient · fast open model',         icon: 'meta',     badge: 'FAST',    group: 'Meta'       },
+  { id: 'llama-4-maverick', label: 'Llama 4 Maverick',    sub: 'Meta · open-source flagship · powerful',      icon: 'meta',     badge: 'OPEN',    group: 'Meta'      },
+  { id: 'llama-4-scout',    label: 'Llama 4 Scout',       sub: 'Meta · efficient · fast open model',          icon: 'meta',     badge: 'FAST',    group: 'Meta'      },
   // ── DeepSeek ────────────────────────────────────────────────────────────────
-  { id: 'deepseek-r1',      label: 'DeepSeek R1',         sub: 'DeepSeek · advanced reasoning & math',       icon: 'deepseek', badge: 'REASON',  group: 'DeepSeek'   },
-  { id: 'deepseek',         label: 'DeepSeek V3',         sub: 'DeepSeek · code specialist · cost-efficient',icon: 'deepseek', badge: 'CODE',    group: 'DeepSeek'   },
+  { id: 'deepseek-r1',      label: 'DeepSeek R1',         sub: 'DeepSeek · advanced reasoning & math',        icon: 'deepseek', badge: 'REASON',  group: 'DeepSeek'  },
+  { id: 'deepseek',         label: 'DeepSeek V3',         sub: 'DeepSeek · code specialist · cost-efficient', icon: 'deepseek', badge: 'CODE',    group: 'DeepSeek'  },
   // ── Mistral ─────────────────────────────────────────────────────────────────
-  { id: 'codestral',        label: 'Codestral',           sub: 'Mistral · best-in-class for code tasks',     icon: 'mistral',  badge: 'CODE',    group: 'Mistral'    },
-  { id: 'mistral-large',    label: 'Mistral Large',       sub: 'Mistral · European frontier model',          icon: 'mistral',  badge: 'EU',      group: 'Mistral'    },
+  { id: 'codestral',        label: 'Codestral 2508',      sub: 'Mistral · best-in-class for code tasks',      icon: 'mistral',  badge: 'CODE',    group: 'Mistral'   },
+  { id: 'mistral-large',    label: 'Mistral Large',       sub: 'Mistral · European frontier model',           icon: 'mistral',  badge: 'EU',      group: 'Mistral'   },
 ];
 
 // ── Pill-style agent picker ───────────────────────────────────────────────────
