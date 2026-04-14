@@ -13,7 +13,7 @@
 export type SessionPhase = 'focus' | 'short_break' | 'long_break' | 'idle';
 export type ModelProvider = 'openai' | 'anthropic' | 'google' | 'xai' | 'mistral' | 'deepseek' | 'meta';
 export type TaskCapability = 'code' | 'creative' | 'analysis' | 'quick' | 'vision' | 'reasoning' | 'realtime' | 'long_form' | 'math';
-export type ImageProvider = 'dalle3' | 'dalle4' | 'gpt-image' | 'imagen3' | 'imagen4' | 'sd3' | 'flux_pro' | 'flux_dev' | 'flux_schnell' | 'ideogram2' | 'recraft';
+export type ImageProvider = 'dalle3' | 'dalle4' | 'gpt-image' | 'imagen3' | 'imagen4' | 'sd3' | 'flux_pro' | 'flux_dev' | 'flux_schnell' | 'ideogram2' | 'recraft' | 'seedream';
 export type VideoProvider = 'veo2' | 'veo3' | 'kling16' | 'kling21' | 'runway_gen4' | 'runway_gen4t' | 'pika20' | 'hailuo' | 'sora' | 'minimax' | 'minimax_live' | 'luma' | 'hunyuan' | 'ltx';
 export type PremiumTier = 'free' | 'pro' | 'team' | 'clawflow' | 'enterprise' | 'personal_pro' | 'team_starter' | 'team_growth';
 export type TeamRole = 'member' | 'senior_dev' | 'scrum_master' | 'admin';
@@ -175,6 +175,7 @@ export const IMAGE_MODEL_REGISTRY: Record<ImageProvider, ImageModelSpec> = {
   flux_schnell:{ id: 'flux_schnell', name: 'FLUX Schnell',    provider: 'Black Forest Labs', description: 'Fastest FLUX — great for quick iterations',                apiEndpoint: 'https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions',        envKey: 'REPLICATE_API_KEY' },
   ideogram2:  { id: 'ideogram2',  name: 'Ideogram V2',        provider: 'Ideogram',         description: 'Text-in-image specialist — logos, typography, design',       apiEndpoint: 'https://api.replicate.com/v1/models/ideogram-ai/ideogram-v2/predictions',              envKey: 'REPLICATE_API_KEY' },
   recraft:    { id: 'recraft',    name: 'Recraft V3',         provider: 'Recraft',          description: 'Vector art, brand assets, icons, consistent style',          apiEndpoint: 'https://api.replicate.com/v1/models/recraft-ai/recraft-v3/predictions',               envKey: 'REPLICATE_API_KEY' },
+  seedream:   { id: 'seedream',   name: 'SeedDream V3',        provider: 'ByteDance',        description: 'Vivid, artistic image generation with strong aesthetic quality', apiEndpoint: 'https://api.replicate.com/v1/models/bytedance/seedream-3/predictions',                  envKey: 'REPLICATE_API_KEY' },
 };
 
 export const VIDEO_MODEL_REGISTRY: Record<VideoProvider, VideoModelSpec> = {

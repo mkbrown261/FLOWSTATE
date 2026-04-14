@@ -43,6 +43,7 @@ type Bindings = {
   OPENROUTER_API_KEY: string
   ANTHROPIC_API_KEY: string
   GOOGLE_AI_KEY: string
+  GEMINI_API_KEY: string  // Gemini direct API key (used by AI Code Workspace for code generation)
   GOOGLE_CLIENT_ID: string; GOOGLE_CLIENT_SECRET: string
   NOTION_CLIENT_ID: string; NOTION_CLIENT_SECRET: string
   SLACK_CLIENT_ID: string; SLACK_CLIENT_SECRET: string; SLACK_BOT_TOKEN: string
@@ -503,8 +504,8 @@ Respond with ONLY the code — no markdown fences, no explanation. Just the raw 
 
   // ── Gemini 2.0 Flash (default) ──────────────────────────────────────────────
   if (agent === 'gemini') {
-    const geminiKey = c.env?.GEMINI_API_KEY || ''
-    if (!geminiKey) return c.json({ error: 'no_ai_key', code: '// Gemini API key not configured' })
+    const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
+    if (!geminiKey) return c.json({ error: 'no_ai_key', code: '// Add GEMINI_API_KEY or GOOGLE_AI_KEY to your Cloudflare secrets to enable Gemini code generation.' })
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -516,15 +517,19 @@ Respond with ONLY the code — no markdown fences, no explanation. Just the raw 
     const d: any = await r.json()
     code = d?.candidates?.[0]?.content?.parts?.[0]?.text || code
 
-  // ── GPT-4o ──────────────────────────────────────────────────────────────────
+  // ── GPT-4o (direct OpenAI, falls back to OpenRouter) ───────────────────────
   } else if (agent === 'gpt4o') {
     const openaiKey = c.env?.OPENAI_API_KEY || ''
-    if (!openaiKey) return c.json({ error: 'no_ai_key', code: '// OpenAI API key not configured' })
-    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    const orKey     = c.env?.OPENROUTER_API_KEY || ''
+    if (!openaiKey && !orKey) return c.json({ error: 'no_ai_key', code: '// Add OPENAI_API_KEY or OPENROUTER_API_KEY to enable GPT-4o code generation.' })
+    const apiKey = openaiKey || orKey
+    const apiUrl = openaiKey ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'
+    const modelId = openaiKey ? 'gpt-4o' : 'openai/gpt-4o'
+    const r = await fetch(apiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: 'gpt-4o',
+        model: modelId,
         messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }],
         temperature: 0.3, max_tokens: 8192
       })
@@ -532,32 +537,52 @@ Respond with ONLY the code — no markdown fences, no explanation. Just the raw 
     const d: any = await r.json()
     code = d?.choices?.[0]?.message?.content || code
 
-  // ── Claude 3.5 Sonnet ───────────────────────────────────────────────────────
+  // ── Claude 3.5 Sonnet (direct Anthropic, falls back to OpenRouter) ──────────
   } else if (agent === 'claude') {
     const claudeKey = c.env?.ANTHROPIC_API_KEY || ''
-    if (!claudeKey) return c.json({ error: 'no_ai_key', code: '// Anthropic API key not configured' })
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 8192,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userMsg }]
+    const orKey     = c.env?.OPENROUTER_API_KEY || ''
+    if (!claudeKey && !orKey) return c.json({ error: 'no_ai_key', code: '// Add ANTHROPIC_API_KEY or OPENROUTER_API_KEY to enable Claude code generation.' })
+    if (claudeKey) {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-3-5-sonnet-20241022',
+          max_tokens: 8192,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userMsg }]
+        })
       })
-    })
-    const d: any = await r.json()
-    code = d?.content?.[0]?.text || code
+      const d: any = await r.json()
+      code = d?.content?.[0]?.text || code
+    } else {
+      // Fallback: Claude via OpenRouter
+      const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${orKey}` },
+        body: JSON.stringify({
+          model: 'anthropic/claude-3-5-sonnet',
+          messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }],
+          temperature: 0.3, max_tokens: 8192
+        })
+      })
+      const d: any = await r.json()
+      code = d?.choices?.[0]?.message?.content || code
+    }
 
-  // ── DeepSeek Coder (via Together AI) ───────────────────────────────────────
+  // ── DeepSeek Coder (via Together AI or OpenRouter) ───────────────────────────
   } else if (agent === 'deepseek') {
     const togetherKey = c.env?.TOGETHER_API_KEY || ''
-    if (!togetherKey) return c.json({ error: 'no_ai_key', code: '// Together API key not configured' })
-    const r = await fetch('https://api.together.xyz/v1/chat/completions', {
+    const orKey       = c.env?.OPENROUTER_API_KEY || ''
+    if (!togetherKey && !orKey) return c.json({ error: 'no_ai_key', code: '// Add TOGETHER_API_KEY or OPENROUTER_API_KEY to enable DeepSeek code generation.' })
+    const apiKey = togetherKey || orKey
+    const apiUrl = togetherKey ? 'https://api.together.xyz/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'
+    const modelId = togetherKey ? 'deepseek-ai/DeepSeek-Coder-V2-Instruct' : 'deepseek/deepseek-coder'
+    const r = await fetch(apiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${togetherKey}` },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: 'deepseek-ai/DeepSeek-Coder-V2-Instruct',
+        model: modelId,
         messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMsg }],
         temperature: 0.3, max_tokens: 8192
       })
@@ -1414,7 +1439,7 @@ app.post('/api/generate/image', async (c) => {
 
 // ─── Video Generation ─────────────────────────────────────────────────────────
 app.post('/api/generate/video', async (c) => {
-  const { prompt, model: modelId = 'kling26', duration = 5, imageUrl } = await c.req.json()
+  const { prompt, model: modelId = 'kling16', duration = 5, imageUrl } = await c.req.json()
   const spec = VIDEO_MODEL_REGISTRY[modelId as keyof typeof VIDEO_MODEL_REGISTRY]
   if (!spec) return c.json({ error: 'Unknown video model' }, 400)
   const apiKey = (c.env as any)?.[spec.envKey]
@@ -1437,7 +1462,6 @@ app.post('/api/generate/video', async (c) => {
 
     // ── All Replicate video models ────────────────────────────────────────────
     const inputMap: Record<string, any> = {
-      kling26:      { prompt, duration: Math.min(duration, 10), aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
       kling16:      { prompt, duration: Math.min(duration, 10), aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
       kling21:      { prompt, duration: Math.min(duration, 10), aspect_ratio: '16:9', ...(isImg2Vid ? { image: imageUrl } : {}) },
       minimax:      { prompt, ...(isImg2Vid ? { first_frame_image: imageUrl } : {}) },
@@ -7705,6 +7729,9 @@ em{color:var(--accent);font-style:italic}
       <!-- Agent / Model selector bar -->
       <div class="code-agent-bar" id="code-agent-bar">
         <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);flex-shrink:0;margin-right:4px">AI Agent</div>
+        <!-- Pill-style model picker (same style as Kling 1.6 in Video Gen) -->
+        <div class="gs-gen-picker" id="code-agent-pill-wrap" style="position:relative;flex-shrink:0"></div>
+        <!-- Legacy agent cards (still functional via onclick) -->
         <div class="code-agent-card active" onclick="selectCodeAgent('gemini','Gemini 2.0 Flash')" data-agent="gemini">
           <div class="code-agent-badge">FAST · MULTIMODAL</div>
           <div class="code-agent-name">Gemini 2.0 Flash</div>

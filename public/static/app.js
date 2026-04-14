@@ -2168,55 +2168,67 @@ function selectModel(id) {
 
 // ── Generate-tab model pickers (Genspark-style) ────────────────────────────
 const IMG_MODELS = [
-  { id:'dalle3',    label:'DALL-E 3',         sub:'OpenAI — Best text rendering',      icon:'openai'  },
-  { id:'dalle4',    label:'DALL-E 4',         sub:'OpenAI — Latest generation',        icon:'openai'  },
-  { id:'gpt-image', label:'GPT-Image-1',      sub:'OpenAI — Native image editing',     icon:'openai'  },
-  { id:'imagen3',   label:'Imagen 3',         sub:'Google — Photorealistic quality',   icon:'google'  },
-  { id:'imagen4',   label:'Imagen 4',         sub:'Google — Latest model',             icon:'google'  },
-  { id:'flux_pro',  label:'FLUX Pro 1.1',     sub:'Black Forest Labs — Ultra-detail',  icon:'🖼️'      },
-  { id:'flux_dev',  label:'FLUX Dev',         sub:'Black Forest Labs — Fast & open',   icon:'🖼️'      },
-  { id:'ideogram2', label:'Ideogram 2.0',     sub:'Design-forward, great typography',  icon:'💡'      },
-  { id:'sd3',       label:'Stable Diffusion 3','sub':'Stability AI — Open source',     icon:'🎨'      },
-  { id:'recraft',   label:'Recraft V3',       sub:'Vector & brand design specialist',  icon:'✏️'      },
+  { id:'flux_pro',      label:'FLUX Pro 1.1',       sub:'Black Forest Labs — Ultra-detail',   icon:'🖼️'      },
+  { id:'flux_dev',      label:'FLUX Dev',           sub:'Black Forest Labs — Fast & open',    icon:'🖼️'      },
+  { id:'flux_schnell',  label:'FLUX Schnell',       sub:'Black Forest Labs — Fastest FLUX',   icon:'🖼️'      },
+  { id:'dalle3',        label:'DALL-E 3',           sub:'OpenAI — Best text rendering',       icon:'openai'  },
+  { id:'dalle4',        label:'DALL-E 4',           sub:'OpenAI — Latest generation',         icon:'openai'  },
+  { id:'gpt-image',     label:'GPT-Image-1',        sub:'OpenAI — Native image editing',      icon:'openai'  },
+  { id:'imagen3',       label:'Imagen 3',           sub:'Google — Photorealistic quality',    icon:'google'  },
+  { id:'imagen4',       label:'Imagen 4',           sub:'Google — Latest model',              icon:'google'  },
+  { id:'ideogram2',     label:'Ideogram 2.0',       sub:'Design-forward, great typography',   icon:'💡'      },
+  { id:'recraft',       label:'Recraft V3',         sub:'Vector & brand design specialist',   icon:'✏️'      },
+  { id:'seedream',      label:'SeedDream V3',       sub:'ByteDance — Vivid, artistic detail',  icon:'🌱'      },
+  { id:'sd3',           label:'Stable Diffusion 3', sub:'Stability AI — Open source power',   icon:'🎨'      },
 ];
 
 const VID_MODELS = [
-  { id:'veo2',         label:'Veo 2',          sub:'Google — Cinematic quality',        icon:'google'  },
-  { id:'veo3',         label:'Veo 3',          sub:'Google — Latest, audio-native',     icon:'google'  },
-  { id:'sora',         label:'Sora',           sub:'OpenAI — World models',             icon:'openai'  },
-  { id:'kling16',      label:'Kling 1.6',      sub:'Kuaishou — Smooth motion',          icon:'🎬'      },
-  { id:'kling21',      label:'Kling 2.1',      sub:'Kuaishou — Latest version',         icon:'🎬'      },
-  { id:'runway_gen4',  label:'Runway Gen-4',   sub:'Runway ML — Film quality',          icon:'🎞️'      },
-  { id:'runway_gen4t', label:'Runway Gen-4 Turbo','sub':'Runway ML — Fast generation', icon:'🎞️'      },
-  { id:'pika20',       label:'Pika 2.0',       sub:'Pika Labs — Creative effects',      icon:'⚡'      },
-  { id:'hailuo',       label:'Hailuo 2',       sub:'MiniMax — Fast face generation',    icon:'🌊'      },
-  { id:'luma',         label:'Luma Dream Machine','sub':'Luma AI — Photorealistic',     icon:'🌙'      },
+  { id:'kling16',      label:'Kling 1.6',          sub:'Kuaishou — Smooth motion',           icon:'🎬'      },
+  { id:'kling21',      label:'Kling 2.1',          sub:'Kuaishou — Latest version',          icon:'🎬'      },
+  { id:'veo2',         label:'Veo 2',              sub:'Google — Cinematic quality',         icon:'google'  },
+  { id:'veo3',         label:'Veo 3',              sub:'Google — Latest, audio-native',      icon:'google'  },
+  { id:'sora',         label:'Sora',               sub:'OpenAI — World models',              icon:'openai'  },
+  { id:'minimax',      label:'MiniMax Video-01',   sub:'MiniMax — Fast face consistency',    icon:'🌊'      },
+  { id:'minimax_live', label:'MiniMax Live',       sub:'MiniMax — Live-action style',        icon:'🌊'      },
+  { id:'hailuo',       label:'Hailuo 2',           sub:'MiniMax — Fast generation',          icon:'🌊'      },
+  { id:'runway_gen4',  label:'Runway Gen-4',       sub:'Runway ML — Film quality',           icon:'🎞️'      },
+  { id:'runway_gen4t', label:'Runway Gen-4 Turbo', sub:'Runway ML — Fast generation',        icon:'🎞️'      },
+  { id:'pika20',       label:'Pika 2.0',           sub:'Pika Labs — Creative effects',       icon:'⚡'      },
+  { id:'luma',         label:'Luma Dream Machine', sub:'Luma AI — Photorealistic',           icon:'🌙'      },
+  { id:'hunyuan',      label:'HunyuanVideo',       sub:'Tencent — Cinematic open-source',    icon:'🎥'      },
+  { id:'ltx',          label:'LTX Video',          sub:'Lightricks — Fast & high-quality',   icon:'🎥'      },
 ];
 
 // Map of model IDs to full descriptions shown under the pill
 const MODEL_DESCS = {
   // Image
-  'dalle3':    'OpenAI DALL-E 3 — Best-in-class text rendering, photorealistic scenes, and creative illustrations.',
-  'dalle4':    'OpenAI DALL-E 4 — Latest generation with improved coherence and detail at every scale.',
-  'gpt-image': 'OpenAI GPT-Image-1 — Natively integrated image generation with editing and multi-turn context.',
-  'imagen3':   'Google Imagen 3 — Photorealistic quality with accurate prompt following and fine detail.',
-  'imagen4':   'Google Imagen 4 — Google\'s latest model with improved photorealism and composition.',
-  'flux_pro':  'FLUX Pro 1.1 by Black Forest Labs — Ultra-high detail, accurate anatomy, exceptional realism.',
-  'flux_dev':  'FLUX Dev by Black Forest Labs — Open-weight model. Fast, high-quality, great for iteration.',
-  'ideogram2': 'Ideogram 2.0 — Design-forward with excellent typography, logos, and stylized illustration.',
-  'sd3':       'Stable Diffusion 3 — Open-source model by Stability AI. Customizable and community-supported.',
-  'recraft':   'Recraft V3 — Specialist in vector art, brand assets, icons, and consistent visual styles.',
+  'flux_pro':     'FLUX Pro 1.1 by Black Forest Labs — Ultra-high detail, accurate anatomy, exceptional realism. Best all-around image model.',
+  'flux_dev':     'FLUX Dev by Black Forest Labs — Open-weight model. Fast, high-quality, great for rapid iteration.',
+  'flux_schnell': 'FLUX Schnell by Black Forest Labs — Fastest FLUX model. 4-step generation for quick prototyping.',
+  'dalle3':       'OpenAI DALL-E 3 — Best-in-class text rendering, photorealistic scenes, and creative illustrations.',
+  'dalle4':       'OpenAI DALL-E 4 — Latest generation with improved coherence and detail at every scale.',
+  'gpt-image':    'OpenAI GPT-Image-1 — Natively integrated image generation with editing and multi-turn context.',
+  'imagen3':      'Google Imagen 3 — Photorealistic quality with accurate prompt following and fine detail.',
+  'imagen4':      'Google Imagen 4 — Google\'s latest model with improved photorealism and composition.',
+  'ideogram2':    'Ideogram 2.0 — Design-forward with excellent typography, logos, and stylized illustration.',
+  'recraft':      'Recraft V3 — Specialist in vector art, brand assets, icons, and consistent visual styles.',
+  'seedream':     'SeedDream V3 by ByteDance — Vivid, artistic image generation with strong aesthetic quality.',
+  'sd3':          'Stable Diffusion 3 — Open-source model by Stability AI. Customizable and community-supported.',
   // Video
+  'kling16':      'Kling 1.6 by Kuaishou — Smooth motion, excellent face/body consistency, up to 10s.',
+  'kling21':      'Kling 2.1 by Kuaishou — Latest version with improved quality and longer durations.',
   'veo2':         'Google Veo 2 — Cinematic quality video with realistic motion, lighting, and depth of field.',
   'veo3':         'Google Veo 3 — Latest Veo with native audio generation and improved temporal consistency.',
   'sora':         'OpenAI Sora — World model understanding for consistent physics and long-form video.',
-  'kling16':      'Kling 1.6 by Kuaishou — Smooth motion, excellent face/body consistency, up to 10s.',
-  'kling21':      'Kling 2.1 by Kuaishou — Latest version with improved quality and longer durations.',
+  'minimax':      'MiniMax Video-01 — Fast generation with excellent face consistency. Great for social content.',
+  'minimax_live': 'MiniMax Video Live — Live-action style video generation with natural motion dynamics.',
+  'hailuo':       'Hailuo 2 by MiniMax — Fast generation with strong face consistency and natural motion.',
   'runway_gen4':  'Runway Gen-4 — Film-quality output, precise motion control, and professional-grade results.',
   'runway_gen4t': 'Runway Gen-4 Turbo — Faster generation at near-identical quality to Gen-4 standard.',
   'pika20':       'Pika 2.0 — Creative effects, style transfer, and expressive motion. Great for stylised content.',
-  'hailuo':       'Hailuo 2 by MiniMax — Fast generation with strong face consistency and natural dialogue motion.',
   'luma':         'Luma Dream Machine — Photorealistic video with smooth camera motion and environmental detail.',
+  'hunyuan':      'HunyuanVideo by Tencent — High-quality open-source cinematic video with smooth motion.',
+  'ltx':          'LTX Video by Lightricks — Fast, high-quality video generation with great temporal consistency.',
 };
 
 function buildGenPicker(type) {
@@ -4912,27 +4924,66 @@ async function generateImage() {
 
 async function generateVideo() {
   const prompt = document.getElementById('vid-prompt').value.trim();
-  const model  = state.gen?.vidModel || 'veo2';
+  const model  = state.gen?.vidModel || 'kling16';
   const dur    = document.getElementById('vid-dur')?.value || '5';
   if (!prompt) { notify('Enter a prompt','error'); return; }
   const btn = document.getElementById('btn-gen-vid'); btn.disabled=true; btn.textContent='Queuing...';
-  genSidebarLog('vidgen', `Queuing ${dur}s video: "${prompt.slice(0,45)}${prompt.length>45?'…':''}"`);
+  const resultEl = document.getElementById('vid-result');
+  resultEl.innerHTML = '<i class="fas fa-spinner fa-spin" style="color:var(--accent)"></i> <span style="color:var(--text-s)">Queuing generation…</span>';
+  genSidebarLog('vidgen', `Queuing ${dur}s with ${model}: "${prompt.slice(0,45)}${prompt.length>45?'…':''}"`);
   try {
     const r = await fetch('/api/generate/video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,model,duration:parseInt(dur)})});
     const d = await r.json();
-    const resultEl = document.getElementById('vid-result');
-    if (d.queued) {
-      resultEl.innerHTML = `<i class="fas fa-clock" style="color:var(--warn)"></i> ${d.message||'Video queued.'}`;
-      genSidebarLog('vidgen', '⏳ Video queued — check back soon');
-    } else if (d.videoUrl) {
-      resultEl.innerHTML = `<video src="${d.videoUrl}" controls style="width:100%;border-radius:11px"></video>`;
+    if (d.videoUrl) {
+      resultEl.innerHTML = `<video src="${d.videoUrl}" controls style="width:100%;border-radius:11px;margin-top:8px"></video><div style="margin-top:8px"><a href="${d.videoUrl}" download target="_blank" style="background:linear-gradient(135deg,#a855f7,#06b6d4);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;gap:6px"><i class="fas fa-download"></i> Download</a></div>`;
       genSidebarLog('vidgen', '✅ Video ready', 'success');
+    } else if (d.queued && d.jobId) {
+      genSidebarLog('vidgen', `⏳ Queued with ${d.model||model} — polling for result…`);
+      resultEl.innerHTML = `<div style="padding:14px;background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.2);border-radius:10px"><div id="vid-progress-msg" style="font-size:13px;color:var(--text-s);margin-bottom:8px"><i class="fas fa-spinner fa-spin"></i> Generating video — this takes 1–4 minutes…</div><div style="height:4px;background:rgba(255,255,255,.08);border-radius:2px"><div id="vid-progress-bar" style="height:100%;border-radius:2px;background:linear-gradient(90deg,#a855f7,#06b6d4);width:5%;transition:width .4s"></div></div></div>`;
+      pollVideoJob(d.jobId, 0);
+    } else if (d.demo || (d.message && !d.error)) {
+      resultEl.innerHTML = `<div style="color:var(--text-m);font-size:13px;padding:12px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px"><i class="fas fa-info-circle" style="color:#a855f7"></i> ${d.message||'Add API key in Credentials to generate real videos.'}</div>`;
+      genSidebarLog('vidgen', '⚠ ' + (d.message||'No API key'), 'error');
     } else {
       resultEl.innerHTML = `<span style="color:var(--danger)">${d.error||'Generation failed'}</span>`;
       genSidebarLog('vidgen', '❌ ' + (d.error||'Failed'), 'error');
     }
-  } catch(e) { notify('Video generation error','error'); genSidebarLog('vidgen','❌ Network error','error'); }
+  } catch(e) { notify('Video generation error','error'); resultEl.innerHTML='<span style="color:var(--danger)">Network error — try again</span>'; genSidebarLog('vidgen','❌ Network error','error'); }
   finally { btn.disabled=false; btn.innerHTML='<i class="fas fa-film"></i>&nbsp; Generate Video'; }
+}
+
+function pollVideoJob(jobId, attempt) {
+  if (attempt > 60) {
+    const r = document.getElementById('vid-result');
+    if (r) r.innerHTML = '<span style="color:var(--danger)">Generation timed out. Try a shorter duration or simpler prompt.</span>';
+    genSidebarLog('vidgen', '❌ Timed out after 5 min', 'error');
+    return;
+  }
+  const delay = attempt < 5 ? 5000 : 8000;
+  setTimeout(async () => {
+    try {
+      const res  = await fetch(`/api/generate/video/status/${jobId}`);
+      const data = await res.json();
+      const pct  = Math.min(10 + attempt * 2, 90);
+      const bar  = document.getElementById('vid-progress-bar');
+      const msg  = document.getElementById('vid-progress-msg');
+      if (bar) bar.style.width = pct + '%';
+      if (data.status === 'succeeded' && data.videoUrl) {
+        const r = document.getElementById('vid-result');
+        if (r) r.innerHTML = `<video src="${data.videoUrl}" controls style="width:100%;border-radius:11px;margin-top:8px"></video><div style="margin-top:8px"><a href="${data.videoUrl}" download target="_blank" style="background:linear-gradient(135deg,#a855f7,#06b6d4);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;gap:6px"><i class="fas fa-download"></i> Download</a></div>`;
+        genSidebarLog('vidgen', '✅ Video complete!', 'success');
+        return;
+      }
+      if (data.status === 'failed' || data.error) {
+        const r = document.getElementById('vid-result');
+        if (r) r.innerHTML = `<span style="color:var(--danger)">${data.error||'Generation failed'}</span>`;
+        genSidebarLog('vidgen', '❌ ' + (data.error||'Failed'), 'error');
+        return;
+      }
+      if (msg) msg.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${data.status||'processing'} — ${pct}% (attempt ${attempt+1})`;
+      pollVideoJob(jobId, attempt + 1);
+    } catch { pollVideoJob(jobId, attempt + 1); }
+  }, delay);
 }
 
 async function generateImageToVideo() {
@@ -4942,32 +4993,80 @@ async function generateImageToVideo() {
   if (!fileInput?.files?.length && !prompt) { notify('Upload an image or enter a prompt','error'); return; }
   const btn = document.getElementById('btn-img2vid'); btn.disabled=true; btn.textContent='Processing...';
   const resultEl = document.getElementById('img2vid-result');
-  resultEl.innerHTML = '<div style="color:var(--text-m);font-size:13px"><i class="fas fa-spinner fa-spin"></i> Queuing image-to-video generation… This can take 1-3 minutes.</div>';
+  resultEl.innerHTML = '<div style="padding:14px;background:rgba(6,182,212,.08);border:1px solid rgba(6,182,212,.2);border-radius:10px"><div id="i2v-progress-msg" style="font-size:13px;color:var(--text-s);margin-bottom:8px"><i class="fas fa-spinner fa-spin"></i> Preparing image-to-video generation…</div><div style="height:4px;background:rgba(255,255,255,.08);border-radius:2px"><div id="i2v-progress-bar" style="height:100%;border-radius:2px;background:linear-gradient(90deg,#06b6d4,#a855f7);width:5%;transition:width .4s"></div></div></div>';
+  genSidebarLog('i2v', `Starting image-to-video with ${model}`);
   try {
     let imageUrl = '';
-    // If file uploaded, we'd need to upload it first — for now use prompt-only fallback
+    // Read uploaded file as base64 data URL for real backend processing
     if (fileInput?.files?.length) {
-      // Read as data URL for preview
-      const reader = new FileReader();
-      reader.onload = e => {
-        const preview = document.getElementById('img2vid-preview');
-        if (preview) { preview.src=e.target.result; preview.style.display='block'; }
-      };
-      reader.readAsDataURL(fileInput.files[0]);
-      imageUrl = 'data:uploaded-image'; // Signal to backend
+      imageUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => {
+          const preview = document.getElementById('img2vid-preview');
+          if (preview) { preview.src=e.target.result; preview.style.display='block'; }
+          resolve(e.target.result); // Full base64 data URL
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(fileInput.files[0]);
+      });
+      const bar = document.getElementById('i2v-progress-bar');
+      const msg = document.getElementById('i2v-progress-msg');
+      if (bar) bar.style.width = '15%';
+      if (msg) msg.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Image loaded — queuing generation...';
     }
     const r = await fetch('/api/generate/video',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({prompt:prompt||'Animate this image with smooth, natural motion',model,duration:5,imageUrl})});
     const d = await r.json();
-    if (d.queued || d.demo) {
-      resultEl.innerHTML = `<i class="fas fa-clock" style="color:var(--warn)"></i> ${d.message||'Image-to-video queued. Add API keys to generate real videos.'}`;
-    } else if (d.videoUrl) {
-      resultEl.innerHTML = `<video src="${d.videoUrl}" controls style="width:100%;border-radius:11px;margin-top:8px"></video>`;
+    if (d.videoUrl) {
+      resultEl.innerHTML = `<video src="${d.videoUrl}" controls style="width:100%;border-radius:11px;margin-top:8px"></video><div style="margin-top:8px"><a href="${d.videoUrl}" download target="_blank" style="background:linear-gradient(135deg,#06b6d4,#a855f7);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;gap:6px"><i class="fas fa-download"></i> Download</a></div>`;
+      genSidebarLog('i2v', '✅ Video ready', 'success');
+    } else if (d.queued && d.jobId) {
+      genSidebarLog('i2v', `⏳ Queued — polling ${d.jobId.slice(0,12)}...`);
+      resultEl.innerHTML = `<div style="padding:14px;background:rgba(6,182,212,.08);border:1px solid rgba(6,182,212,.2);border-radius:10px"><div id="i2v-progress-msg" style="font-size:13px;color:var(--text-s);margin-bottom:8px"><i class="fas fa-spinner fa-spin"></i> Generating video from your image — 1–3 minutes…</div><div style="height:4px;background:rgba(255,255,255,.08);border-radius:2px"><div id="i2v-progress-bar" style="height:100%;border-radius:2px;background:linear-gradient(90deg,#06b6d4,#a855f7);width:10%;transition:width .4s"></div></div></div>`;
+      pollI2VJob(d.jobId, 0);
+    } else if (d.demo || (d.message && !d.error)) {
+      resultEl.innerHTML = `<div style="color:var(--text-m);font-size:13px;padding:12px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px"><i class="fas fa-info-circle" style="color:#06b6d4"></i> ${d.message||'Add API key in Credentials to generate real videos.'}</div>`;
+      genSidebarLog('i2v', '⚠ ' + (d.message||'No API key'), 'error');
     } else {
       resultEl.innerHTML = `<span style="color:var(--danger);font-size:13px">${d.error||'Generation failed — add video API key in Credentials'}</span>`;
+      genSidebarLog('i2v', '❌ ' + (d.error||'Failed'), 'error');
     }
-  } catch(e) { resultEl.innerHTML='<span style="color:var(--danger)">Error — check network and API keys</span>'; }
+  } catch(e) { resultEl.innerHTML='<span style="color:var(--danger)">Error — check network and API keys</span>'; genSidebarLog('i2v','❌ Network error','error'); }
   finally { btn.disabled=false; btn.innerHTML='<i class="fas fa-video"></i>&nbsp; Generate Video from Image'; }
+}
+
+function pollI2VJob(jobId, attempt) {
+  if (attempt > 60) {
+    const r = document.getElementById('img2vid-result');
+    if (r) r.innerHTML = '<span style="color:var(--danger)">Generation timed out. Try a simpler prompt or smaller image.</span>';
+    genSidebarLog('i2v', '❌ Timed out', 'error');
+    return;
+  }
+  const delay = attempt < 5 ? 5000 : 8000;
+  setTimeout(async () => {
+    try {
+      const res  = await fetch(`/api/generate/video/status/${jobId}`);
+      const data = await res.json();
+      const pct  = Math.min(10 + attempt * 2, 90);
+      const bar  = document.getElementById('i2v-progress-bar');
+      const msg  = document.getElementById('i2v-progress-msg');
+      if (bar) bar.style.width = pct + '%';
+      if (data.status === 'succeeded' && data.videoUrl) {
+        const r = document.getElementById('img2vid-result');
+        if (r) r.innerHTML = `<video src="${data.videoUrl}" controls style="width:100%;border-radius:11px;margin-top:8px"></video><div style="margin-top:8px"><a href="${data.videoUrl}" download target="_blank" style="background:linear-gradient(135deg,#06b6d4,#a855f7);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;gap:6px"><i class="fas fa-download"></i> Download</a></div>`;
+        genSidebarLog('i2v', '✅ Video complete!', 'success');
+        return;
+      }
+      if (data.status === 'failed' || data.error) {
+        const r = document.getElementById('img2vid-result');
+        if (r) r.innerHTML = `<span style="color:var(--danger)">${data.error||'Generation failed'}</span>`;
+        genSidebarLog('i2v', '❌ ' + (data.error||'Failed'), 'error');
+        return;
+      }
+      if (msg) msg.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${data.status||'processing'} — ${pct}%`;
+      pollI2VJob(jobId, attempt + 1);
+    } catch { pollI2VJob(jobId, attempt + 1); }
+  }, delay);
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -9600,7 +9699,58 @@ let _codeState = {
   agent: 'gemini',      // active AI agent id
   agentName: 'Gemini 2.0 Flash',
   projectStarted: false, // true once first generation has occurred in this session
+  agentPickerOpen: false,
 };
+
+// ── Code AI Agent models ──────────────────────────────────────────────────────
+const CODE_AGENTS = [
+  { id: 'gemini',   label: 'Gemini 2.0 Flash',   sub: 'Google · fast · multimodal · multi-file',  icon: 'google',  badge: 'FAST' },
+  { id: 'gpt4o',    label: 'GPT-4o',              sub: 'OpenAI · smart · best for complex logic',  icon: 'openai',  badge: 'SMART' },
+  { id: 'claude',   label: 'Claude 3.5 Sonnet',   sub: 'Anthropic · precise · long context',       icon: '🟠',      badge: 'PRECISE' },
+  { id: 'deepseek', label: 'DeepSeek Coder',       sub: 'Code specialist · bugs & optimisation',   icon: '🟣',      badge: 'CODE' },
+];
+
+// ── Pill-style agent picker (same style as Kling 1.6 video picker) ────────────
+function buildCodeAgentPicker() {
+  const el = document.getElementById('code-agent-pill-wrap');
+  if (!el) return;
+  const cur = CODE_AGENTS.find(a => a.id === _codeState.agent) || CODE_AGENTS[0];
+  el.innerHTML = `
+    <button class="gs-model-pill" onclick="toggleCodeAgentPicker(event)" id="code-agent-pill-btn" style="min-width:200px;max-width:260px">
+      ${modelIconHtml(cur.icon, 16)}
+      <span style="font-weight:600;font-size:13px;flex:1;text-align:left">${cur.label}</span>
+      <span style="font-size:9px;font-weight:800;letter-spacing:.6px;color:var(--accent);opacity:.8;white-space:nowrap">${cur.badge}</span>
+      <i class="fas fa-chevron-${_codeState.agentPickerOpen?'up':'down'}" style="font-size:9px;opacity:.6;margin-left:4px;flex-shrink:0"></i>
+    </button>
+    <div class="gs-model-dropdown" style="display:${_codeState.agentPickerOpen?'block':'none'};min-width:280px;left:0">
+      ${CODE_AGENTS.map(a => `
+        <div class="gs-model-row ${a.id===_codeState.agent?'gs-model-selected':''}" onclick="selectCodeAgent('${a.id}','${a.label}')">
+          <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
+            ${modelIconHtml(a.icon, 22)}
+            <div style="min-width:0">
+              <div style="font-weight:600;font-size:13px;color:var(--text-p)">${a.label}</div>
+              <div style="font-size:11px;color:var(--text-s);margin-top:2px">${a.sub}</div>
+            </div>
+          </div>
+          <div class="gs-radio ${a.id===_codeState.agent?'gs-radio-active':''}"></div>
+        </div>
+      `).join('')}
+    </div>`;
+}
+
+function toggleCodeAgentPicker(e) {
+  e.stopPropagation();
+  _codeState.agentPickerOpen = !_codeState.agentPickerOpen;
+  buildCodeAgentPicker();
+  if (_codeState.agentPickerOpen) {
+    setTimeout(() => document.addEventListener('click', closeCodeAgentPicker, {once:true}), 10);
+  }
+}
+
+function closeCodeAgentPicker() {
+  _codeState.agentPickerOpen = false;
+  buildCodeAgentPicker();
+}
 
 // ── Agent / Model selector ───────────────────────────────────────────────────
 function selectCodeAgent(id, name) {
@@ -9628,7 +9778,10 @@ function selectCodeAgent(id, name) {
   }
   _codeState.agent     = id;
   _codeState.agentName = name;
-  // Update card UI
+  _codeState.agentPickerOpen = false;
+  // Update pill picker UI
+  buildCodeAgentPicker();
+  // Update card UI (legacy cards still present in DOM)
   document.querySelectorAll('.code-agent-card').forEach(c => {
     c.classList.toggle('active', c.dataset.agent === id);
   });
@@ -9637,6 +9790,8 @@ function selectCodeAgent(id, name) {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 function initCodeWorkspace() {
+  // Build the pill-style agent picker
+  buildCodeAgentPicker();
   // Use server-injected FS_GITHUB if available
   if (typeof FS_GITHUB !== 'undefined' && FS_GITHUB) {
     _codeState.ghConnected = true;
