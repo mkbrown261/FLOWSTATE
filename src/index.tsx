@@ -7916,11 +7916,13 @@ em{color:var(--accent);font-style:italic}
       <p style="font-size:18px;color:var(--text-s);margin:0 0 8px;line-height:1.6">Professional DAW. AI-Powered. Yours.</p>
       <p style="font-size:14px;color:var(--text-m);margin:0 0 32px">A standalone desktop DAW with multi-track recording, VST/AU plugins, a full piano roll, mixer console, AI music generation, and deep Clawbot integration. Download and run it locally.</p>
       <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap" id="fsaudio-dl-btns">
-        <button class="aud-dl-btn aud-mac" style="cursor:not-allowed;opacity:.6" title="Release coming soon"><i class="fab fa-apple"></i> macOS — Coming Soon</button>
-        <button class="aud-dl-btn aud-win" style="cursor:not-allowed;opacity:.6" title="Release coming soon"><i class="fab fa-windows"></i> Windows — Coming Soon</button>
+        <a href="https://github.com/mkbrown261/FS-AUDIO/releases/download/v1.0.0/FlowstateAudio-1.0.0-arm64-mac.zip" class="aud-dl-btn aud-mac"><i class="fab fa-apple"></i> macOS (Apple Silicon)</a>
+        <a href="https://github.com/mkbrown261/FS-AUDIO/releases/download/v1.0.0/FlowstateAudio-1.0.0-x64-mac.zip" class="aud-dl-btn aud-mac" style="background:linear-gradient(135deg,#059669,#0284c7)"><i class="fab fa-apple"></i> macOS (Intel)</a>
+        <a href="https://github.com/mkbrown261/FS-AUDIO/releases/download/v1.0.0/FlowstateAudio-1.0.0-win-x64.zip" class="aud-dl-btn aud-win"><i class="fab fa-windows"></i> Download for Windows</a>
+        <a href="https://github.com/mkbrown261/FS-AUDIO/releases/download/v1.0.0/FlowstateAudio-1.0.0-linux-x64.AppImage" class="aud-dl-btn aud-linux"><i class="fab fa-linux"></i> Download for Linux</a>
       </div>
-      <div style="margin-top:12px;display:inline-flex;align-items:center;gap:8px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:8px 16px;font-size:12px;color:#10b981"><i class="fas fa-bell"></i> Downloads will appear here automatically when the first release is published.</div>
-      <div style="margin-top:12px;font-size:12px;color:var(--text-m)">Free to download &nbsp;&#xB7;&nbsp; ClawFlow subscription unlocks AI features &nbsp;&#xB7;&nbsp; <a href="https://github.com/mkbrown261/FS-AUDIO" target="_blank" style="color:var(--accent)">View on GitHub</a></div>
+      <div style="margin-top:16px;font-size:12px;color:var(--text-m)">Free to download &nbsp;&#xB7;&nbsp; ClawFlow subscription unlocks AI features &nbsp;&#xB7;&nbsp; <a href="https://github.com/mkbrown261/FS-AUDIO/releases/tag/v1.0.0" target="_blank" style="color:var(--accent)">v1.0.0 Release Notes</a></div>
+      <div style="margin-top:8px;font-size:11px;color:var(--text-m);opacity:.7">macOS: right-click → Open if you see a security warning &nbsp;&#xB7;&nbsp; Windows: extract zip then run <code style="background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px">Flowstate Audio.exe</code></div>
     </div>
 
     <!-- Feature grid -->
