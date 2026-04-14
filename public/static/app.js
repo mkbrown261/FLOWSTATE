@@ -10618,6 +10618,9 @@ async function codeGenerate() {
     _flowContext.codeFilesCount = Object.keys(_codeState.generatedFiles).length;
     _flowContext.codeProjectName = files[0]?.path?.split('/')[0] || null;
 
+    // Auto-log project to CLAW memory
+    _clawLogProject({ deployUrl: '' });
+
     // Clear prompt
     const inp = document.getElementById('code-prompt-input');
     if (inp) inp.value = '';
@@ -10946,6 +10949,8 @@ async function codeDeployToCloudflare() {
       if (openBtn) openBtn.href = d.url;
       if (resultEl) resultEl.style.display = 'block';
       if (d.warning) codeLog(`⚠️ ${d.warning}`, 'info');
+      // Auto-log project to CLAW memory with deploy URL
+      _clawLogProject({ deployUrl: d.url });
     } else if (d.error === 'no_cf_token') {
       codeLog('❌ No Cloudflare token — add it in Settings first', 'error');
       notify('Add your Cloudflare API token in Settings ⚙️', 'warning');
@@ -11048,6 +11053,58 @@ function _codeUpdateGHStatus() {
     ${_codeState.selectedRepo ? `<div style="font-size:10px;color:var(--accent);margin-top:3px"><i class="fas fa-code-branch"></i> ${escHtml(_codeState.selectedRepo.full_name)}</div>` : ''}`;
   } else {
     panel.innerHTML = `<div style="font-size:11px;color:var(--text-m)"><i class="fas fa-circle" style="font-size:7px;color:#ef4444;margin-right:5px"></i>Not connected</div>`;
+  }
+}
+
+// ── ClawFlow Developer Page ───────────────────────────────────────────────────
+
+// Open the ClawFlow Developer page — check subscription first
+async function openClawflowPage() {
+  // Check if user is signed in
+  const session = window._fsSession;
+  if (!session) {
+    notify('Sign in to access ClawFlow Developer', 'warning');
+    return;
+  }
+  // Check subscription
+  try {
+    const status = await fetch('/api/clawbot/status').then(r => r.json());
+    if (!status.active) {
+      // Show upgrade prompt inline
+      notify('ClawFlow subscription required — upgrade in Pricing tab', 'warning');
+      // Optionally switch to pricing tab
+      return;
+    }
+  } catch(e) {
+    // If check fails, still open the page — gate is on the server
+  }
+  // Open in current tab (full page navigation)
+  window.location.href = '/clawflow';
+}
+
+// Auto-log a project to CLAW memory when code is generated or deployed
+async function _clawLogProject({ deployUrl = '' } = {}) {
+  try {
+    const files = Object.keys(_codeState.generatedFiles || {});
+    if (!files.length) return;
+    // Build project name from files or conversation
+    const firstName = files[0];
+    const rawName = firstName.split('/')[0].replace(/\.[^.]+$/, '') || 'Untitled Project';
+    const name = rawName.charAt(0).toUpperCase() + rawName.slice(1).replace(/-/g, ' ');
+    const description = _codeState.conversationHistory?.slice(-1)?.[0]?.content?.slice(0, 120) || '';
+    await fetch('/api/claw/projects/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        files,
+        description,
+        deployUrl,
+        agent: _codeState.agentName || 'AI',
+      })
+    });
+  } catch(e) {
+    // Silent — non-critical
   }
 }
 

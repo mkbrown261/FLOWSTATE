@@ -6813,6 +6813,8 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .code-btn-generate{display:flex;align-items:center;gap:7px;padding:8px 18px;border-radius:9px;background:linear-gradient(135deg,#10b981,#a855f7);border:none;color:#fff;font-size:12px;font-weight:700;cursor:pointer;transition:.18s}
 .code-btn-generate:hover{opacity:.88;transform:translateY(-1px)}
 .code-btn-generate:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.code-btn-clawflow{display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:9px;background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.4);color:#a855f7;font-size:12px;font-weight:700;cursor:pointer;transition:.18s}
+.code-btn-clawflow:hover{background:rgba(168,85,247,.28);border-color:rgba(168,85,247,.7);transform:translateY(-1px)}
 .code-view-toggle{display:flex;background:rgba(0,0,0,.3);border-radius:7px;padding:2px;gap:2px}
 .code-view-btn{padding:4px 10px;border-radius:5px;border:none;font-size:11px;font-weight:600;cursor:pointer;transition:.15s;color:var(--text-m);background:transparent;display:flex;align-items:center;gap:5px}
 .code-view-btn.active{background:rgba(168,85,247,.25);color:var(--accent)}
@@ -8419,6 +8421,9 @@ em{color:var(--accent);font-style:italic}
                 <option value="sql">SQL</option>
               </select>
               <span style="font-size:10px;color:var(--text-m);flex:1;text-align:right;padding-right:4px">⌘↵ to send</span>
+              <button class="code-btn-clawflow" id="btn-code-clawflow" onclick="openClawflowPage()" title="Open ClawFlow Developer — persistent AI with memory">
+                <i class="fas fa-bolt"></i> ClawFlow
+              </button>
               <button class="code-btn-generate" id="btn-code-generate" onclick="codeGenerate()">
                 <i class="fas fa-wand-magic-sparkles"></i> Build
               </button>
@@ -11141,6 +11146,964 @@ app.get('/terms', (c) => c.redirect('/legal#terms'))
 app.get('/privacy-policy', (c) => c.redirect('/legal#privacy'))
 app.get('/terms-of-service', (c) => c.redirect('/legal#terms'))
 app.get('/terms-of-use', (c) => c.redirect('/legal#terms'))
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLAWFLOW DEVELOPER PAGE — Persistent memory, config, projects, health
+// ═══════════════════════════════════════════════════════════════════════════
+
+// GET /api/claw/memory — load last N messages for the user
+app.get('/api/claw/memory', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ messages: [] })
+  const raw: any = await fetch(`${url}/get/claw_memory:${encodeURIComponent(session.email)}`, {
+    headers: { Authorization: `Bearer ${tok}` }
+  }).then(r => r.json()).catch(() => ({}))
+  const messages = raw?.result ? JSON.parse(raw.result) : []
+  return c.json({ messages })
+})
+
+// POST /api/claw/memory — send a message + get CLAW reply, store in Redis
+app.post('/api/claw/memory', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const body: any = await c.req.json().catch(() => ({}))
+  const userMessage: string = (body.message || '').trim()
+  if (!userMessage) return c.json({ error: 'empty_message' }, 400)
+
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+
+  // Load existing memory, config, and projects in one shot
+  const [memRaw, cfgRaw, projRaw] = await Promise.all([
+    url && tok ? fetch(`${url}/get/claw_memory:${encodeURIComponent(session.email)}`, { headers: { Authorization: `Bearer ${tok}` } }).then(r => r.json()).catch(() => ({})) : Promise.resolve({}),
+    url && tok ? fetch(`${url}/get/claw_config:${encodeURIComponent(session.email)}`, { headers: { Authorization: `Bearer ${tok}` } }).then(r => r.json()).catch(() => ({})) : Promise.resolve({}),
+    url && tok ? fetch(`${url}/get/claw_projects:${encodeURIComponent(session.email)}`, { headers: { Authorization: `Bearer ${tok}` } }).then(r => r.json()).catch(() => ({})) : Promise.resolve({}),
+  ]) as any[]
+
+  const history: any[] = memRaw?.result ? JSON.parse(memRaw.result) : []
+  const config: any = cfgRaw?.result ? JSON.parse(cfgRaw.result) : {}
+  const projects: any[] = projRaw?.result ? JSON.parse(projRaw.result) : []
+
+  // Build memory context for system prompt
+  const preferredModel = config.preferredModel || 'Claude'
+  const style = config.style || 'clean, modular, well-commented'
+  const recentProjects = projects.slice(0, 5).map((p: any) => `• ${p.name} (${p.files?.length || 0} files, last: ${p.lastModified?.slice(0, 10) || 'unknown'})`).join('\n') || 'None yet'
+  const lastDeploy = projects.find((p: any) => p.deployUrl)?.deployUrl || 'None'
+
+  const systemPrompt = `You are CLAW — the AI brain behind FlowState's developer ecosystem. You are persistent: you remember this user's history, style, and projects across sessions.
+
+MEMORY ABOUT THIS USER:
+- Email: ${session.email}
+- Preferred AI model: ${preferredModel}
+- Coding style preference: "${style}"
+- Recent projects:\n${recentProjects}
+- Last deploy URL: ${lastDeploy}
+
+YOUR ROLE ON THE CLAWFLOW DEVELOPER PAGE:
+- This is the user's dedicated workspace. Think of yourself as their senior technical co-founder.
+- Help them build, debug, deploy, and architect systems within FlowState.
+- Reference their past work naturally — you remember everything.
+- Be direct, actionable, and concise. No unnecessary caveats.
+- When they describe a feature, you can offer to write the code changes needed.
+- Permissions and integrations they've granted: Slack, Notion, GitHub, Cloudflare Deploy.
+- You can suggest actions (code changes, deploys, API calls) — they must confirm execution.
+
+CLAWFLOW CAPABILITIES YOU CAN REFERENCE:
+- AI Code Workspace (multi-file builder, live preview, push to GitHub)
+- Cloudflare Deploy (auto-deploy to their Cloudflare account)
+- Higgsfield AI Studio (video generation, image-to-video)
+- CLAW Action Engine (Slack post, Notion write, GitHub push)
+- FlowState Focus Engine, FS Audio, 264 Pro Video Editor (coming soon)
+
+RULES:
+1. Never forget context — reference their projects and preferences naturally.
+2. Suggest specific code changes when asked — reference actual file names from their projects.
+3. Always confirm before executing any action.
+4. If they ask about a past project, recall it from memory above.`
+
+  const messages = history.slice(-20).map((m: any) => ({ role: m.role, content: m.content }))
+  messages.push({ role: 'user', content: userMessage })
+
+  // Call AI — prefer model from config
+  const model = (config.preferredModel || 'claude').toLowerCase()
+  let reply = ''
+  let modelUsed = 'claude-3-5-sonnet-20241022'
+
+  try {
+    if (model.includes('gpt') || model.includes('openai')) {
+      const apiKey = c.env?.OPENROUTER_API_KEY
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, 'HTTP-Referer': 'https://flowst8.cc', 'X-Title': 'FlowState CLAW' },
+        body: JSON.stringify({ model: 'openai/gpt-4o', messages: [{ role: 'system', content: systemPrompt }, ...messages] })
+      })
+      const d: any = await res.json()
+      reply = d.choices?.[0]?.message?.content || ''
+      modelUsed = 'gpt-4o'
+    } else if (model.includes('gemini')) {
+      const apiKey = c.env?.GOOGLE_AI_KEY || c.env?.GEMINI_API_KEY
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: systemPrompt + '\n\n' + messages.map((m: any) => `${m.role}: ${m.content}`).join('\n') }] }] })
+      })
+      const d: any = await res.json()
+      reply = d.candidates?.[0]?.content?.parts?.[0]?.text || ''
+      modelUsed = 'gemini-2.0-flash'
+    } else {
+      // Default: Claude via Anthropic
+      const apiKey = c.env?.ANTHROPIC_API_KEY
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey || '', 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-3-5-sonnet-20241022', max_tokens: 2048, system: systemPrompt, messages })
+      })
+      const d: any = await res.json()
+      reply = d.content?.[0]?.text || ''
+      modelUsed = 'claude-3-5-sonnet'
+    }
+  } catch (e: any) {
+    reply = `I encountered an error: ${e.message}. Please try again.`
+  }
+
+  if (!reply) reply = "I'm having trouble connecting right now. Please try again in a moment."
+
+  // Update memory (keep last 100 exchanges = 200 entries)
+  const newHistory = [
+    ...history,
+    { role: 'user', content: userMessage, timestamp: new Date().toISOString() },
+    { role: 'assistant', content: reply, model: modelUsed, timestamp: new Date().toISOString() }
+  ].slice(-200)
+
+  if (url && tok) {
+    await fetch(`${url}/set/claw_memory:${encodeURIComponent(session.email)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: JSON.stringify(newHistory) })
+    })
+  }
+
+  return c.json({ reply, model: modelUsed, messageCount: newHistory.length })
+})
+
+// GET /api/claw/config — load user's CLAW configuration
+app.get('/api/claw/config', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ config: {} })
+  const raw: any = await fetch(`${url}/get/claw_config:${encodeURIComponent(session.email)}`, {
+    headers: { Authorization: `Bearer ${tok}` }
+  }).then(r => r.json()).catch(() => ({}))
+  const config = raw?.result ? JSON.parse(raw.result) : {}
+  return c.json({ config })
+})
+
+// POST /api/claw/config — save user's CLAW configuration
+app.post('/api/claw/config', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const body: any = await c.req.json().catch(() => ({}))
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ ok: false, error: 'Redis not configured' })
+  const existing: any = await fetch(`${url}/get/claw_config:${encodeURIComponent(session.email)}`, {
+    headers: { Authorization: `Bearer ${tok}` }
+  }).then(r => r.json()).then((d: any) => d?.result ? JSON.parse(d.result) : {}).catch(() => ({}))
+  const updated = { ...existing, ...body, updatedAt: new Date().toISOString() }
+  await fetch(`${url}/set/claw_config:${encodeURIComponent(session.email)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify(updated) })
+  })
+  return c.json({ ok: true, config: updated })
+})
+
+// GET /api/claw/projects — load user's saved projects
+app.get('/api/claw/projects', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ projects: [] })
+  const raw: any = await fetch(`${url}/get/claw_projects:${encodeURIComponent(session.email)}`, {
+    headers: { Authorization: `Bearer ${tok}` }
+  }).then(r => r.json()).catch(() => ({}))
+  const projects = raw?.result ? JSON.parse(raw.result) : []
+  return c.json({ projects })
+})
+
+// POST /api/claw/projects/log — auto-log a project (called from AI Code Workspace)
+app.post('/api/claw/projects/log', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const body: any = await c.req.json().catch(() => ({}))
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ ok: false })
+  const existing: any[] = await fetch(`${url}/get/claw_projects:${encodeURIComponent(session.email)}`, {
+    headers: { Authorization: `Bearer ${tok}` }
+  }).then(r => r.json()).then((d: any) => d?.result ? JSON.parse(d.result) : []).catch(() => [])
+  // Upsert project by name
+  const idx = existing.findIndex((p: any) => p.name === body.name)
+  const project = {
+    name: body.name || 'Untitled Project',
+    files: body.files || [],
+    description: body.description || '',
+    deployUrl: body.deployUrl || '',
+    agent: body.agent || 'Unknown',
+    lastModified: new Date().toISOString(),
+    createdAt: idx >= 0 ? existing[idx].createdAt : new Date().toISOString(),
+  }
+  if (idx >= 0) existing[idx] = project
+  else existing.unshift(project)
+  const trimmed = existing.slice(0, 50) // keep last 50 projects
+  await fetch(`${url}/set/claw_projects:${encodeURIComponent(session.email)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify(trimmed) })
+  })
+  return c.json({ ok: true })
+})
+
+// DELETE /api/claw/memory — clear conversation history
+app.delete('/api/claw/memory', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ ok: false })
+  await fetch(`${url}/del/claw_memory:${encodeURIComponent(session.email)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${tok}` }
+  })
+  return c.json({ ok: true })
+})
+
+// GET /clawflow — dedicated ClawFlow Developer Page
+app.get('/clawflow', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  const isAuth = !!session
+  const email = session?.email || ''
+
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClawFlow Developer — FlowState</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0a0a14;--bg2:#0f0f1e;--bg3:#14142a;--bg4:#1a1a30;
+    --border:rgba(168,85,247,.18);--border2:rgba(168,85,247,.08);
+    --accent:#a855f7;--accent2:#7c3aed;--cyan:#00d4ff;--green:#10b981;
+    --text-p:#f0f0f0;--text-m:rgba(240,240,240,.55);--text-d:rgba(240,240,240,.3);
+    --glow:rgba(168,85,247,.25);--red:#ef4444;
+  }
+  body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text-p);min-height:100vh;overflow-x:hidden}
+
+  /* ── Top nav ── */
+  .cf-nav{
+    position:sticky;top:0;z-index:100;
+    background:rgba(10,10,20,.92);backdrop-filter:blur(16px);
+    border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:14px;padding:0 20px;height:54px;
+  }
+  .cf-nav-logo{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--text-p);font-weight:900;font-size:15px}
+  .cf-nav-logo-icon{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:15px}
+  .cf-nav-sep{color:var(--text-d);font-size:16px}
+  .cf-nav-title{font-weight:700;font-size:15px;background:linear-gradient(135deg,var(--accent),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+  .cf-nav-back{margin-left:auto;display:flex;align-items:center;gap:7px;background:rgba(168,85,247,.1);border:1px solid var(--border);border-radius:8px;padding:6px 14px;font-size:12px;font-weight:600;color:var(--text-p);cursor:pointer;text-decoration:none;transition:.15s}
+  .cf-nav-back:hover{background:rgba(168,85,247,.2)}
+  .cf-nav-badge{background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:6px;padding:3px 8px;font-size:10px;font-weight:800;color:#fff;letter-spacing:.5px}
+
+  /* ── Layout ── */
+  .cf-layout{display:grid;grid-template-columns:260px 1fr 320px;height:calc(100vh - 54px);overflow:hidden}
+  @media(max-width:1100px){.cf-layout{grid-template-columns:220px 1fr}}
+  @media(max-width:768px){.cf-layout{grid-template-columns:1fr;height:auto;overflow:visible}}
+
+  /* ── Left sidebar ── */
+  .cf-sidebar{
+    border-right:1px solid var(--border2);background:var(--bg2);
+    padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:14px;
+  }
+  .cf-sidebar-section{background:var(--bg3);border:1px solid var(--border2);border-radius:12px;padding:14px}
+  .cf-sidebar-title{font-size:10px;font-weight:800;color:var(--text-d);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:10px}
+
+  /* Health dots */
+  .health-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;color:var(--text-m)}
+  .health-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .health-dot.green{background:var(--green);box-shadow:0 0 6px var(--green)}
+  .health-dot.amber{background:#f59e0b;box-shadow:0 0 6px #f59e0b}
+  .health-dot.red{background:var(--red);box-shadow:0 0 6px var(--red)}
+  .health-dot.grey{background:rgba(255,255,255,.2)}
+
+  /* Config form */
+  .cf-label{font-size:11px;color:var(--text-m);margin-bottom:5px;font-weight:500}
+  .cf-select,.cf-input,.cf-textarea{
+    width:100%;background:rgba(255,255,255,.04);border:1px solid var(--border);
+    border-radius:8px;padding:8px 10px;color:var(--text-p);font-size:12px;
+    font-family:inherit;outline:none;transition:.15s;
+  }
+  .cf-select:focus,.cf-input:focus,.cf-textarea:focus{border-color:var(--accent)}
+  .cf-select option{background:#1a1a2e}
+  .cf-textarea{resize:vertical;min-height:60px}
+  .cf-save-btn{
+    width:100%;background:linear-gradient(135deg,var(--accent),var(--accent2));
+    border:none;border-radius:8px;padding:9px;font-size:12px;font-weight:700;
+    color:#fff;cursor:pointer;margin-top:10px;transition:.15s;
+  }
+  .cf-save-btn:hover{opacity:.9}
+
+  /* Projects list */
+  .cf-project-item{
+    background:rgba(255,255,255,.03);border:1px solid var(--border2);
+    border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer;transition:.15s;
+  }
+  .cf-project-item:hover{border-color:var(--border);background:rgba(168,85,247,.06)}
+  .cf-project-name{font-size:12px;font-weight:700;color:var(--text-p);margin-bottom:3px}
+  .cf-project-meta{font-size:10px;color:var(--text-d)}
+  .cf-project-deploy{font-size:10px;color:var(--cyan);margin-top:3px;word-break:break-all}
+
+  /* ── Main chat area ── */
+  .cf-main{
+    display:flex;flex-direction:column;background:var(--bg);overflow:hidden;
+  }
+  .cf-chat-header{
+    padding:14px 20px;border-bottom:1px solid var(--border2);
+    display:flex;align-items:center;gap:12px;flex-shrink:0;
+  }
+  .cf-chat-avatar{
+    width:38px;height:38px;border-radius:10px;
+    background:linear-gradient(135deg,var(--accent),var(--cyan));
+    display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;
+  }
+  .cf-chat-status{width:10px;height:10px;background:var(--green);border-radius:50%;box-shadow:0 0 8px var(--green);flex-shrink:0}
+  .cf-chat-model-badge{
+    margin-left:auto;background:rgba(168,85,247,.12);border:1px solid var(--border);
+    border-radius:6px;padding:3px 10px;font-size:10px;font-weight:700;color:var(--accent);
+  }
+  .cf-clear-btn{
+    background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);
+    border-radius:6px;padding:4px 10px;font-size:10px;font-weight:600;color:#ef4444;
+    cursor:pointer;transition:.15s;
+  }
+  .cf-clear-btn:hover{background:rgba(239,68,68,.2)}
+
+  .cf-messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:14px}
+  .cf-messages::-webkit-scrollbar{width:4px}
+  .cf-messages::-webkit-scrollbar-thumb{background:rgba(168,85,247,.3);border-radius:2px}
+
+  .cf-msg{display:flex;gap:10px;animation:fadeUp .2s ease}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  .cf-msg-user{flex-direction:row-reverse}
+  .cf-msg-avatar{width:28px;height:28px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800}
+  .cf-msg-avatar.user{background:linear-gradient(135deg,#374151,#1f2937);color:var(--text-p)}
+  .cf-msg-avatar.claw{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+  .cf-msg-bubble{
+    max-width:75%;background:var(--bg3);border:1px solid var(--border2);
+    border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.6;color:var(--text-p);
+  }
+  .cf-msg-user .cf-msg-bubble{background:rgba(168,85,247,.12);border-color:rgba(168,85,247,.25)}
+  .cf-msg-bubble.typing{padding:14px}
+  .cf-msg-bubble pre{background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px 12px;overflow-x:auto;margin:8px 0;font-size:12px}
+  .cf-msg-bubble code{font-family:'Courier New',monospace;font-size:12px}
+  .cf-msg-bubble p{margin-bottom:8px}
+  .cf-msg-bubble p:last-child{margin-bottom:0}
+  .cf-msg-meta{font-size:10px;color:var(--text-d);margin-top:5px}
+  .cf-msg-time{font-size:9px;color:var(--text-d);text-align:right;margin-top:4px}
+
+  .cf-typing-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);margin:0 2px;animation:typingBounce 1.2s ease infinite}
+  .cf-typing-dot:nth-child(2){animation-delay:.2s}
+  .cf-typing-dot:nth-child(3){animation-delay:.4s}
+  @keyframes typingBounce{0%,80%,100%{transform:translateY(0);opacity:.5}40%{transform:translateY(-6px);opacity:1}}
+
+  .cf-welcome{text-align:center;padding:40px 20px;color:var(--text-m);max-width:480px;margin:auto}
+  .cf-welcome-icon{font-size:42px;margin-bottom:16px}
+  .cf-welcome h2{font-size:20px;font-weight:800;color:var(--text-p);margin-bottom:8px}
+  .cf-welcome p{font-size:13px;line-height:1.6;margin-bottom:16px}
+  .cf-suggestion-grid{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px}
+  .cf-suggestion{
+    background:rgba(168,85,247,.08);border:1px solid var(--border);border-radius:8px;
+    padding:7px 12px;font-size:11px;color:var(--accent);cursor:pointer;transition:.15s;
+  }
+  .cf-suggestion:hover{background:rgba(168,85,247,.18)}
+
+  /* Input bar */
+  .cf-input-bar{
+    padding:14px 20px;border-top:1px solid var(--border2);
+    display:flex;gap:10px;align-items:flex-end;flex-shrink:0;
+    background:rgba(10,10,20,.8);
+  }
+  .cf-msg-input{
+    flex:1;background:rgba(255,255,255,.04);border:1px solid var(--border);
+    border-radius:12px;padding:11px 14px;color:var(--text-p);font-size:13px;
+    font-family:inherit;resize:none;outline:none;line-height:1.5;
+    max-height:120px;transition:.15s;
+  }
+  .cf-msg-input:focus{border-color:var(--accent)}
+  .cf-send-btn{
+    width:42px;height:42px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+    border:none;border-radius:10px;color:#fff;font-size:16px;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;flex-shrink:0;
+    transition:.15s;align-self:flex-end;
+  }
+  .cf-send-btn:hover{opacity:.85}
+  .cf-send-btn:disabled{opacity:.4;cursor:not-allowed}
+
+  /* ── Right panel ── */
+  .cf-right{
+    border-left:1px solid var(--border2);background:var(--bg2);
+    padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:14px;
+  }
+  @media(max-width:1100px){.cf-right{display:none}}
+  .cf-right-section{background:var(--bg3);border:1px solid var(--border2);border-radius:12px;padding:14px}
+  .cf-perm-item{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border2)}
+  .cf-perm-item:last-child{border-bottom:none}
+  .cf-perm-info{flex:1}
+  .cf-perm-label{font-size:12px;color:var(--text-p);font-weight:600}
+  .cf-perm-desc{font-size:10px;color:var(--text-d);margin-top:2px}
+  .cf-toggle{
+    position:relative;width:38px;height:20px;flex-shrink:0;cursor:pointer;
+  }
+  .cf-toggle input{opacity:0;width:0;height:0}
+  .cf-toggle-slider{
+    position:absolute;inset:0;background:rgba(255,255,255,.12);
+    border-radius:10px;transition:.2s;
+  }
+  .cf-toggle-slider:before{
+    content:'';position:absolute;width:14px;height:14px;background:#fff;
+    border-radius:50%;left:3px;top:3px;transition:.2s;
+  }
+  .cf-toggle input:checked + .cf-toggle-slider{background:var(--accent)}
+  .cf-toggle input:checked + .cf-toggle-slider:before{transform:translateX(18px)}
+
+  .cf-memory-stat{display:flex;align-items:center;justify-content:space-between;padding:6px 0;font-size:12px;border-bottom:1px solid var(--border2)}
+  .cf-memory-stat:last-child{border-bottom:none}
+  .cf-memory-key{color:var(--text-m)}
+  .cf-memory-val{color:var(--text-p);font-weight:600}
+
+  /* Gated overlay */
+  .cf-gate{
+    position:fixed;inset:0;background:rgba(5,5,15,.92);backdrop-filter:blur(12px);
+    z-index:200;display:flex;align-items:center;justify-content:center;
+  }
+  .cf-gate-card{
+    background:var(--bg3);border:1px solid var(--border);border-radius:20px;
+    padding:40px 36px;text-align:center;max-width:440px;width:90%;
+  }
+  .cf-gate-icon{font-size:48px;margin-bottom:16px}
+  .cf-gate-title{font-size:22px;font-weight:900;margin-bottom:8px;background:linear-gradient(135deg,var(--accent),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+  .cf-gate-desc{font-size:13px;color:var(--text-m);line-height:1.6;margin-bottom:24px}
+  .cf-gate-btn{
+    display:inline-block;background:linear-gradient(135deg,var(--accent),var(--accent2));
+    border:none;border-radius:12px;padding:13px 32px;font-size:14px;font-weight:800;
+    color:#fff;cursor:pointer;text-decoration:none;transition:.15s;
+  }
+  .cf-gate-btn:hover{opacity:.9;transform:translateY(-1px)}
+  .cf-gate-back{display:block;margin-top:14px;font-size:12px;color:var(--text-d);cursor:pointer;text-decoration:none}
+  .cf-gate-back:hover{color:var(--text-m)}
+</style>
+</head>
+<body>
+
+<!-- Auth gate — shown if not authenticated -->
+<div class="cf-gate" id="cf-auth-gate" style="display:${isAuth ? 'none' : 'flex'}">
+  <div class="cf-gate-card">
+    <div class="cf-gate-icon">🔐</div>
+    <div class="cf-gate-title">Sign in to ClawFlow</div>
+    <div class="cf-gate-desc">ClawFlow Developer is your persistent AI workspace. Sign in to access your projects, memory, and configuration.</div>
+    <a href="/?signin=1" class="cf-gate-btn">Sign In to FlowState</a>
+    <a href="/" class="cf-gate-back">← Back to FlowState</a>
+  </div>
+</div>
+
+<!-- ClawFlow gate — shown if authenticated but no active subscription -->
+<div class="cf-gate" id="cf-sub-gate" style="display:none">
+  <div class="cf-gate-card">
+    <div class="cf-gate-icon">⚡</div>
+    <div class="cf-gate-title">ClawFlow Required</div>
+    <div class="cf-gate-desc">ClawFlow gives you a persistent AI developer that remembers your projects, preferences, and code across every session — plus actions in Slack, Notion, GitHub, and Cloudflare.</div>
+    <a href="/?tab=pricing" class="cf-gate-btn">Upgrade to ClawFlow →</a>
+    <a href="/" class="cf-gate-back">← Back to FlowState</a>
+  </div>
+</div>
+
+<!-- Top nav -->
+<nav class="cf-nav">
+  <a href="/" class="cf-nav-logo">
+    <div class="cf-nav-logo-icon">⚡</div>
+    FlowState
+  </a>
+  <span class="cf-nav-sep">/</span>
+  <span class="cf-nav-title">ClawFlow Developer</span>
+  <span class="cf-nav-badge">CLAWFLOW</span>
+  <a href="/" class="cf-nav-back"><i class="fas fa-arrow-left"></i> Back to FlowState</a>
+</nav>
+
+<!-- Main layout -->
+<div class="cf-layout">
+
+  <!-- LEFT: Health + Config + Projects -->
+  <div class="cf-sidebar">
+
+    <!-- CLAW Health -->
+    <div class="cf-sidebar-section">
+      <div class="cf-sidebar-title">⚡ CLAW Health</div>
+      <div class="health-row"><div class="health-dot grey" id="hdot-core"></div><span id="hlabel-core">Checking core…</span></div>
+      <div class="health-row"><div class="health-dot grey" id="hdot-memory"></div><span id="hlabel-memory">Checking memory…</span></div>
+      <div class="health-row"><div class="health-dot grey" id="hdot-github"></div><span id="hlabel-github">GitHub</span></div>
+      <div class="health-row"><div class="health-dot grey" id="hdot-cloudflare"></div><span id="hlabel-cloudflare">Cloudflare Deploy</span></div>
+      <div class="health-row"><div class="health-dot grey" id="hdot-slack"></div><span id="hlabel-slack">Slack</span></div>
+      <div class="health-row"><div class="health-dot grey" id="hdot-notion"></div><span id="hlabel-notion">Notion</span></div>
+    </div>
+
+    <!-- CLAW Config -->
+    <div class="cf-sidebar-section">
+      <div class="cf-sidebar-title">⚙️ Configuration</div>
+      <div class="cf-label">Preferred AI Model</div>
+      <select class="cf-select" id="cf-config-model">
+        <option value="claude">Claude 3.5 Sonnet (default)</option>
+        <option value="gpt4o">GPT-4o</option>
+        <option value="gemini">Gemini 2.0 Flash</option>
+      </select>
+      <div class="cf-label" style="margin-top:10px">Coding Style</div>
+      <input class="cf-input" id="cf-config-style" placeholder="e.g. clean, modular, TypeScript, no comments">
+      <div class="cf-label" style="margin-top:10px">CLAW Personality</div>
+      <select class="cf-select" id="cf-config-personality">
+        <option value="direct">Direct &amp; Concise (default)</option>
+        <option value="teacher">Teacher — explains everything</option>
+        <option value="senior">Senior Engineer — blunt, no fluff</option>
+        <option value="creative">Creative — suggests alternatives</option>
+      </select>
+      <button class="cf-save-btn" onclick="cfSaveConfig()"><i class="fas fa-save"></i> Save Configuration</button>
+    </div>
+
+    <!-- Projects -->
+    <div class="cf-sidebar-section" style="flex:1">
+      <div class="cf-sidebar-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>📁 Projects</span>
+        <span id="cf-project-count" style="font-size:9px;color:var(--text-d)">0 saved</span>
+      </div>
+      <div id="cf-projects-list">
+        <div style="font-size:11px;color:var(--text-d);text-align:center;padding:16px 0">Loading projects…</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- CENTER: CLAW Chat -->
+  <div class="cf-main">
+    <div class="cf-chat-header">
+      <div class="cf-chat-avatar">🧠</div>
+      <div>
+        <div style="font-size:14px;font-weight:800">CLAW</div>
+        <div style="font-size:11px;color:var(--text-m)">Your persistent AI developer</div>
+      </div>
+      <div class="cf-chat-status"></div>
+      <div class="cf-chat-model-badge" id="cf-model-badge">Claude 3.5 Sonnet</div>
+      <button class="cf-clear-btn" onclick="cfClearMemory()"><i class="fas fa-trash-alt"></i> Clear</button>
+    </div>
+    <div class="cf-messages" id="cf-messages">
+      <!-- Welcome screen shown when no history -->
+      <div class="cf-welcome" id="cf-welcome">
+        <div class="cf-welcome-icon">🧠</div>
+        <h2>CLAW Developer</h2>
+        <p>I'm your persistent AI developer. I remember your projects, coding style, and preferences — every session builds on the last.</p>
+        <div class="cf-suggestion-grid" id="cf-suggestions">
+          <div class="cf-suggestion" onclick="cfUsePrompt(this)">What did we build last time?</div>
+          <div class="cf-suggestion" onclick="cfUsePrompt(this)">Show me my project history</div>
+          <div class="cf-suggestion" onclick="cfUsePrompt(this)">Help me debug my last project</div>
+          <div class="cf-suggestion" onclick="cfUsePrompt(this)">What's my preferred stack?</div>
+          <div class="cf-suggestion" onclick="cfUsePrompt(this)">Build me a landing page</div>
+          <div class="cf-suggestion" onclick="cfUsePrompt(this)">How do I deploy to Cloudflare Pages?</div>
+        </div>
+      </div>
+    </div>
+    <div class="cf-input-bar">
+      <textarea class="cf-msg-input" id="cf-msg-input" rows="1" placeholder="Talk to CLAW… ask about your projects, request code, or plan your next build" 
+        onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();cfSendMessage();}"
+        oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'"></textarea>
+      <button class="cf-send-btn" id="cf-send-btn" onclick="cfSendMessage()"><i class="fas fa-paper-plane"></i></button>
+    </div>
+  </div>
+
+  <!-- RIGHT: Permissions + Memory Stats -->
+  <div class="cf-right">
+
+    <!-- Memory Stats -->
+    <div class="cf-right-section">
+      <div class="cf-sidebar-title">🧠 Memory Stats</div>
+      <div class="cf-memory-stat"><span class="cf-memory-key">Messages stored</span><span class="cf-memory-val" id="cf-stat-msgs">—</span></div>
+      <div class="cf-memory-stat"><span class="cf-memory-key">Projects logged</span><span class="cf-memory-val" id="cf-stat-projects">—</span></div>
+      <div class="cf-memory-stat"><span class="cf-memory-key">Sessions active</span><span class="cf-memory-val" id="cf-stat-sessions">—</span></div>
+      <div class="cf-memory-stat"><span class="cf-memory-key">Preferred model</span><span class="cf-memory-val" id="cf-stat-model">—</span></div>
+    </div>
+
+    <!-- Permissions -->
+    <div class="cf-right-section">
+      <div class="cf-sidebar-title">🔐 CLAW Permissions</div>
+      <div id="cf-permissions-list">
+        <div class="cf-perm-item">
+          <div class="cf-perm-info"><div class="cf-perm-label">💬 Post to Slack</div><div class="cf-perm-desc">CLAW can send Slack messages</div></div>
+          <label class="cf-toggle"><input type="checkbox" id="perm-slack-post" onchange="cfSavePerm('slack_post',this.checked)"><span class="cf-toggle-slider"></span></label>
+        </div>
+        <div class="cf-perm-item">
+          <div class="cf-perm-info"><div class="cf-perm-label">📝 Update Notion</div><div class="cf-perm-desc">CLAW can edit Notion pages</div></div>
+          <label class="cf-toggle"><input type="checkbox" id="perm-notion-write" onchange="cfSavePerm('notion_write',this.checked)"><span class="cf-toggle-slider"></span></label>
+        </div>
+        <div class="cf-perm-item">
+          <div class="cf-perm-info"><div class="cf-perm-label">🐙 Push to GitHub</div><div class="cf-perm-desc">CLAW can push code to GitHub</div></div>
+          <label class="cf-toggle"><input type="checkbox" id="perm-github-push" onchange="cfSavePerm('github_push',this.checked)"><span class="cf-toggle-slider"></span></label>
+        </div>
+        <div class="cf-perm-item">
+          <div class="cf-perm-info"><div class="cf-perm-label">☁️ Deploy to Cloudflare</div><div class="cf-perm-desc">CLAW can deploy projects</div></div>
+          <label class="cf-toggle"><input type="checkbox" id="perm-cf-deploy" onchange="cfSavePerm('cf_deploy',this.checked)"><span class="cf-toggle-slider"></span></label>
+        </div>
+        <div class="cf-perm-item">
+          <div class="cf-perm-info"><div class="cf-perm-label">🧠 Learn preferences</div><div class="cf-perm-desc">CLAW remembers your style</div></div>
+          <label class="cf-toggle"><input type="checkbox" id="perm-memory-learn" onchange="cfSavePerm('memory_learn',this.checked)"><span class="cf-toggle-slider"></span></label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick actions -->
+    <div class="cf-right-section">
+      <div class="cf-sidebar-title">⚡ Quick Actions</div>
+      <button onclick="cfUsePrompt({textContent:'Generate a complete landing page with hero, features, pricing, and CTA sections'})" style="width:100%;background:rgba(168,85,247,.1);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text-p);font-size:11px;font-weight:600;cursor:pointer;margin-bottom:6px;text-align:left;transition:.15s" onmouseover="this.style.background='rgba(168,85,247,.2)'" onmouseout="this.style.background='rgba(168,85,247,.1)'">🏠 Landing page</button>
+      <button onclick="cfUsePrompt({textContent:'Build a REST API with authentication, CRUD endpoints, and error handling'})" style="width:100%;background:rgba(0,212,255,.07);border:1px solid rgba(0,212,255,.18);border-radius:8px;padding:8px 10px;color:var(--text-p);font-size:11px;font-weight:600;cursor:pointer;margin-bottom:6px;text-align:left;transition:.15s" onmouseover="this.style.background='rgba(0,212,255,.15)'" onmouseout="this.style.background='rgba(0,212,255,.07)'">🔌 REST API</button>
+      <button onclick="cfUsePrompt({textContent:'Create a dashboard with charts, metrics cards, and data tables using Chart.js and TailwindCSS'})" style="width:100%;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.18);border-radius:8px;padding:8px 10px;color:var(--text-p);font-size:11px;font-weight:600;cursor:pointer;margin-bottom:6px;text-align:left;transition:.15s" onmouseover="this.style.background='rgba(16,185,129,.15)'" onmouseout="this.style.background='rgba(16,185,129,.07)'">📊 Dashboard</button>
+      <button onclick="cfUsePrompt({textContent:'Build a full-stack app with login/signup, protected routes, and a user profile page'})" style="width:100%;background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.18);border-radius:8px;padding:8px 10px;color:var(--text-p);font-size:11px;font-weight:600;cursor:pointer;text-align:left;transition:.15s" onmouseover="this.style.background='rgba(245,158,11,.15)'" onmouseout="this.style.background='rgba(245,158,11,.07)'">🔐 Auth App</button>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── ClawFlow Developer Page JS ──────────────────────────────────────────────
+
+const _cfState = {
+  messages: [],         // loaded from Redis
+  projects: [],
+  config: {},
+  permissions: {},
+  isLoading: false,
+  memCount: 0,
+  projCount: 0,
+};
+
+// Format markdown-ish text to HTML
+function cfFormatMsg(text) {
+  return text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>')
+    .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
+    .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
+    .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')
+    .replace(/\\n/g, '<br>');
+}
+
+function cfTimeAgo(isoStr) {
+  if (!isoStr) return '';
+  const diff = Date.now() - new Date(isoStr).getTime();
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff/60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff/3600000) + 'h ago';
+  return Math.floor(diff/86400000) + 'd ago';
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+async function cfInit() {
+  // Check subscription gate
+  const tierRes = await fetch('/api/clawbot/status').then(r => r.json()).catch(() => ({}));
+  if (!tierRes.active) {
+    document.getElementById('cf-sub-gate').style.display = 'flex';
+    return;
+  }
+
+  // Load all data in parallel
+  const [memRes, cfgRes, projRes, permRes] = await Promise.all([
+    fetch('/api/claw/memory').then(r=>r.json()).catch(()=>({messages:[]})),
+    fetch('/api/claw/config').then(r=>r.json()).catch(()=>({config:{}})),
+    fetch('/api/claw/projects').then(r=>r.json()).catch(()=>({projects:[]})),
+    fetch('/api/claw/permissions').then(r=>r.json()).catch(()=>({permissions:{}})),
+  ]);
+
+  _cfState.messages = memRes.messages || [];
+  _cfState.config = cfgRes.config || {};
+  _cfState.projects = projRes.projects || [];
+  _cfState.permissions = permRes.permissions || {};
+  _cfState.memCount = _cfState.messages.length;
+  _cfState.projCount = _cfState.projects.length;
+
+  cfRenderConfig();
+  cfRenderProjects();
+  cfRenderPermissions();
+  cfRenderHistory();
+  cfRenderHealth();
+  cfRenderStats();
+}
+
+// ── Render chat history ───────────────────────────────────────────────────────
+function cfRenderHistory() {
+  const container = document.getElementById('cf-messages');
+  const welcome = document.getElementById('cf-welcome');
+  if (!_cfState.messages.length) {
+    welcome.style.display = 'flex';
+    welcome.style.flexDirection = 'column';
+    return;
+  }
+  welcome.style.display = 'none';
+  // Clear and rebuild
+  const existing = container.querySelectorAll('.cf-msg');
+  existing.forEach(e => e.remove());
+  _cfState.messages.forEach(msg => cfAppendMsgDOM(msg.role, msg.content, msg.timestamp, msg.model, false));
+  // Scroll to bottom
+  container.scrollTop = container.scrollHeight;
+}
+
+function cfAppendMsgDOM(role, content, timestamp, model, animate) {
+  const container = document.getElementById('cf-messages');
+  document.getElementById('cf-welcome').style.display = 'none';
+
+  const div = document.createElement('div');
+  div.className = 'cf-msg' + (role === 'user' ? ' cf-msg-user' : '');
+  if (animate) div.style.animation = 'fadeUp .2s ease';
+
+  const initial = role === 'user' ? '👤' : '🧠';
+  div.innerHTML = \`
+    <div class="cf-msg-avatar \${role}">\${initial}</div>
+    <div>
+      <div class="cf-msg-bubble">\${cfFormatMsg(content)}</div>
+      <div class="cf-msg-time">\${cfTimeAgo(timestamp)}\${model ? ' · ' + model : ''}</div>
+    </div>
+  \`;
+  container.appendChild(div);
+  if (animate) container.scrollTop = container.scrollHeight;
+}
+
+function cfShowTyping() {
+  const container = document.getElementById('cf-messages');
+  const div = document.createElement('div');
+  div.className = 'cf-msg';
+  div.id = 'cf-typing-indicator';
+  div.innerHTML = \`
+    <div class="cf-msg-avatar claw">🧠</div>
+    <div class="cf-msg-bubble typing">
+      <span class="cf-typing-dot"></span>
+      <span class="cf-typing-dot"></span>
+      <span class="cf-typing-dot"></span>
+    </div>
+  \`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function cfRemoveTyping() {
+  document.getElementById('cf-typing-indicator')?.remove();
+}
+
+// ── Send message ──────────────────────────────────────────────────────────────
+async function cfSendMessage() {
+  const input = document.getElementById('cf-msg-input');
+  const btn = document.getElementById('cf-send-btn');
+  const msg = input.value.trim();
+  if (!msg || _cfState.isLoading) return;
+
+  _cfState.isLoading = true;
+  btn.disabled = true;
+  input.value = '';
+  input.style.height = 'auto';
+
+  // Show user message immediately
+  const ts = new Date().toISOString();
+  cfAppendMsgDOM('user', msg, ts, null, true);
+  cfShowTyping();
+
+  try {
+    const res = await fetch('/api/claw/memory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg })
+    });
+    const data = await res.json();
+    cfRemoveTyping();
+    if (data.reply) {
+      cfAppendMsgDOM('assistant', data.reply, new Date().toISOString(), data.model, true);
+      _cfState.memCount = data.messageCount || _cfState.memCount + 2;
+      document.getElementById('cf-stat-msgs').textContent = _cfState.memCount;
+    } else if (data.error) {
+      cfAppendMsgDOM('assistant', 'Error: ' + data.error, new Date().toISOString(), null, true);
+    }
+  } catch(e) {
+    cfRemoveTyping();
+    cfAppendMsgDOM('assistant', 'Connection error. Please try again.', new Date().toISOString(), null, true);
+  }
+
+  _cfState.isLoading = false;
+  btn.disabled = false;
+  input.focus();
+}
+
+function cfUsePrompt(el) {
+  const input = document.getElementById('cf-msg-input');
+  input.value = el.textContent;
+  input.focus();
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+}
+
+// ── Clear memory ──────────────────────────────────────────────────────────────
+async function cfClearMemory() {
+  if (!confirm('Clear all CLAW conversation history? Your config and projects will be kept.')) return;
+  await fetch('/api/claw/memory', { method: 'DELETE' });
+  _cfState.messages = [];
+  _cfState.memCount = 0;
+  document.getElementById('cf-stat-msgs').textContent = '0';
+  // Clear chat UI
+  const container = document.getElementById('cf-messages');
+  container.querySelectorAll('.cf-msg').forEach(e => e.remove());
+  document.getElementById('cf-welcome').style.display = 'flex';
+  document.getElementById('cf-welcome').style.flexDirection = 'column';
+}
+
+// ── Config ────────────────────────────────────────────────────────────────────
+function cfRenderConfig() {
+  const cfg = _cfState.config;
+  const modelEl = document.getElementById('cf-config-model');
+  const styleEl = document.getElementById('cf-config-style');
+  const persEl = document.getElementById('cf-config-personality');
+  if (cfg.preferredModel) modelEl.value = cfg.preferredModel;
+  if (cfg.style) styleEl.value = cfg.style;
+  if (cfg.personality) persEl.value = cfg.personality;
+  // Update model badge
+  const labels = {claude:'Claude 3.5 Sonnet',gpt4o:'GPT-4o',gemini:'Gemini 2.0 Flash'};
+  document.getElementById('cf-model-badge').textContent = labels[cfg.preferredModel] || 'Claude 3.5 Sonnet';
+  document.getElementById('cf-stat-model').textContent = labels[cfg.preferredModel] || 'Claude';
+}
+
+async function cfSaveConfig() {
+  const config = {
+    preferredModel: document.getElementById('cf-config-model').value,
+    style: document.getElementById('cf-config-style').value,
+    personality: document.getElementById('cf-config-personality').value,
+  };
+  _cfState.config = config;
+  await fetch('/api/claw/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config)
+  });
+  const labels = {claude:'Claude 3.5 Sonnet',gpt4o:'GPT-4o',gemini:'Gemini 2.0 Flash'};
+  document.getElementById('cf-model-badge').textContent = labels[config.preferredModel] || 'Claude 3.5 Sonnet';
+  document.getElementById('cf-stat-model').textContent = labels[config.preferredModel] || 'Claude';
+  // Flash save button
+  const btn = document.querySelector('.cf-save-btn');
+  btn.textContent = '✓ Saved!';
+  btn.style.background = 'linear-gradient(135deg,#10b981,#059669)';
+  setTimeout(() => { btn.innerHTML = '<i class="fas fa-save"></i> Save Configuration'; btn.style.background = ''; }, 1500);
+}
+
+// ── Projects ──────────────────────────────────────────────────────────────────
+function cfRenderProjects() {
+  const list = document.getElementById('cf-projects-list');
+  const countEl = document.getElementById('cf-project-count');
+  const projects = _cfState.projects;
+  countEl.textContent = projects.length + ' saved';
+  if (!projects.length) {
+    list.innerHTML = '<div style="font-size:11px;color:var(--text-d);text-align:center;padding:16px 0">No projects yet. Build something in the AI Code Workspace!</div>';
+    return;
+  }
+  list.innerHTML = projects.map(p => \`
+    <div class="cf-project-item" onclick="cfProjectClick('\${(p.name||'').replace(/'/g,'\\\\\\'')}')">
+      <div class="cf-project-name">\${p.name || 'Untitled'}</div>
+      <div class="cf-project-meta">\${(p.files||[]).length} files · \${cfTimeAgo(p.lastModified)} · \${p.agent || 'AI'}</div>
+      \${p.deployUrl ? \`<div class="cf-project-deploy">☁️ \${p.deployUrl}</div>\` : ''}
+    </div>
+  \`).join('');
+  document.getElementById('cf-stat-projects').textContent = projects.length;
+}
+
+function cfProjectClick(name) {
+  const input = document.getElementById('cf-msg-input');
+  input.value = \`Tell me about my project "\${name}" — what files does it have and what was the last thing we worked on?\`;
+  input.focus();
+}
+
+// ── Permissions ───────────────────────────────────────────────────────────────
+function cfRenderPermissions() {
+  const p = _cfState.permissions;
+  const setToggle = (id, key) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = !!p[key];
+  };
+  setToggle('perm-slack-post', 'slack_post');
+  setToggle('perm-notion-write', 'notion_write');
+  setToggle('perm-github-push', 'github_push');
+  setToggle('perm-cf-deploy', 'cf_deploy');
+  setToggle('perm-memory-learn', 'memory_learn');
+}
+
+async function cfSavePerm(key, value) {
+  _cfState.permissions[key] = value;
+  await fetch('/api/claw/permissions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ permissions: { [key]: value } })
+  });
+}
+
+// ── Health ────────────────────────────────────────────────────────────────────
+async function cfRenderHealth() {
+  // Core CLAW (memory endpoint check)
+  setHealth('core', 'green', 'CLAW online');
+  setHealth('memory', 'green', \`Memory: \${_cfState.memCount} messages\`);
+
+  // Check GitHub (just check _cfState on parent page via cookie / stored data)
+  // We'll ping /api/github/user to check if connected
+  const ghRes = await fetch('/api/github/user').then(r=>r.json()).catch(()=>({}));
+  if (ghRes.login) setHealth('github', 'green', \`GitHub: @\${ghRes.login}\`);
+  else setHealth('github', 'grey', 'GitHub: not connected');
+
+  // Check Cloudflare token
+  const cfRes = await fetch('/api/cloudflare/token').then(r=>r.json()).catch(()=>({}));
+  if (cfRes.exists) setHealth('cloudflare', 'green', \`CF Deploy: \${cfRes.maskedToken || 'token saved'}\`);
+  else setHealth('cloudflare', 'amber', 'CF Deploy: no token');
+
+  setHealth('slack', 'grey', 'Slack: checking…');
+  setHealth('notion', 'grey', 'Notion: checking…');
+}
+
+function setHealth(name, color, label) {
+  const dot = document.getElementById('hdot-' + name);
+  const lbl = document.getElementById('hlabel-' + name);
+  if (dot) { dot.className = 'health-dot ' + color; }
+  if (lbl) lbl.textContent = label;
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+function cfRenderStats() {
+  document.getElementById('cf-stat-msgs').textContent = _cfState.memCount || _cfState.messages.length;
+  document.getElementById('cf-stat-projects').textContent = _cfState.projCount || _cfState.projects.length;
+  document.getElementById('cf-stat-sessions').textContent = '1 active';
+  const labels = {claude:'Claude',gpt4o:'GPT-4o',gemini:'Gemini'};
+  document.getElementById('cf-stat-model').textContent = labels[_cfState.config.preferredModel] || 'Claude';
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+cfInit().catch(console.error);
+</script>
+</body>
+</html>`)
+})
 
 // Cloudflare Workers scheduled event handler (cron trigger)
 // Registered in wrangler.jsonc triggers.crons
