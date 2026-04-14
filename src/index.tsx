@@ -8267,6 +8267,9 @@ em{color:var(--accent);font-style:italic}
       <!-- Agent / Model selector bar -->
       <div class="code-agent-bar" id="code-agent-bar">
         <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-m);flex-shrink:0;margin-right:4px">AI Agent</div>
+        <!-- Pill-style model picker (same style as Kling 1.6 in Video Gen) -->
+        <div class="gs-gen-picker" id="code-agent-pill-wrap" style="position:relative;flex-shrink:0"></div>
+        <!-- Legacy agent cards (still functional via onclick) -->
         <div class="code-agent-card active" onclick="selectCodeAgent('gemini','Gemini 2.0 Flash')" data-agent="gemini">
           <div class="code-agent-badge">FAST · MULTIMODAL</div>
           <div class="code-agent-name">Gemini 2.0 Flash</div>
