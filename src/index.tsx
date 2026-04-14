@@ -762,6 +762,7 @@ app.post('/api/github/ai-code', async (c) => {
     fileTree      = [],         // [{path, type}] from GitHub or local
     generatedFiles = {},        // {path: content} — everything built this session
     language      = '',
+    stylePreset   = 'flowstate-dark', // FSDS style preset
   } = await c.req.json()
 
   if (!prompt) return c.json({ error: 'missing_prompt' }, 400)
@@ -779,31 +780,438 @@ app.post('/api/github/ai-code', async (c) => {
         .join('')
     : ''
 
-  // ── System prompt: builder identity + output format ──────────────────────
-  const systemPrompt = `You are an expert AI software engineer and builder — like Cursor, Devin, or Bolt.
-You BUILD code by creating and modifying files directly. You never just talk about code.
+  // ── FSDS CSS scaffold injected into every generation ─────────────────────
+  // Per-preset CSS token overrides sit on top of the base FSDS scaffold
+  const FSDS_PRESETS: Record<string, { label: string; cssOverride: string; promptHint: string; isReact?: boolean }> = {
+    'flowstate-dark': {
+      label: 'FlowState Dark',
+      promptHint: 'Use the FlowState Dark theme: deep dark backgrounds (#0a0a12 base), purple (#a855f7) as the primary accent, green (#00ffa3) for success states, cyan (#00d4ff) for secondary accents. This is the default premium dark aesthetic.',
+      cssOverride: '', // base scaffold IS the dark theme — no overrides needed
+    },
+    'flowstate-light': {
+      label: 'FlowState Light',
+      promptHint: 'Use the FlowState Light theme: white/off-white backgrounds, the same purple accent (#7c3aed), clean and airy. Override --bg to #f4f4f8, --surface-1 to #ffffff, --surface-2 to #f0f0f6, --text-primary to #1a1a2e.',
+      cssOverride: `
+  --bg: #f4f4f8; --surface-1: #ffffff; --surface-2: #f0f0f6; --surface-3: #e8e8f0;
+  --text-primary: #1a1a2e; --text-secondary: #4b5563; --text-muted: #9ca3af;
+  --border: rgba(124,58,237,.15); --border-accent: rgba(124,58,237,.4);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.08); --shadow-md: 0 4px 16px rgba(0,0,0,.1);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,.14); --shadow-glow: 0 0 24px rgba(124,58,237,.2);
+  --accent: #7c3aed; --accent-dim: rgba(124,58,237,.1);`,
+    },
+    'glassmorphism': {
+      label: 'Glassmorphism',
+      promptHint: 'Use a Glassmorphism aesthetic: a vivid gradient background (deep purple to dark blue), frosted glass cards using backdrop-filter:blur(16px) with rgba(255,255,255,.08) backgrounds and rgba(255,255,255,.15) borders. All cards should feel like they are floating on the gradient.',
+      cssOverride: `
+  --bg: #0d0021; --surface-1: rgba(255,255,255,.07); --surface-2: rgba(255,255,255,.04);
+  --surface-3: rgba(0,0,0,.25); --border: rgba(255,255,255,.15); --border-accent: rgba(255,255,255,.35);
+  --shadow-glow: 0 0 40px rgba(168,85,247,.4);`,
+    },
+    'brutalist': {
+      label: 'Brutalist',
+      promptHint: 'Use a Brutalist design aesthetic: off-white or cream backgrounds (#f5f0e8), all borders are 2-3px solid black (#111), box-shadows are hard offsets (4px 4px 0 #111 — no blur), buttons are rectangular with no border-radius, typography is bold and oversized. Raw, intentional, editorial.',
+      cssOverride: `
+  --bg: #f5f0e8; --surface-1: #ede8de; --surface-2: #e0dbd0; --surface-3: #d4cfc5;
+  --text-primary: #111111; --text-secondary: #333333; --text-muted: #666666;
+  --border: #111111; --border-accent: #111111;
+  --radius-sm: 0px; --radius-md: 0px; --radius-lg: 0px; --radius-xl: 0px; --radius-full: 0px;
+  --shadow-sm: 2px 2px 0 #111; --shadow-md: 4px 4px 0 #111; --shadow-lg: 6px 6px 0 #111; --shadow-glow: 4px 4px 0 #a855f7;
+  --accent: #a855f7; --accent-dim: rgba(168,85,247,.15);`,
+    },
+    'terminal': {
+      label: 'Terminal / Hacker',
+      promptHint: 'Use a Terminal/Hacker aesthetic: pure black background (#000000), matrix green (#00ff41) as the only accent color, JetBrains Mono for ALL text (not just code), green text on black, subtle scanline effects, CRT-style glow on text. Think: hacker movie screen.',
+      cssOverride: `
+  --bg: #000000; --surface-1: #050505; --surface-2: #0a0a0a; --surface-3: #0f0f0f;
+  --text-primary: #00ff41; --text-secondary: #00cc33; --text-muted: #006618;
+  --accent: #00ff41; --accent-dim: rgba(0,255,65,.1); --green: #00ff41; --cyan: #00ffcc;
+  --border: rgba(0,255,65,.3); --border-accent: rgba(0,255,65,.7);
+  --shadow-glow: 0 0 20px rgba(0,255,65,.5); --grad-brand: linear-gradient(135deg,#00ff41,#00ffcc);`,
+    },
+    'minimal-saas': {
+      label: 'Minimal SaaS',
+      promptHint: 'Use a Minimal SaaS aesthetic: white backgrounds, very subtle gray borders (#e5e7eb), indigo (#6366f1) as the accent, generous whitespace, barely-there shadows. Think Notion, Linear, or Vercel — clean, professional, restrained.',
+      cssOverride: `
+  --bg: #ffffff; --surface-1: #f9fafb; --surface-2: #f3f4f6; --surface-3: #e5e7eb;
+  --text-primary: #111827; --text-secondary: #6b7280; --text-muted: #9ca3af;
+  --accent: #6366f1; --accent-dim: rgba(99,102,241,.08); --pink: #ec4899;
+  --border: #e5e7eb; --border-accent: rgba(99,102,241,.5); --border-subtle: #f3f4f6;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.05); --shadow-md: 0 4px 12px rgba(0,0,0,.07);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,.1); --shadow-glow: 0 0 20px rgba(99,102,241,.2);
+  --grad-brand: linear-gradient(135deg,#6366f1,#8b5cf6);`,
+    },
+    'cyberpunk': {
+      label: 'Cyberpunk',
+      promptHint: 'Use a Cyberpunk aesthetic: near-black background (#05000f), hot pink (#ff0090) and electric cyan (#00ffff) as dual accents, neon glow effects on everything interactive, sharp angular design, glitch-inspired elements. Think Blade Runner, Akira, synthwave.',
+      cssOverride: `
+  --bg: #05000f; --surface-1: #0d0018; --surface-2: #150025; --surface-3: #0a0015;
+  --accent: #ff0090; --accent-dim: rgba(255,0,144,.12); --cyan: #00ffff; --green: #00ff90;
+  --border: rgba(255,0,144,.3); --border-accent: rgba(255,0,144,.7);
+  --shadow-glow: 0 0 30px rgba(255,0,144,.5), 0 0 60px rgba(0,255,255,.2);
+  --grad-brand: linear-gradient(135deg,#ff0090,#00ffff); --grad-cyber: linear-gradient(135deg,#00ffff,#ff0090);`,
+    },
+    'react-app': {
+      label: 'React App',
+      promptHint: 'Build a React 18 application. Use component-based architecture with hooks. Import React and ReactDOM from https://esm.sh/react@18 and https://esm.sh/react-dom@18/client. Generate App.jsx as the main component and index.html that mounts it. Use useState, useEffect, and other hooks as needed. Apply FlowState Dark design tokens via a <style> tag in index.html.',
+      cssOverride: '', // uses base dark theme
+    },
+    'react-dashboard': {
+      label: 'React Dashboard',
+      promptHint: 'Build a React 18 data dashboard. Use component-based architecture — separate files for each major section (Sidebar.jsx, Header.jsx, Dashboard.jsx, charts, tables). Import React from esm.sh. For charts import Chart.js from https://cdn.jsdelivr.net/npm/chart.js. Use the FlowState Dark design system with data-dense layout: tight spacing, metric cards, sidebar navigation, data tables.',
+      cssOverride: '', // uses base dark theme
+    },
+    'plain': {
+      label: 'Plain (AI decides)',
+      promptHint: 'No design system enforced. Build whatever is most appropriate for the request using your own judgment.',
+      cssOverride: '',
+    },
+  }
+
+  const preset = FSDS_PRESETS[stylePreset] || FSDS_PRESETS['flowstate-dark']
+  const isReact = stylePreset === 'react-app' || stylePreset === 'react-dashboard'
+  const isPlain = stylePreset === 'plain'
+  const isBrutalist = stylePreset === 'brutalist'
+  const isTerminal = stylePreset === 'terminal'
+  const isGlass = stylePreset === 'glassmorphism'
+
+  // ── Base FSDS CSS scaffold (injected into every non-plain generation) ─────
+  const FSDS_BASE_CSS = isPlain ? '' : `
+<style>
+/* ── FlowState Design System (FSDS) — Auto-injected ── */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* Surfaces */
+  --bg:            #0a0a12;
+  --surface-1:     #111122;
+  --surface-2:     #1a1a2e;
+  --surface-3:     #16213e;
+
+  /* Text */
+  --text-primary:  #f0f0f0;
+  --text-secondary:#aaaaaa;
+  --text-muted:    #666680;
+
+  /* Brand accents */
+  --accent:        #a855f7;
+  --accent-bright: #c084fc;
+  --accent-dim:    rgba(168,85,247,.15);
+  --green:         #00ffa3;
+  --cyan:          #00d4ff;
+  --pink:          #ec4899;
+  --amber:         #f59e0b;
+  --red:           #ef4444;
+
+  /* Borders */
+  --border:        rgba(168,85,247,.18);
+  --border-accent: rgba(168,85,247,.5);
+  --border-subtle: rgba(255,255,255,.06);
+
+  /* Gradients */
+  --grad-brand:    linear-gradient(135deg, #a855f7, #ec4899);
+  --grad-cyber:    linear-gradient(135deg, #00d4ff, #a855f7);
+  --grad-success:  linear-gradient(135deg, #00ffa3, #00d4ff);
+
+  /* Shadows */
+  --shadow-sm:  0 1px 3px rgba(0,0,0,.5);
+  --shadow-md:  0 4px 16px rgba(0,0,0,.6), 0 2px 4px rgba(0,0,0,.4);
+  --shadow-lg:  0 8px 32px rgba(0,0,0,.7), 0 4px 8px rgba(0,0,0,.5);
+  --shadow-glow: 0 0 24px rgba(168,85,247,.4);
+
+  /* Radii */
+  --radius-sm:   6px;
+  --radius-md:   10px;
+  --radius-lg:   16px;
+  --radius-xl:   24px;
+  --radius-full: 999px;
+
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-base: 0.2s ease;
+  --transition-slow: 0.35s ease;
+
+  /* Typography */
+  --font-display: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-body:    'Inter', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+
+  ${preset.cssOverride}
+}
+
+/* Base */
+html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+body {
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--text-primary);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+${isTerminal ? 'body, h1, h2, h3, h4, h5, h6, p, span, a, button, input, textarea, select { font-family: var(--font-mono) !important; }' : ''}
+${isGlass ? 'body { background: radial-gradient(ellipse at top left, #2d0060 0%, #001040 50%, #05000f 100%); min-height: 100vh; }' : ''}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--accent-dim); border-radius: var(--radius-full); }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* Text selection */
+::selection { background: var(--accent-dim); color: var(--accent-bright); }
+
+/* Typography scale */
+h1, h2, h3, h4, h5, h6 { font-family: var(--font-display); font-weight: 700; line-height: 1.2; color: var(--text-primary); }
+h1 { font-size: clamp(2rem, 5vw, 3.5rem); font-weight: 900; letter-spacing: -1.5px; }
+h2 { font-size: clamp(1.5rem, 3.5vw, 2.25rem); font-weight: 800; letter-spacing: -0.75px; }
+h3 { font-size: clamp(1.1rem, 2.5vw, 1.5rem); font-weight: 700; }
+h4 { font-size: 1.1rem; font-weight: 700; }
+h5 { font-size: 0.9rem; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; }
+p  { color: var(--text-secondary); line-height: 1.7; }
+a  { color: var(--accent-bright); text-decoration: none; transition: color var(--transition-fast); }
+a:hover { color: var(--accent); }
+code, pre { font-family: var(--font-mono); font-size: 0.88em; }
+pre { background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px; overflow-x: auto; }
+
+/* ── FSDS Component Classes ─────────────────────────────────────── */
+
+/* Layout containers */
+.fs-container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+.fs-container-sm { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+.fs-stack { display: flex; flex-direction: column; }
+.fs-cluster { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.fs-grid { display: grid; gap: 20px; }
+.fs-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+.fs-grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+
+/* Cards */
+.fs-card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-md);
+  transition: border-color var(--transition-base), box-shadow var(--transition-base), transform var(--transition-base);
+  animation: fsds-fadeUp var(--transition-slow) both;
+}
+.fs-card:hover {
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-glow), var(--shadow-lg);
+  transform: translateY(-2px);
+}
+${isGlass ? '.fs-card { background: rgba(255,255,255,.07) !important; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.15) !important; }' : ''}
+.fs-card-elevated { background: var(--surface-2); }
+
+/* Buttons */
+.fs-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 10px 20px; border-radius: var(--radius-md); border: none;
+  font-family: var(--font-body); font-size: 14px; font-weight: 600; cursor: pointer;
+  transition: all var(--transition-base); white-space: nowrap; text-decoration: none;
+}
+.fs-btn-primary {
+  background: var(--grad-brand); color: #fff;
+  box-shadow: var(--shadow-glow);
+}
+.fs-btn-primary:hover { transform: translateY(-1px); filter: brightness(1.1); box-shadow: var(--shadow-glow), var(--shadow-md); }
+.fs-btn-primary:active { transform: translateY(0); filter: brightness(0.95); }
+.fs-btn-ghost {
+  background: transparent; color: var(--accent);
+  border: 1px solid var(--border);
+}
+.fs-btn-ghost:hover { background: var(--accent-dim); border-color: var(--border-accent); }
+.fs-btn-danger { background: var(--red); color: #fff; }
+.fs-btn-danger:hover { filter: brightness(1.1); transform: translateY(-1px); }
+.fs-btn-sm { padding: 6px 14px; font-size: 12px; }
+.fs-btn-lg { padding: 14px 28px; font-size: 16px; border-radius: var(--radius-lg); }
+.fs-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none !important; }
+${isBrutalist ? '.fs-btn, .fs-btn-primary, .fs-btn-ghost { border: 2px solid #111 !important; border-radius: 0 !important; box-shadow: 4px 4px 0 #111 !important; } .fs-btn-primary { background: var(--accent) !important; } .fs-btn:hover { transform: translate(2px, 2px) !important; box-shadow: 2px 2px 0 #111 !important; }' : ''}
+
+/* Inputs */
+.fs-input {
+  width: 100%; background: var(--surface-3); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 11px 14px; color: var(--text-primary);
+  font-family: var(--font-body); font-size: 14px; outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.fs-input::placeholder { color: var(--text-muted); }
+.fs-input:focus {
+  border-color: var(--border-accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+textarea.fs-input { resize: vertical; min-height: 100px; line-height: 1.6; }
+select.fs-input { cursor: pointer; }
+
+/* Badges */
+.fs-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: var(--radius-full);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+}
+.fs-badge-purple { background: rgba(168,85,247,.15); color: var(--accent); border: 1px solid rgba(168,85,247,.3); }
+.fs-badge-green  { background: rgba(0,255,163,.12); color: var(--green); border: 1px solid rgba(0,255,163,.3); }
+.fs-badge-cyan   { background: rgba(0,212,255,.12); color: var(--cyan); border: 1px solid rgba(0,212,255,.3); }
+.fs-badge-amber  { background: rgba(245,158,11,.12); color: var(--amber); border: 1px solid rgba(245,158,11,.3); }
+.fs-badge-red    { background: rgba(239,68,68,.12); color: var(--red); border: 1px solid rgba(239,68,68,.3); }
+
+/* Navigation */
+.fs-nav {
+  display: flex; align-items: center; gap: 16px; padding: 0 24px; height: 60px;
+  background: rgba(10,10,18,.9); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100;
+}
+.fs-nav-logo { font-family: var(--font-display); font-weight: 800; font-size: 1.2rem; background: var(--grad-brand); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.fs-nav-links { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.fs-nav-link { padding: 6px 14px; border-radius: var(--radius-md); font-size: 14px; font-weight: 500; color: var(--text-secondary); transition: all var(--transition-fast); text-decoration: none; }
+.fs-nav-link:hover { color: var(--text-primary); background: rgba(255,255,255,.05); }
+.fs-nav-link.active { color: var(--accent); background: var(--accent-dim); }
+
+/* Divider */
+.fs-divider { height: 1px; background: var(--border-subtle); margin: 24px 0; }
+
+/* Gradient text utility */
+.fs-gradient-text { background: var(--grad-brand); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.fs-gradient-text-cyber { background: var(--grad-cyber); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+
+/* Metric / stat cards */
+.fs-metric { display: flex; flex-direction: column; gap: 4px; }
+.fs-metric-value { font-family: var(--font-display); font-size: 2rem; font-weight: 800; color: var(--text-primary); }
+.fs-metric-label { font-size: 12px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; color: var(--text-muted); }
+
+/* Loading skeleton */
+.fs-skeleton {
+  background: linear-gradient(90deg, var(--surface-1) 25%, var(--surface-2) 50%, var(--surface-1) 75%);
+  background-size: 200% 100%;
+  animation: fsds-shimmer 1.5s infinite;
+  border-radius: var(--radius-md);
+}
+
+/* Section spacing */
+.fs-section { padding: 80px 0; }
+.fs-section-sm { padding: 48px 0; }
+
+/* ── Animations ────────────────────────────────────────────────── */
+@keyframes fsds-fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fsds-fadeIn {
+  from { opacity: 0; } to { opacity: 1; }
+}
+@keyframes fsds-slideIn {
+  from { opacity: 0; transform: translateX(-12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes fsds-pulse-glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(168,85,247,.3); }
+  50%       { box-shadow: 0 0 40px rgba(168,85,247,.7), 0 0 80px rgba(168,85,247,.2); }
+}
+@keyframes fsds-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+${isTerminal ? `@keyframes fsds-scanline { 0%{background-position:0 0}100%{background-position:0 100%} } body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.15) 2px,rgba(0,0,0,.15) 4px);pointer-events:none;z-index:9999;}` : ''}
+</style>`
+
+  // ── System prompt: FSDS design brief + builder identity ───────────────────
+  const systemPrompt = `You are an expert AI software engineer and UI builder — like a senior engineer at a top-tier product company (Linear, Raycast, Vercel). You BUILD production-quality code by creating and modifying files. You never just talk about code.
+
+${isPlain ? '' : `══════════════════════════════════════════════════
+FLOWSTATE DESIGN SYSTEM (FSDS) — YOUR VISUAL CONTRACT
+══════════════════════════════════════════════════
+You are building with the FlowState Design System. Every output MUST look like a premium, production-grade application. The FSDS CSS scaffold is automatically injected into every HTML file — use its classes and variables.
+
+ACTIVE PRESET: ${preset.label}
+${preset.promptHint}
+
+TYPOGRAPHY — NON-NEGOTIABLE:
+- Display/Headings: 'Plus Jakarta Sans' (weights 700–900, loaded via Google Fonts)
+- Body text: 'Inter' (weights 400–500)
+- Code/Mono: 'JetBrains Mono'
+- NEVER use: system-ui, Arial, Roboto, Helvetica as the primary font
+- The Google Fonts @import is already in the injected <style> block — just use font-family: var(--font-display) or var(--font-body)
+
+CSS VARIABLES — USE THESE, DO NOT INVENT NEW HEX VALUES:
+Surfaces:  var(--bg), var(--surface-1), var(--surface-2), var(--surface-3)
+Text:      var(--text-primary), var(--text-secondary), var(--text-muted)
+Accents:   var(--accent) [purple], var(--green), var(--cyan), var(--pink), var(--amber), var(--red)
+Borders:   var(--border), var(--border-accent), var(--border-subtle)
+Gradients: var(--grad-brand) [purple→pink], var(--grad-cyber) [cyan→purple], var(--grad-success) [green→cyan]
+Shadows:   var(--shadow-sm), var(--shadow-md), var(--shadow-lg), var(--shadow-glow)
+Radii:     var(--radius-sm)=6px, var(--radius-md)=10px, var(--radius-lg)=16px, var(--radius-xl)=24px, var(--radius-full)=999px
+Fonts:     var(--font-display), var(--font-body), var(--font-mono)
+
+PRE-BUILT COMPONENT CLASSES (use these directly in HTML):
+Layouts:   .fs-container, .fs-container-sm, .fs-grid-2, .fs-grid-3, .fs-stack, .fs-cluster
+Cards:     .fs-card (auto hover + shadow + entrance animation), .fs-card-elevated
+Buttons:   .fs-btn + .fs-btn-primary / .fs-btn-ghost / .fs-btn-danger / .fs-btn-sm / .fs-btn-lg
+Inputs:    .fs-input (text, textarea, select — all styled)
+Badges:    .fs-badge + .fs-badge-purple / .fs-badge-green / .fs-badge-cyan / .fs-badge-amber / .fs-badge-red
+Nav:       .fs-nav, .fs-nav-logo, .fs-nav-links, .fs-nav-link, .fs-nav-link.active
+Metric:    .fs-metric, .fs-metric-value, .fs-metric-label
+Text:      .fs-gradient-text (brand gradient), .fs-gradient-text-cyber
+Util:      .fs-divider, .fs-section, .fs-section-sm, .fs-skeleton (loading state)
+
+ANIMATION — MANDATORY ON ALL INTERACTIVE ELEMENTS:
+- .fs-card already has fadeUp entrance animation
+- All buttons: transform + filter transition on hover (already in .fs-btn)
+- All inputs: border-color + box-shadow on focus (already in .fs-input)
+- Custom animations available: fsds-fadeUp, fsds-fadeIn, fsds-slideIn, fsds-pulse-glow, fsds-shimmer
+- Stagger card entrances using animation-delay: 0.05s, 0.1s, 0.15s etc.
+
+DESIGN RULES — STRICTLY ENFORCED:
+✅ DO: Use the FSDS classes as the foundation — extend with custom CSS only for unique elements
+✅ DO: Write realistic, meaningful placeholder content that fits the app's purpose
+✅ DO: Add hover states to every clickable element
+✅ DO: Use gradient text (var(--grad-brand)) on hero headings and logo
+✅ DO: Make it feel alive — subtle animations, micro-interactions, smooth transitions
+✅ DO: Use Lucide icons via CDN: <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script> + lucide.createIcons()
+
+❌ NEVER: White (#ffffff / #fff) as the default page background in dark presets
+❌ NEVER: Hardcode hex colors outside the token set — always var(--something)
+❌ NEVER: Default browser button styles (unstyled <button> elements)
+❌ NEVER: Plain border boxes with no visual weight
+❌ NEVER: box-shadow: none on elevated elements — everything needs depth
+❌ NEVER: Lorem ipsum — use realistic content
+❌ NEVER: <table> for layout — use CSS grid or flex
+❌ NEVER: Inline event handlers beyond simple onclick — write proper JS functions
+
+${isReact ? `
+REACT MODE — ADDITIONAL RULES:
+- Import React from "https://esm.sh/react@18"
+- Import ReactDOM from "https://esm.sh/react-dom@18/client"
+- Generate separate .jsx component files for each major section
+- index.html mounts the React app: <div id="root"></div> + <script type="module" src="App.jsx"></script>
+- Use hooks: useState, useEffect, useCallback, useMemo as appropriate
+- Structure: index.html → App.jsx → components/Sidebar.jsx, Header.jsx, etc.
+- Pass the FSDS CSS scaffold in a <style> tag inside index.html
+` : ''}
+══════════════════════════════════════════════════`}
 
 ${repo ? `REPO: ${repo}` : 'STANDALONE PROJECT (no repo connected)'}
+${!isPlain && !isReact && !language ? 'OUTPUT FORMAT: HTML + CSS + JS (separate files for each concern when the project warrants it)' : ''}
 ${language ? `PRIMARY LANGUAGE: ${language}` : ''}
 
 ${fileList ? `PROJECT FILE STRUCTURE:\n${fileList}` : ''}
 ${generatedContext ? `\nCURRENT FILE CONTENTS (most recently modified):${generatedContext}` : ''}
 
-RULES:
+OUTPUT RULES:
 1. ALWAYS respond with a JSON object — no prose, no markdown outside JSON.
-2. The JSON must have this exact shape:
+2. The JSON must have EXACTLY this shape:
    {
-     "message": "Brief description of what you did (1-2 sentences, shown to user)",
+     "message": "Brief description of what you built (1-2 sentences, shown to user)",
      "files": [
-       { "path": "src/index.html", "content": "...full file content..." },
-       { "path": "src/styles.css", "content": "...full file content..." }
+       { "path": "index.html", "content": "...complete file content..." },
+       { "path": "styles.css", "content": "...complete file content..." }
      ]
    }
-3. Always write COMPLETE file contents — never truncate, never use "// ... rest of file".
-4. For HTML/CSS/JS projects: use self-contained files. Import React from "https://esm.sh/react@18" if needed.
+3. ALWAYS write COMPLETE file contents — never truncate, never use "// ... rest unchanged".
+4. In index.html: the FSDS <style> block will be auto-injected — do NOT re-import the Google Fonts or redefine :root variables. Just use the classes and CSS variables.
 5. Build on existing files — read the context above and MODIFY what exists, don't restart from scratch.
-6. Create multiple files when the task requires it (e.g. HTML + CSS + JS as separate files).
-7. File paths should be relative (e.g. "index.html", "src/app.js", "styles/main.css").`
+6. Create multiple files when the project warrants it (index.html + styles.css + app.js, or React component files).
+7. File paths should be relative (e.g. "index.html", "src/App.jsx", "styles/main.css").
+8. Aim for completeness — a fully functional, visually polished app, not a skeleton.`
 
   // ── Build messages array with full conversation history ───────────────────
   // History gives the AI memory of everything built so far
@@ -939,13 +1347,31 @@ RULES:
     }
   }
 
+  // ── Inject FSDS scaffold into every HTML file ────────────────────────────
+  // Insert the CSS right after <head> (or before </head> as fallback)
+  // This guarantees fonts, tokens, and component classes are available
+  // even if the AI forgets to include them
+  const injectFSDS = (html: string): string => {
+    if (isPlain || !FSDS_BASE_CSS) return html
+    if (html.includes('FlowState Design System (FSDS)')) return html // already injected
+    // Try inserting after <head> tag
+    if (html.includes('<head>')) return html.replace('<head>', `<head>\n${FSDS_BASE_CSS}`)
+    // Try inserting before </head>
+    if (html.includes('</head>')) return html.replace('</head>', `${FSDS_BASE_CSS}\n</head>`)
+    // Fallback: prepend to file
+    return FSDS_BASE_CSS + '\n' + html
+  }
+
   return c.json({
     ok: true,
     message: parsed.message || 'Done.',
-    files: (parsed.files || []).map(f => ({
-      path: (f.path || 'generated.js').replace(/^\/+/, ''), // strip leading slash
-      content: f.content || '',
-    })),
+    files: (parsed.files || []).map(f => {
+      const path = (f.path || 'generated.js').replace(/^\/+/, '')
+      const isHtml = path.endsWith('.html') || path.endsWith('.htm')
+      const content = isHtml ? injectFSDS(f.content || '') : (f.content || '')
+      return { path, content }
+    }),
+    preset: stylePreset, // send back to frontend so it knows what was used
   })
 })
 
@@ -6829,7 +7255,9 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .code-prompt-input{width:100%;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:10px 13px;font-size:12px;color:var(--text-p);outline:none;resize:none;font-family:inherit;line-height:1.5}
 .code-prompt-input:focus{border-color:var(--accent)}
 .code-prompt-actions{display:flex;align-items:center;gap:8px;justify-content:flex-end}
-.code-lang-select{background:var(--bg-card);border:1px solid var(--border);border-radius:7px;padding:5px 9px;font-size:11px;color:var(--text-s);outline:none}
+.code-lang-select{background:var(--bg-card);border:1px solid var(--border);border-radius:7px;padding:5px 9px;font-size:11px;color:var(--text-s);outline:none;min-width:150px;cursor:pointer;transition:border-color .15s}
+.code-lang-select:hover{border-color:var(--border-h)}
+.code-lang-select:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(168,85,247,.15)}
 .code-btn-generate{display:flex;align-items:center;gap:7px;padding:8px 18px;border-radius:9px;background:linear-gradient(135deg,#10b981,#a855f7);border:none;color:#fff;font-size:12px;font-weight:700;cursor:pointer;transition:.18s}
 .code-btn-generate:hover{opacity:.88;transform:translateY(-1px)}
 .code-btn-generate:disabled{opacity:.5;cursor:not-allowed;transform:none}
@@ -8412,17 +8840,27 @@ em{color:var(--accent);font-style:italic}
               placeholder="Describe what to build or change… e.g. 'Add a dark mode toggle' or 'Create a login form'"
               onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();codeGenerate();}"></textarea>
             <div class="code-prompt-actions">
-              <select class="code-lang-select" id="code-lang-select">
-                <option value="">Auto-detect</option>
-                <option value="javascript">JavaScript</option>
-                <option value="typescript">TypeScript</option>
-                <option value="html">HTML</option>
-                <option value="css">CSS</option>
-                <option value="python">Python</option>
-                <option value="go">Go</option>
-                <option value="sql">SQL</option>
+              <select class="code-lang-select" id="code-style-preset" title="Visual style preset — controls the design system injected into every generated app">
+                <optgroup label="── Dark Themes">
+                  <option value="flowstate-dark" selected>⚡ FlowState Dark</option>
+                  <option value="glassmorphism">🔮 Glassmorphism</option>
+                  <option value="cyberpunk">🌆 Cyberpunk</option>
+                  <option value="terminal">💻 Terminal</option>
+                </optgroup>
+                <optgroup label="── Light Themes">
+                  <option value="flowstate-light">☀️ FlowState Light</option>
+                  <option value="minimal-saas">🧊 Minimal SaaS</option>
+                  <option value="brutalist">🔲 Brutalist</option>
+                </optgroup>
+                <optgroup label="── Frameworks">
+                  <option value="react-app">⚛️ React App</option>
+                  <option value="react-dashboard">📊 React Dashboard</option>
+                </optgroup>
+                <optgroup label="── Other">
+                  <option value="plain">📝 Plain (AI decides)</option>
+                </optgroup>
               </select>
-              <span style="font-size:10px;color:var(--text-m);flex:1;text-align:right;padding-right:4px">⌘↵ to send</span>
+              <span style="font-size:10px;color:var(--text-m);flex:1;text-align:right;padding-right:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px" id="code-preset-label" title="Active style preset">⌘↵ to send</span>
               <button class="code-btn-clawflow" id="btn-code-clawflow" onclick="openClawflowPage()" title="Open ClawFlow Developer — persistent AI with memory">
                 <i class="fas fa-bolt"></i> ClawFlow
               </button>

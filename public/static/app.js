@@ -10325,6 +10325,30 @@ function selectCodeAgent(id, name) {
 function initCodeWorkspace() {
   // Build the pill-style agent picker
   buildCodeAgentPicker();
+  // Wire up style preset selector — update hint label on change
+  const presetSel = document.getElementById('code-style-preset');
+  const presetHint = document.getElementById('code-preset-label');
+  const PRESET_HINTS = {
+    'flowstate-dark':  '⚡ FlowState Dark — premium dark UI',
+    'flowstate-light': '☀️ FlowState Light — clean light UI',
+    'glassmorphism':   '🔮 Glassmorphism — frosted glass + gradients',
+    'brutalist':       '🔲 Brutalist — raw, editorial, hard shadows',
+    'terminal':        '💻 Terminal — pure black, matrix green, monospace',
+    'minimal-saas':    '🧊 Minimal SaaS — white, clean, Notion-esque',
+    'cyberpunk':       '🌆 Cyberpunk — neon, dark, Blade Runner',
+    'react-app':       '⚛️ React App — component-based with hooks',
+    'react-dashboard': '📊 React Dashboard — data-dense React app',
+    'plain':           '📝 Plain — AI chooses the design',
+  };
+  if (presetSel && presetHint) {
+    const updateHint = () => {
+      const hint = PRESET_HINTS[presetSel.value] || presetSel.value;
+      presetHint.textContent = hint;
+      presetHint.title = hint;
+    };
+    presetSel.addEventListener('change', updateHint);
+    updateHint(); // set on init
+  }
   // Use server-injected FS_GITHUB if available
   if (typeof FS_GITHUB !== 'undefined' && FS_GITHUB) {
     _codeState.ghConnected = true;
@@ -10510,7 +10534,8 @@ async function codeGenerate() {
   if (!FS_USER) { notify('Sign in to use AI Code Workspace', 'info'); return; }
   const prompt = document.getElementById('code-prompt-input')?.value?.trim();
   if (!prompt) { notify('Describe what you want to build', 'warning'); return; }
-  const lang = document.getElementById('code-lang-select')?.value || '';
+  const lang = '';  // deprecated — style preset replaces language selector
+  const stylePreset = document.getElementById('code-style-preset')?.value || 'flowstate-dark';
 
   _codeState.generating = true;
   const btn = document.getElementById('btn-code-generate');
@@ -10526,6 +10551,16 @@ async function codeGenerate() {
   const msgEl = document.getElementById('code-ai-message');
   if (msgEl) msgEl.style.display = 'none';
 
+  // Show preset badge in log
+  const PRESET_LABELS = {
+    'flowstate-dark': '⚡ FlowState Dark', 'flowstate-light': '☀️ FlowState Light',
+    'glassmorphism': '🔮 Glassmorphism', 'brutalist': '🔲 Brutalist',
+    'terminal': '💻 Terminal', 'minimal-saas': '🧊 Minimal SaaS',
+    'cyberpunk': '🌆 Cyberpunk', 'react-app': '⚛️ React App',
+    'react-dashboard': '📊 React Dashboard', 'plain': '📝 Plain',
+  };
+  const presetLabel = PRESET_LABELS[stylePreset] || stylePreset;
+  codeLog(`🎨 Style: ${presetLabel}`, 'info');
   codeLog('🤖 ' + prompt.slice(0,70) + (prompt.length > 70 ? '…' : ''), 'ai');
 
   // Build context snapshot of all current file contents for the AI
@@ -10544,6 +10579,7 @@ async function codeGenerate() {
         repo: _codeState.selectedRepo?.full_name || '',
         agent: _codeState.agent,
         language: lang,
+        stylePreset,
         conversationHistory: _codeState.conversationHistory,
         fileTree: _codeState.fileTree,
         generatedFiles: generatedContents,
