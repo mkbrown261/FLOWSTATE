@@ -89,6 +89,22 @@ const app = new Hono<{ Bindings: Bindings }>()
 app.use('/api/*', cors({ origin: '*', allowMethods: ['GET','POST','PUT','DELETE','OPTIONS'], allowHeaders: ['Content-Type','Authorization'] }))
 app.use('/static/*', serveStatic({ root: './' }))
 
+// ─── Service Worker at root scope (must be served from / to control full origin) ─
+app.get('/sw.js', async (c) => {
+  // Proxy the SW file from /static/sw.js but serve it at root path
+  // This allows the SW to control the entire origin (scope: '/')
+  // The Service-Worker-Allowed header grants permission to use a broader scope
+  const res = await fetch(new URL('/static/sw.js', c.req.url).href)
+  const body = res.ok ? await res.text() : ''
+  return new Response(body, {
+    headers: {
+      'Content-Type': 'application/javascript',
+      'Service-Worker-Allowed': '/',
+      'Cache-Control': 'no-cache',
+    }
+  })
+})
+
 // ─── Session helpers ──────────────────────────────────────────────────────────
 function encodeSession(data: object): string { return btoa(JSON.stringify(data)) }
 function decodeSession(token: string): any { try { return JSON.parse(atob(token)) } catch { return null } }
@@ -8189,7 +8205,7 @@ const FS_ONBOARDED= ${onboardedJson};
 // ── Service Worker registration ──────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/static/sw.js', { scope: '/' })
+    navigator.serviceWorker.register('/sw.js', { scope: '/' })
       .then(reg => {
         // Check for updates every 30 min
         setInterval(() => reg.update(), 1800000);

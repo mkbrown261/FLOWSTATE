@@ -6288,44 +6288,6 @@ function setClawCtx(val, label) {
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function sendClawbotMessage() {
-  const inp = document.getElementById('clawbot-in');
-  const msg = inp ? inp.value.trim() : '';
-  if (!msg) return;
-  if (inp) { inp.value=''; inp.style.height='42px'; }
-  appendClawbotMsg('user', msg, '');
-  const tid = appendClawbotTyping();
-  const appCtx = _clawCtx || 'flowstate_hub';
-  try {
-    const res = await fetch('/api/clawbot/chat', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ message:msg, app:appCtx, history:clawbotHistory.slice(-8) })
-    });
-    const data = await res.json();
-    removeTyping(tid);
-    if (data.error === 'clawflow_required') {
-      appendClawbotMsg('ai', '⚡ ClawFlow subscription required to continue. Upgrade below ↓', 'Clawbot');
-      document.getElementById('clawbot-active').style.display = 'none';
-      document.getElementById('clawbot-gate').style.display = 'block';
-      loadClawbotPromo(); return;
-    }
-    const reply = data.reply || 'No response.';
-    appendClawbotMsg('ai', reply, `Clawbot · ${data.coinCost || 0} coins`);
-    clawbotHistory.push({ role:'user', content:msg }, { role:'assistant', content:reply });
-    const badge = document.getElementById('clawbot-coins-badge');
-    if (badge && data.coinCost) {
-      const cur = parseInt(badge.textContent.replace(/[^0-9]/g,'')) || 500;
-      badge.textContent = `⚡ ${Math.max(0, cur - data.coinCost)} coins`;
-    }
-    if (/how|stuck|help|tutorial|walkthrough|can't|doesn't work|not working/i.test(msg) && Math.random() > 0.4) {
-      setTimeout(() => offerWalkthrough(msg, appCtx), 1200);
-    }
-  } catch(e) {
-    removeTyping(tid);
-    appendClawbotMsg('ai','Connection error — check your network.','Error');
-  }
-}
-
 function appendClawbotMsg(role, text, label) {
   const msgs = document.getElementById('clawbot-msgs');
   if (!msgs) return;
