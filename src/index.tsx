@@ -5471,15 +5471,23 @@ app.post('/api/higgsfield/generate', async (c) => {
 
   const body: any = await c.req.json().catch(() => ({}))
   const {
-    model       = 'seedance-v2.0-t2v',
-    prompt      = '',
-    imageUrl,
-    duration    = 10,
-    aspectRatio = '16:9',
-    quality     = 'high',
+    model        = 'seedance-v2.0-t2v',
+    prompt       = '',
+    imageUrl,           // start/reference image URL
+    endImageUrl,        // end frame image URL (for first-last frame models)
+    duration     = 10,
+    aspectRatio  = '16:9',
+    quality      = 'high',
+    motionId,           // optional motion preset ID for Higgsfield DOP models
+    motionStrength,     // 0-1 motion intensity
+    enhancePrompt,      // boolean — let Higgsfield refine the prompt
+    seed,               // integer seed for reproducibility
   } = body
 
-  if (!prompt && !imageUrl) return c.json({ error: 'prompt is required' }, 400)
+  // For I2V models, image is required. For T2V, it's optional (reference image)
+  const isI2V = model.includes('i2v')
+  if (!prompt && !imageUrl) return c.json({ error: 'prompt or image is required' }, 400)
+  if (isI2V && !imageUrl) return c.json({ error: 'Image-to-video models require an image URL (imageUrl)' }, 400)
 
   const input: Record<string, unknown> = {
     prompt,
@@ -5488,6 +5496,11 @@ app.post('/api/higgsfield/generate', async (c) => {
     quality,
   }
   if (imageUrl) input.image_url = imageUrl
+  if (endImageUrl) input.end_image_url = endImageUrl
+  if (motionId) input.motion_id = motionId
+  if (motionStrength !== undefined) input.motion_strength = Number(motionStrength)
+  if (enhancePrompt !== undefined) input.enhance_prompt = Boolean(enhancePrompt)
+  if (seed !== undefined) input.seed = Number(seed)
 
   const result = await callHiggsfield(higgsKey, model, input)
   if (result.error) return c.json({ error: result.error }, 500)
@@ -5567,6 +5580,86 @@ app.get('/api/higgsfield/models', async (c) => {
     proRequired: true,
     upgradeUrl: 'https://flowst8.cc/#pricing',
   })
+})
+
+// POST /api/higgsfield/upload-image — upload an image for Higgsfield I2V (session-authed, returns public URL)
+// Stores in R2 under higgsfield/images/<timestamp>-<random>.<ext> and serves via public endpoint
+app.post('/api/higgsfield/upload-image', async (c) => {
+  // Auth: session cookie
+  const cookieHeader = c.req.header('cookie') || ''
+  const match = cookieHeader.match(/fs_session=([^;]+)/)
+  if (!match) return c.json({ error: 'Not authenticated' }, 401)
+  let userEmail = ''
+  try {
+    const session = decodeSession(decodeURIComponent(match[1]))
+    if (!session?.email) return c.json({ error: 'Invalid session' }, 401)
+    userEmail = session.email
+  } catch { return c.json({ error: 'Session decode failed' }, 401) }
+
+  // Get the uploaded file
+  const formData = await c.req.formData().catch(() => null)
+  const file = formData?.get('image') as File | null
+  if (!file) return c.json({ error: 'No image file provided' }, 400)
+
+  // Validate file type
+  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif']
+  if (!allowedTypes.includes(file.type)) {
+    return c.json({ error: 'Invalid file type. Allowed: JPG, PNG, WEBP, GIF' }, 400)
+  }
+  // Max 20MB
+  if (file.size > 20 * 1024 * 1024) {
+    return c.json({ error: 'File too large (max 20MB)' }, 400)
+  }
+
+  const ext = file.type.split('/')[1].replace('jpeg','jpg')
+  const key = `higgsfield/images/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+
+  try {
+    if (c.env?.R2) {
+      const buffer = await file.arrayBuffer()
+      await c.env.R2.put(key, buffer, {
+        httpMetadata: { contentType: file.type },
+        customMetadata: { uploadedBy: userEmail, uploadedAt: new Date().toISOString() },
+      })
+      // Return a public URL that Higgsfield can access
+      const origin = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
+      const publicUrl = `${origin}/api/higgsfield/image/${encodeURIComponent(key)}`
+      return c.json({ ok: true, url: publicUrl, key, size: file.size })
+    } else {
+      // No R2 — convert to data URL for direct embedding (smaller images only)
+      if (file.size > 2 * 1024 * 1024) return c.json({ error: 'R2 storage not configured. Images over 2MB require R2.' }, 503)
+      const buffer = await file.arrayBuffer()
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)))
+      const dataUrl = `data:${file.type};base64,${base64}`
+      return c.json({ ok: true, url: dataUrl, key: 'data', size: file.size, isDataUrl: true })
+    }
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Upload failed' }, 500)
+  }
+})
+
+// GET /api/higgsfield/image/:key — serve uploaded Higgsfield images publicly (no auth — Higgsfield needs to fetch them)
+app.get('/api/higgsfield/image/:key{.+}', async (c) => {
+  if (!c.env?.R2) return c.json({ error: 'R2 not configured' }, 503)
+  const key = decodeURIComponent(c.req.param('key'))
+  // Security: only serve from higgsfield/images/ prefix
+  if (!key.startsWith('higgsfield/images/')) {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+  try {
+    const obj = await c.env.R2.get(key)
+    if (!obj) return c.json({ error: 'Image not found' }, 404)
+    const contentType = obj.httpMetadata?.contentType || 'image/jpeg'
+    return new Response(obj.body, {
+      headers: {
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=86400', // 24h cache — Higgsfield fetches once
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
 })
 
 // GET /api/264pro/user — return current user info for the linked token
@@ -6490,7 +6583,7 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 @keyframes fadeUp{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
 @keyframes pulse{0%,100%{opacity:.6;transform:scale(1)}50%{opacity:1;transform:scale(1.5)}}
 @keyframes spin{to{transform:rotate(360deg)}}
-.modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:3000;backdrop-filter:blur(8px);padding:14px}
+.modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99998;backdrop-filter:blur(8px);padding:14px}
 .modal-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:18px;padding:28px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto}
 .modal-card.modal-wide{max-width:900px}
 .modal-card h2{font-size:18px;font-weight:800;margin-bottom:5px}
@@ -6759,7 +6852,7 @@ em{color:var(--accent);font-style:italic}
     <button class="btn-sm" id="btn-pair" onclick="openPairingModal()" title="Find an accountability partner" style="color:#10b981;border-color:rgba(16,185,129,.4)"><i class="fas fa-handshake"></i></button>
     <button class="btn-sm" id="pwa-install-btn" onclick="triggerPwaInstall()" title="Add FlowState to home screen" style="display:none"><i class="fas fa-download"></i></button>
     <button class="btn-sm" id="btn-theme" onclick="toggleTheme()" title="Toggle light/dark mode" style="font-size:14px;padding:5px 9px" id="theme-toggle-btn">🌙</button>
-    <button class="btn-sm" id="btn-settings"><i class="fas fa-gear"></i></button>
+    <button class="btn-sm" id="btn-settings" onclick="openSettingsModal()" title="Settings"><i class="fas fa-gear"></i></button>
   </div>
 </div>
 
@@ -7660,15 +7753,93 @@ em{color:var(--accent);font-style:italic}
           </div>
         </div>
 
+        <!-- Image Upload Section — always visible, works for all models -->
+        <div class="gen-panel" style="margin-bottom:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div style="font-size:11px;font-weight:700;color:rgba(0,212,255,.7);text-transform:uppercase;letter-spacing:1px">Images <span style="font-size:10px;color:rgba(0,212,255,.45);text-transform:none;letter-spacing:0;font-weight:400">(drag &amp; drop or click to upload)</span></div>
+            <div style="display:flex;gap:6px">
+              <span id="higgs-img-mode-label" style="font-size:10px;color:rgba(0,212,255,.5);align-self:center"></span>
+            </div>
+          </div>
+
+          <!-- Image upload area — supports up to 2 images (start + end frame) -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px" id="higgs-img-slots">
+
+            <!-- Start / Reference Image slot -->
+            <div id="higgs-img-slot-1" style="position:relative">
+              <div id="higgs-drop-1"
+                ondragover="event.preventDefault();this.style.borderColor='#00d4ff';this.style.background='rgba(0,212,255,.12)'"
+                ondragleave="this.style.borderColor='rgba(0,212,255,.2)';this.style.background='rgba(0,212,255,.04)'"
+                ondrop="higgsDrop(event,1)"
+                onclick="document.getElementById('higgs-file-1').click()"
+                style="border:2px dashed rgba(0,212,255,.2);border-radius:10px;padding:14px 10px;text-align:center;cursor:pointer;background:rgba(0,212,255,.04);min-height:90px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;transition:.15s;position:relative;overflow:hidden">
+                <input type="file" id="higgs-file-1" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none" onchange="higgsFileSelect(event,1)">
+                <div id="higgs-img-preview-1" style="display:none;position:absolute;inset:0;border-radius:8px;overflow:hidden">
+                  <img id="higgs-img-thumb-1" style="width:100%;height:100%;object-fit:cover" src="" alt="Start frame">
+                  <div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(to top,rgba(0,0,0,.7),transparent);padding:6px 8px;display:flex;justify-content:space-between;align-items:center">
+                    <span style="font-size:10px;color:#00ffa3;font-weight:700">✓ Uploaded</span>
+                    <button onclick="event.stopPropagation();higgsRemoveImg(1)" style="background:rgba(239,68,68,.8);border:none;color:#fff;border-radius:4px;padding:2px 6px;font-size:10px;cursor:pointer">✕</button>
+                  </div>
+                </div>
+                <i class="fas fa-image" style="font-size:20px;color:rgba(0,212,255,.4);display:block" id="higgs-img-icon-1"></i>
+                <span style="font-size:11px;color:rgba(255,255,255,.4)" id="higgs-img-label-1">Start Frame<br><span style="font-size:10px;color:rgba(0,212,255,.4)">or Reference Image</span></span>
+                <div id="higgs-img-uploading-1" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;border-radius:8px">
+                  <i class="fas fa-spinner fa-spin" style="color:#00d4ff;font-size:18px"></i>
+                </div>
+              </div>
+              <input id="higgs-img-url-1" type="hidden" value="">
+            </div>
+
+            <!-- End Frame slot (for first-last-frame models) -->
+            <div id="higgs-img-slot-2" style="position:relative">
+              <div id="higgs-drop-2"
+                ondragover="event.preventDefault();this.style.borderColor='rgba(168,85,247,.5)';this.style.background='rgba(168,85,247,.1)'"
+                ondragleave="this.style.borderColor='rgba(168,85,247,.15)';this.style.background='rgba(168,85,247,.03)'"
+                ondrop="higgsDrop(event,2)"
+                onclick="document.getElementById('higgs-file-2').click()"
+                style="border:2px dashed rgba(168,85,247,.15);border-radius:10px;padding:14px 10px;text-align:center;cursor:pointer;background:rgba(168,85,247,.03);min-height:90px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;transition:.15s;position:relative;overflow:hidden">
+                <input type="file" id="higgs-file-2" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none" onchange="higgsFileSelect(event,2)">
+                <div id="higgs-img-preview-2" style="display:none;position:absolute;inset:0;border-radius:8px;overflow:hidden">
+                  <img id="higgs-img-thumb-2" style="width:100%;height:100%;object-fit:cover" src="" alt="End frame">
+                  <div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(to top,rgba(0,0,0,.7),transparent);padding:6px 8px;display:flex;justify-content:space-between;align-items:center">
+                    <span style="font-size:10px;color:#a855f7;font-weight:700">✓ Uploaded</span>
+                    <button onclick="event.stopPropagation();higgsRemoveImg(2)" style="background:rgba(239,68,68,.8);border:none;color:#fff;border-radius:4px;padding:2px 6px;font-size:10px;cursor:pointer">✕</button>
+                  </div>
+                </div>
+                <i class="fas fa-image" style="font-size:20px;color:rgba(168,85,247,.35);display:block" id="higgs-img-icon-2"></i>
+                <span style="font-size:11px;color:rgba(255,255,255,.35)" id="higgs-img-label-2">End Frame<br><span style="font-size:10px;color:rgba(168,85,247,.4)">Optional</span></span>
+                <div id="higgs-img-uploading-2" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;border-radius:8px">
+                  <i class="fas fa-spinner fa-spin" style="color:#a855f7;font-size:18px"></i>
+                </div>
+              </div>
+              <input id="higgs-img-url-2" type="hidden" value="">
+            </div>
+          </div>
+
+          <!-- URL paste fallback -->
+          <details style="margin-top:4px">
+            <summary style="font-size:10px;color:rgba(0,212,255,.4);cursor:pointer;list-style:none;display:flex;align-items:center;gap:5px">
+              <i class="fas fa-link" style="font-size:9px"></i> Or paste image URLs instead
+            </summary>
+            <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
+              <input id="higgs-img-url-paste-1" type="url" placeholder="Start frame / reference image URL (https://…)" 
+                style="width:100%;background:rgba(0,212,255,.05);border:1px solid rgba(0,212,255,.15);border-radius:7px;padding:8px 10px;color:#e8e8e8;font-size:12px;outline:none;box-sizing:border-box"
+                oninput="higgsUrlPaste(1,this.value)">
+              <input id="higgs-img-url-paste-2" type="url" placeholder="End frame URL (optional, https://…)"
+                style="width:100%;background:rgba(168,85,247,.05);border:1px solid rgba(168,85,247,.15);border-radius:7px;padding:8px 10px;color:#e8e8e8;font-size:12px;outline:none;box-sizing:border-box"
+                oninput="higgsUrlPaste(2,this.value)">
+            </div>
+          </details>
+        </div>
+
         <!-- Prompt -->
         <div class="gen-panel" style="margin-bottom:14px">
           <div style="font-size:11px;font-weight:700;color:rgba(0,212,255,.7);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Prompt</div>
           <textarea id="higgs-prompt" rows="4" placeholder="Describe your scene in detail. Include camera movement, lighting, mood, subject action&#8230; e.g. 'A lone astronaut walks across a red desert at sunset, dolly zoom slowly pulling back, dramatic lens flare, cinematic 4K'" style="width:100%;background:rgba(0,212,255,.05);border:1px solid rgba(0,212,255,.15);border-radius:10px;padding:12px;color:#e8e8e8;font-size:13px;font-family:inherit;resize:vertical;outline:none;box-sizing:border-box"></textarea>
-
-          <!-- I2V image URL input -->
-          <div id="higgs-img-row" style="display:none;margin-top:10px">
-            <div style="font-size:11px;font-weight:700;color:rgba(0,212,255,.7);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Reference Image URL</div>
-            <input id="higgs-img-url" type="url" placeholder="https://… paste image URL for image-to-video" style="width:100%;background:rgba(0,212,255,.05);border:1px solid rgba(0,212,255,.15);border-radius:8px;padding:9px 12px;color:#e8e8e8;font-size:12px;outline:none;box-sizing:border-box">
+          <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+            <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:rgba(255,255,255,.5);cursor:pointer">
+              <input type="checkbox" id="higgs-enhance-prompt" style="accent-color:#00d4ff"> Enhance Prompt (AI refines your description)
+            </label>
           </div>
         </div>
 
@@ -7721,7 +7892,7 @@ em{color:var(--accent);font-style:italic}
 
         <!-- Tips -->
         <div style="background:rgba(0,0,0,.2);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:12px 14px;font-size:11px;color:rgba(255,255,255,.4);line-height:1.7">
-          <strong style="color:rgba(0,212,255,.6)">✦ Higgsfield Tips:</strong> Be specific about camera movement (dolly zoom, tracking shot, crane lift). Describe lighting and atmosphere. For I2V, paste a clean image URL. Generations run on Higgsfield's infrastructure — typically 1-3 minutes.
+          <strong style="color:rgba(0,212,255,.6)">✦ Tips:</strong> Drag &amp; drop images or click the frame slots to upload. Use <strong>Start Frame</strong> for reference/I2V. Use <strong>End Frame</strong> for first-last-frame transitions. Be specific about camera movement (dolly zoom, tracking shot, crane lift). T2V models can use images as style reference. Generations typically take 1-3 minutes.
         </div>
 
       </div>

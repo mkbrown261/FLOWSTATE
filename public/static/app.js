@@ -6381,6 +6381,130 @@ let _higgsType     = 't2v';  // 't2v' or 'i2v'
 let _higgsMaxDur   = 15;
 let _higgsPollTimer = null;
 
+// ── Higgsfield Image Upload State ─────────────────────────────────────────
+let _higgsImgUrls  = { 1: '', 2: '' };  // slot 1 = start/reference, slot 2 = end frame
+
+// ── Image upload helpers ───────────────────────────────────────────────────
+function higgsDrop(event, slot) {
+  event.preventDefault();
+  const drop = document.getElementById('higgs-drop-' + slot);
+  if (drop) { drop.style.borderColor = slot === 1 ? 'rgba(0,212,255,.2)' : 'rgba(168,85,247,.15)'; drop.style.background = slot === 1 ? 'rgba(0,212,255,.04)' : 'rgba(168,85,247,.03)'; }
+  const files = event.dataTransfer?.files;
+  if (files && files.length > 0) higgsUploadFile(files[0], slot);
+}
+
+function higgsFileSelect(event, slot) {
+  const file = event.target.files?.[0];
+  if (file) higgsUploadFile(file, slot);
+}
+
+function higgsUrlPaste(slot, url) {
+  _higgsImgUrls[slot] = url.trim();
+  // Show a simple preview if it's a valid URL
+  if (url.trim().startsWith('http')) {
+    const thumb = document.getElementById('higgs-img-thumb-' + slot);
+    const preview = document.getElementById('higgs-img-preview-' + slot);
+    const icon = document.getElementById('higgs-img-icon-' + slot);
+    const label = document.getElementById('higgs-img-label-' + slot);
+    if (thumb) { thumb.src = url.trim(); thumb.onerror = () => {}; }
+    if (preview) preview.style.display = 'block';
+    if (icon) icon.style.display = 'none';
+    if (label) label.style.display = 'none';
+    document.getElementById('higgs-img-url-' + slot).value = url.trim();
+  } else if (!url.trim()) {
+    higgsRemoveImg(slot);
+  }
+}
+
+async function higgsUploadFile(file, slot) {
+  // Validate
+  if (!['image/jpeg','image/jpg','image/png','image/webp','image/gif'].includes(file.type)) {
+    notify('Please upload a JPG, PNG, WEBP, or GIF image.', 'warning'); return;
+  }
+  if (file.size > 20 * 1024 * 1024) {
+    notify('Image too large (max 20MB).', 'warning'); return;
+  }
+
+  // Show uploading state
+  const uploadingEl = document.getElementById('higgs-img-uploading-' + slot);
+  const drop = document.getElementById('higgs-drop-' + slot);
+  const icon = document.getElementById('higgs-img-icon-' + slot);
+  const label = document.getElementById('higgs-img-label-' + slot);
+  if (uploadingEl) { uploadingEl.style.display = 'flex'; }
+  if (icon) icon.style.display = 'none';
+  if (label) label.style.display = 'none';
+
+  // Show local preview immediately while uploading
+  const reader = new FileReader();
+  reader.onload = e => {
+    const thumb = document.getElementById('higgs-img-thumb-' + slot);
+    const preview = document.getElementById('higgs-img-preview-' + slot);
+    if (thumb) thumb.src = e.target.result;
+    if (preview) preview.style.display = 'block';
+  };
+  reader.readAsDataURL(file);
+
+  try {
+    const formData = new FormData();
+    formData.append('image', file);
+    const res = await fetch('/api/higgsfield/upload-image', {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    });
+    const data = await res.json();
+    if (uploadingEl) uploadingEl.style.display = 'none';
+
+    if (data.ok && data.url) {
+      _higgsImgUrls[slot] = data.url;
+      document.getElementById('higgs-img-url-' + slot).value = data.url;
+      notify('✓ Image uploaded', 'success');
+      genSidebarLog('higgsfield', `📷 Image ${slot === 1 ? 'start frame' : 'end frame'} uploaded (${(file.size/1024).toFixed(0)}KB)`, '');
+    } else {
+      // Fallback: use local blob URL (may not work with Higgsfield external API)
+      const blobUrl = URL.createObjectURL(file);
+      _higgsImgUrls[slot] = blobUrl;
+      document.getElementById('higgs-img-url-' + slot).value = blobUrl;
+      notify('Image loaded locally. For best results, configure R2 storage.', 'info');
+    }
+  } catch (err) {
+    if (uploadingEl) uploadingEl.style.display = 'none';
+    // Fallback: show preview and warn about external access
+    notify('Upload failed. Image will be used locally.', 'warning');
+    console.warn('Higgsfield image upload error:', err);
+  }
+}
+
+function higgsRemoveImg(slot) {
+  _higgsImgUrls[slot] = '';
+  document.getElementById('higgs-img-url-' + slot).value = '';
+  const thumb = document.getElementById('higgs-img-thumb-' + slot);
+  const preview = document.getElementById('higgs-img-preview-' + slot);
+  const icon = document.getElementById('higgs-img-icon-' + slot);
+  const label = document.getElementById('higgs-img-label-' + slot);
+  const pasteInput = document.getElementById('higgs-img-url-paste-' + slot);
+  if (thumb) { thumb.src = ''; }
+  if (preview) preview.style.display = 'none';
+  if (icon) icon.style.display = 'block';
+  if (label) label.style.display = 'block';
+  if (pasteInput) pasteInput.value = '';
+  // Reset file input
+  const fileInput = document.getElementById('higgs-file-' + slot);
+  if (fileInput) fileInput.value = '';
+}
+
+function higgsUpdateImageMode() {
+  const label = document.getElementById('higgs-img-mode-label');
+  if (!label) return;
+  if (_higgsType === 'i2v') {
+    label.textContent = 'Start frame required for I2V';
+    label.style.color = '#00d4ff';
+  } else {
+    label.textContent = 'Optional reference image';
+    label.style.color = 'rgba(0,212,255,.4)';
+  }
+}
+
 function initHiggsfield() {
   // Check if user is Pro — show gate if not
   const tier = FS_USER?.tier || 'free';
@@ -6402,9 +6526,8 @@ function selectHiggsModel(modelId, name, type, maxDur) {
     c.classList.toggle('active', c.dataset.model === modelId);
   });
 
-  // Show/hide image URL row
-  const imgRow = document.getElementById('higgs-img-row');
-  if (imgRow) imgRow.style.display = type === 'i2v' ? 'block' : 'none';
+  // Update image mode label based on model type
+  higgsUpdateImageMode();
 
   // Cap duration select to model max
   const durSel = document.getElementById('higgs-duration');
@@ -6436,14 +6559,17 @@ async function runHiggsfield() {
     return;
   }
 
-  const prompt   = (document.getElementById('higgs-prompt')?.value || '').trim();
-  const imageUrl = (document.getElementById('higgs-img-url')?.value || '').trim();
-  const duration = parseInt(document.getElementById('higgs-duration')?.value || '10');
-  const aspect   = document.getElementById('higgs-aspect')?.value  || '16:9';
-  const quality  = document.getElementById('higgs-quality')?.value || 'high';
+  const prompt      = (document.getElementById('higgs-prompt')?.value || '').trim();
+  // Get image URLs from state (populated by upload or URL paste)
+  const imageUrl    = _higgsImgUrls[1] || (document.getElementById('higgs-img-url-paste-1')?.value || '').trim();
+  const endImageUrl = _higgsImgUrls[2] || (document.getElementById('higgs-img-url-paste-2')?.value || '').trim();
+  const duration    = parseInt(document.getElementById('higgs-duration')?.value || '10');
+  const aspect      = document.getElementById('higgs-aspect')?.value  || '16:9';
+  const quality     = document.getElementById('higgs-quality')?.value || 'high';
+  const enhancePrompt = document.getElementById('higgs-enhance-prompt')?.checked || false;
 
-  if (!prompt && !imageUrl) { alert('Please enter a prompt to generate.'); return; }
-  if (_higgsType === 'i2v' && !imageUrl) { alert('This model requires an image URL for Image-to-Video.'); return; }
+  if (!prompt && !imageUrl) { alert('Please enter a prompt or upload an image to generate.'); return; }
+  if (_higgsType === 'i2v' && !imageUrl) { alert('This model requires an image for Image-to-Video. Please upload an image or paste an image URL.'); return; }
 
   // Update UI
   const btn = document.getElementById('btn-higgs-gen');
@@ -6457,14 +6583,14 @@ async function runHiggsfield() {
   if (progMsg) progMsg.textContent = 'Sending to Higgsfield…';
   if (progBar) progBar.style.width = '8%';
 
-  genSidebarLog('higgsfield', `▶ ${_higgsModelName} — "${prompt.slice(0,50)}${prompt.length>50?'…':''}"`, '');
+  const _imgTag = imageUrl ? ' 📷' : ''; const _endTag = endImageUrl ? ' → 📷' : ''; genSidebarLog('higgsfield', `▶ ${_higgsModelName}${_imgTag}${_endTag} — "${prompt.slice(0,50)}${prompt.length>50?'…':''}"`, '');
 
   try {
     const res = await fetch('/api/higgsfield/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ model: _higgsModel, prompt, imageUrl: imageUrl || undefined, duration, aspectRatio: aspect, quality }),
+      body: JSON.stringify({ model: _higgsModel, prompt, imageUrl: imageUrl || undefined, endImageUrl: endImageUrl || undefined, duration, aspectRatio: aspect, quality, enhancePrompt }),
     });
     const data = await res.json();
 
