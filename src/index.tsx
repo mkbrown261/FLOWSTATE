@@ -1645,18 +1645,15 @@ app.get('/api/behavior/insight', async (c) => {
 
 // ─── Magic Link Auth ──────────────────────────────────────────────────────────
 app.post('/api/auth/magic-link', async (c) => {
-  const body = await c.req.json()
-  const { email, app: appParam = '', state: appState = '', redirect: appRedirect = '' } = body
+  const { email } = await c.req.json()
   if (!email || !email.includes('@')) return c.json({ error: 'invalid_email' }, 400)
   const resendKey = c.env?.RESEND_API_KEY
   const name = email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
   const baseUrl = c.env?.CANONICAL_ORIGIN || new URL(c.req.url).origin
 
   if (resendKey) {
-    // Embed app context into the token so desktop app users are forwarded after verify
-    const token = btoa(JSON.stringify({ email, name, exp: Date.now() + 15 * 60 * 1000, app: appParam, state: appState, redirect: appRedirect }))
+    const token = btoa(JSON.stringify({ email, name, exp: Date.now() + 15 * 60 * 1000 }))
     const magicUrl = `${baseUrl}/api/auth/magic-link/verify?token=${encodeURIComponent(token)}`
-    const appNote = appParam ? `<p style="color:#a855f7;font-size:13px;font-weight:700;margin-bottom:12px">Signing in to use ${appParam === 'fsaudio' ? 'FS Audio' : appParam === '264pro' ? '264 Pro' : appParam}</p>` : ''
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
@@ -1668,7 +1665,6 @@ app.post('/api/auth/magic-link', async (c) => {
           <div style="font-family:system-ui,sans-serif;background:#0f0f1a;color:#f0f0f0;padding:40px;max-width:480px;margin:0 auto;border-radius:16px">
             <div style="font-size:32px;margin-bottom:8px">⚡</div>
             <h1 style="font-size:22px;font-weight:800;margin-bottom:8px">Sign in to FlowState</h1>
-            ${appNote}
             <p style="color:#888;margin-bottom:24px">Click the button below to sign in. This link expires in 15 minutes.</p>
             <a href="${magicUrl}" style="display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:14px 32px;border-radius:12px;font-weight:700;font-size:15px">Sign in to FlowState →</a>
             <p style="color:#555;font-size:12px;margin-top:24px">If you didn't request this, you can safely ignore this email.</p>
@@ -1681,7 +1677,6 @@ app.post('/api/auth/magic-link', async (c) => {
     // Fallback: auto-sign-in (dev/demo mode — no Resend key)
     const session = { name, email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
     setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
-    // Upsert user even in fallback path
     if (c.env?.DB) {
       try { await upsertUser(c.env.DB, email, name, '', 'magic_link') } catch (_) {}
     }
@@ -1697,16 +1692,9 @@ app.get('/api/auth/magic-link/verify', async (c) => {
     if (Date.now() > data.exp) return c.html(authErrorPage('This link has expired. Please request a new one at <a href="/auth" style="color:#a855f7">flowst8.cc/auth</a>.'))
     const session = { name: data.name, email: data.email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
     setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
-    // Upsert user into D1 so their profile exists (critical — magic link users never hit Google callback)
+    // Upsert user into D1 so their profile exists (magic link users never hit Google callback)
     if (c.env?.DB) {
       try { await upsertUser(c.env.DB, data.email, data.name, '', 'magic_link') } catch (_) {}
-    }
-    // If this was a desktop app magic-link, forward to the app's callback
-    if (data.app === 'fsaudio') {
-      return c.redirect(`/api/fsaudio/auth/callback?state=${encodeURIComponent(data.state || '')}&redirect=${encodeURIComponent(data.redirect || 'fsaudio://auth')}`)
-    }
-    if (data.app === '264pro') {
-      return c.redirect(`/api/264pro/auth/callback?state=${encodeURIComponent(data.state || '')}&redirect=${encodeURIComponent(data.redirect || '264pro://auth')}`)
     }
     return c.html(magicLinkSuccessPage(data.name))
   } catch { return c.html(authErrorPage('Invalid token. Please request a new sign-in link at <a href="/auth" style="color:#a855f7">flowst8.cc/auth</a>.')) }
