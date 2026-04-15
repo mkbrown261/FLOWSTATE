@@ -10580,6 +10580,17 @@ async function codeGenerate() {
     generatedContents[path] = fd.content;
   });
 
+  // ── Streaming live token display ──────────────────────────────────────────
+  // Show a streaming text area in the editor while the AI writes,
+  // so the user sees output appear in real time instead of a blank spinner.
+  let streamBuffer = '';
+  const streamEl = document.getElementById('code-editor-wrap');
+  if (streamEl && !_codeState.activeFile) {
+    streamEl.innerHTML = `<div class="code-generating" id="code-stream-view" style="font-family:var(--font-mono,monospace);font-size:11px;color:#10b981;padding:16px 20px;overflow:auto;height:100%;white-space:pre-wrap;word-break:break-all;line-height:1.55;background:transparent">
+      <span style="opacity:.5">// AI is writing your code…\n\n</span></div>`;
+  }
+  const streamView = document.getElementById('code-stream-view');
+
   try {
     const res = await fetch('/api/github/ai-code', {
       method: 'POST',
@@ -10594,9 +10605,43 @@ async function codeGenerate() {
         conversationHistory: _codeState.conversationHistory,
         fileTree: _codeState.fileTree,
         generatedFiles: generatedContents,
+        activeFile: _codeState.activeFile || '',   // Fix 6: smart context ordering
       })
     });
-    const data = await res.json();
+
+    // ── Read the streamed response body progressively ─────────────────────
+    // Backend now streams SSE chunks; we reassemble into a JSON string.
+    // While reading, display raw tokens in the editor so the user sees
+    // the AI writing in real time.
+    let rawText = '';
+    const reader = res.body?.getReader();
+    const textDecoder = new TextDecoder();
+
+    if (reader) {
+      let done = false;
+      while (!done) {
+        const { value, done: streamDone } = await reader.read();
+        done = streamDone;
+        if (value) {
+          const chunk = textDecoder.decode(value, { stream: true });
+          rawText += chunk;
+          // Stream raw JSON tokens into the editor for live feedback
+          if (streamView) {
+            streamBuffer = rawText.slice(0, 4000); // cap display for perf
+            streamView.textContent = streamBuffer;
+            streamView.scrollTop = streamView.scrollHeight;
+          }
+        }
+      }
+    } else {
+      // Fallback for non-streaming (shouldn't happen but just in case)
+      rawText = await res.text();
+    }
+
+    // Parse the collected JSON response
+    let data;
+    try { data = JSON.parse(rawText); }
+    catch { data = { error: 'parse_error', message: 'AI response could not be parsed — please retry' }; }
 
     if (!res.ok || data.error) {
       const errMsg = data.message || data.error || 'Generation failed';

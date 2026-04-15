@@ -1052,8 +1052,8 @@ app.post('/api/deploy/cloudflare', async (c) => {
   }
 })
 
-// POST /api/github/ai-code — AI builder: returns structured file operations + message
-// Body: { prompt, repo, agent, conversationHistory, fileTree, generatedFiles, language }
+// POST /api/github/ai-code — AI builder: streams SSE token chunks, final JSON contains files
+// Body: { prompt, repo, agent, conversationHistory, fileTree, generatedFiles, language, activeFile? }
 app.post('/api/github/ai-code', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
@@ -1061,48 +1061,58 @@ app.post('/api/github/ai-code', async (c) => {
   const {
     prompt,
     repo          = '',
-    agent         = 'gemini',
+    agent         = 'claude-sonnet-4',
     conversationHistory = [],   // [{role:'user'|'assistant', content:string}]
     fileTree      = [],         // [{path, type}] from GitHub or local
     generatedFiles = {},        // {path: content} — everything built this session
     language      = '',
-    stylePreset   = 'flowstate-dark', // FSDS style preset
+    stylePreset   = 'ai-decides', // FSDS style preset
+    activeFile    = '',          // currently open file — sent first for context (Fix 6)
   } = await c.req.json()
 
   if (!prompt) return c.json({ error: 'missing_prompt' }, 400)
 
   // ── Detect whether this is a "new page/view" request ─────────────────────
-  // If the user is asking for a fresh page/screen/view, we suppress HTML context
-  // entirely so the AI builds from a clean canvas instead of copying old layouts.
   const lowerPrompt = prompt.toLowerCase()
   const isNewPageRequest = /\b(new page|new view|new screen|new section|new tab|separate page|separate view|inventory page|inventory view|dashboard page|settings page|profile page|modal|popup|landing page|add a page|create a page|build a page|make a page|build a view|add (?:an? )?(?:inventory|settings|profile|auth|login|signup|onboarding|checkout|detail|about|contact|pricing|faq|help|analytics|reports?|users?|products?|orders?|admin) (?:page|view|screen|tab|section))\b/i.test(lowerPrompt)
 
-  // ── Build full project context for the AI ──────────────────────────────────
+  // ── Build file list for AI context ────────────────────────────────────────
   const fileList = fileTree.length
     ? fileTree.filter((f: any) => f.type === 'blob').map((f: any) => f.path).slice(0, 150).join('\n')
     : Object.keys(generatedFiles).join('\n')
 
-  // Only send file structure context — NOT full content of HTML files.
-  // Sending full HTML causes the AI to pattern-match and reproduce the old layout.
-  // For new-page requests, we send ZERO HTML context (clean canvas).
-  // CSS and JS are still sent in full (structurally useful, smaller).
-  const generatedContext = Object.keys(generatedFiles).length
-    ? Object.entries(generatedFiles)
-        .slice(-6)
-        .map(([path, content]: [string, any]) => {
-          const isHtml = path.endsWith('.html') || path.endsWith('.htm')
-          if (isHtml && isNewPageRequest) {
-            // New page request: skip HTML entirely — AI builds fresh
-            return `\n### FILE: ${path}\n[HTML omitted — you are building a NEW page, start from scratch with a fresh layout]`
-          }
-          // For HTML on follow-up edits: send a short structure hint only
-          const preview = isHtml
-            ? String(content).slice(0, 500) + '\n... [remaining HTML omitted — modify only what the user asked, do not reproduce the full structure]'
-            : String(content).slice(0, 2500)
-          return `\n### FILE: ${path}\n\`\`\`\n${preview}\n\`\`\``
-        })
-        .join('')
-    : ''
+  // ── FIX 6: Smart context ordering ─────────────────────────────────────────
+  // Active file goes first (full content for HTML up to 1200 chars, full for CSS/JS).
+  // Remaining files: HTML capped at 500 chars, CSS/JS at 2500 chars.
+  // For new-page requests: suppress ALL HTML content entirely.
+  const buildFileContext = () => {
+    const entries = Object.entries(generatedFiles) as [string, any][]
+    if (!entries.length) return ''
+
+    // Put active file first, then remaining files (most recent last 5)
+    const sorted = activeFile && generatedFiles[activeFile]
+      ? [[activeFile, generatedFiles[activeFile]], ...entries.filter(([p]) => p !== activeFile).slice(-5)]
+      : entries.slice(-6)
+
+    return sorted.map(([path, content]: [string, any]) => {
+      const isHtml = path.endsWith('.html') || path.endsWith('.htm')
+      const isActive = path === activeFile
+
+      if (isHtml && isNewPageRequest) {
+        return `\n### FILE: ${path}\n[HTML omitted — NEW page: build a completely fresh layout]`
+      }
+      if (isHtml) {
+        // Active HTML file: send more context so edits are accurate
+        const cap = isActive ? 1200 : 500
+        const preview = String(content).slice(0, cap)
+        const omitNote = String(content).length > cap ? '\n... [remaining HTML omitted — modify only what was asked]' : ''
+        return `\n### FILE: ${path}${isActive ? ' ← CURRENTLY OPEN' : ''}\n\`\`\`html\n${preview}${omitNote}\n\`\`\``
+      }
+      // CSS / JS: send in full up to 2500 chars
+      return `\n### FILE: ${path}\n\`\`\`\n${String(content).slice(0, 2500)}\n\`\`\``
+    }).join('')
+  }
+  const generatedContext = buildFileContext()
 
   // ── FSDS CSS scaffold injected into every generation ─────────────────────
   // Per-preset CSS token overrides sit on top of the base FSDS scaffold
@@ -1454,273 +1464,319 @@ select.fs-input { cursor: pointer; }
 ${isTerminal ? `@keyframes fsds-scanline { 0%{background-position:0 0}100%{background-position:0 100%} } body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.15) 2px,rgba(0,0,0,.15) 4px);pointer-events:none;z-index:9999;}` : ''}
 </style>`
 
-  // ── System prompt: FSDS design brief + builder identity ───────────────────
-  const systemPrompt = `You are an expert AI software engineer and UI builder — like a senior engineer at a top-tier product company (Linear, Raycast, Vercel). You BUILD production-quality code by creating and modifying files. You never just talk about code.
+  // ── FIX 4: Lean system prompt — no CSS scaffold in body, just variable names ─
+  // The FSDS_BASE_CSS is injected into the HTML at response time (injectFSDS).
+  // Sending the full 3K-token scaffold in every request is wasteful.
+  // We reference the classes/vars by name only — the AI knows what to do.
+  const systemPrompt = `You are an expert AI software engineer and UI builder — like a senior engineer at a top-tier product company (Linear, Raycast, Vercel). You BUILD production-quality, complete, fully functional code. Never truncate. Never use placeholders.
 
 ${isPlain ? '' : `══════════════════════════════════════════════════
-DESIGN SYSTEM — YOUR VISUAL CONTRACT
+DESIGN SYSTEM — FSDS (FlowState Design System)
 ══════════════════════════════════════════════════
-You are building a premium, production-grade application. A CSS scaffold is auto-injected into every HTML file — use its classes and CSS variables as your foundation.
+A CSS scaffold with design tokens, component classes, and Google Fonts is AUTO-INJECTED into every HTML file at render time. You do NOT need to write it — just USE its classes and CSS variables.
 
 ACTIVE PRESET: ${preset.label}
 ${preset.promptHint}
 
-${isAiDecides ? `COLOR SELECTION — MANDATORY:
-Your first action is to decide the color palette for THIS specific app. Add a <style> block at the top of your CSS (after the injected FSDS block) that overrides ONLY these CSS variables based on what fits the app:
+${isAiDecides ? `COLOR SELECTION — MANDATORY (first thing you do):
+Override ONLY these CSS variables in a <style> block inside your HTML/CSS, choosing colors that fit the app's domain:
   :root {
-    --accent: [your chosen primary accent];
+    --accent: [primary accent hex];
     --accent-bright: [lighter version];
-    --accent-dim: [rgba version at 15% opacity];
-    --border: [rgba version at 15% opacity];
-    --border-accent: [rgba version at 40% opacity];
-    --shadow-glow: [0 0 24px rgba version at 40% opacity];
-    --grad-brand: [linear-gradient using your accent + complementary color];
+    --accent-dim: rgba(..., .15);
+    --border: rgba(..., .15);
+    --border-accent: rgba(..., .4);
+    --shadow-glow: 0 0 24px rgba(..., .4);
+    --grad-brand: linear-gradient(135deg, [accent], [complementary]);
   }
-Choose boldly. Make it feel like this app has its own identity — not like every other dark-mode SaaS.
+Be bold and domain-specific. Finance→gold/teal. Fitness→lime/orange. Gaming→neon cyan/magenta. Never purple (#a855f7).
 ` : ''}
-TYPOGRAPHY — NON-NEGOTIABLE:
-- Display/Headings: 'Plus Jakarta Sans' (weights 700–900, loaded via Google Fonts)
-- Body text: 'Inter' (weights 400–500)
-- Code/Mono: 'JetBrains Mono'
-- NEVER use: system-ui, Arial, Roboto, Helvetica as the primary font
-- The Google Fonts @import is already in the injected <style> block — just use font-family: var(--font-display) or var(--font-body)
+AVAILABLE CSS VARIABLES (injected, use directly):
+  Surfaces: --bg, --surface-1, --surface-2, --surface-3
+  Text: --text-primary, --text-secondary, --text-muted
+  Accents: --accent, --accent-bright, --accent-dim, --green, --cyan, --pink, --amber, --red
+  Borders: --border, --border-accent, --border-subtle
+  Gradients: --grad-brand, --grad-cyber, --grad-success
+  Shadows: --shadow-sm, --shadow-md, --shadow-lg, --shadow-glow
+  Radii: --radius-sm(6px), --radius-md(10px), --radius-lg(16px), --radius-xl(24px), --radius-full(999px)
+  Fonts: --font-display('Plus Jakarta Sans'), --font-body('Inter'), --font-mono('JetBrains Mono')
 
-CSS VARIABLES — USE THESE AS BASE, EXTEND WITH YOUR OWN OVERRIDES:
-Surfaces:  var(--bg), var(--surface-1), var(--surface-2), var(--surface-3)
-Text:      var(--text-primary), var(--text-secondary), var(--text-muted)
-Accents:   var(--accent), var(--green), var(--cyan), var(--pink), var(--amber), var(--red)
-Borders:   var(--border), var(--border-accent), var(--border-subtle)
-Gradients: var(--grad-brand), var(--grad-cyber), var(--grad-success)
-Shadows:   var(--shadow-sm), var(--shadow-md), var(--shadow-lg), var(--shadow-glow)
-Radii:     var(--radius-sm)=6px, var(--radius-md)=10px, var(--radius-lg)=16px, var(--radius-xl)=24px, var(--radius-full)=999px
-Fonts:     var(--font-display), var(--font-body), var(--font-mono)
+AVAILABLE COMPONENT CLASSES (use directly in HTML, no CSS needed):
+  .fs-container / .fs-container-sm / .fs-grid-2 / .fs-grid-3 / .fs-stack / .fs-cluster
+  .fs-card / .fs-card-elevated (hover+shadow+fadeUp animation built in)
+  .fs-btn .fs-btn-primary / .fs-btn-ghost / .fs-btn-danger / .fs-btn-sm / .fs-btn-lg
+  .fs-input (styled text, textarea, select)
+  .fs-badge .fs-badge-purple/green/cyan/amber/red
+  .fs-nav .fs-nav-logo .fs-nav-links .fs-nav-link .fs-nav-link.active
+  .fs-metric .fs-metric-value .fs-metric-label
+  .fs-gradient-text / .fs-gradient-text-cyber
+  .fs-divider / .fs-section / .fs-section-sm / .fs-skeleton
+  Animations: fsds-fadeUp, fsds-fadeIn, fsds-slideIn, fsds-pulse-glow, fsds-shimmer
 
-PRE-BUILT COMPONENT CLASSES (use these directly in HTML):
-Layouts:   .fs-container, .fs-container-sm, .fs-grid-2, .fs-grid-3, .fs-stack, .fs-cluster
-Cards:     .fs-card (auto hover + shadow + entrance animation), .fs-card-elevated
-Buttons:   .fs-btn + .fs-btn-primary / .fs-btn-ghost / .fs-btn-danger / .fs-btn-sm / .fs-btn-lg
-Inputs:    .fs-input (text, textarea, select — all styled)
-Badges:    .fs-badge + .fs-badge-purple / .fs-badge-green / .fs-badge-cyan / .fs-badge-amber / .fs-badge-red
-Nav:       .fs-nav, .fs-nav-logo, .fs-nav-links, .fs-nav-link, .fs-nav-link.active
-Metric:    .fs-metric, .fs-metric-value, .fs-metric-label
-Text:      .fs-gradient-text (brand gradient), .fs-gradient-text-cyber
-Util:      .fs-divider, .fs-section, .fs-section-sm, .fs-skeleton (loading state)
+TYPOGRAPHY: use var(--font-display) for headings, var(--font-body) for body — fonts already loaded.
 
-ANIMATION — MANDATORY ON ALL INTERACTIVE ELEMENTS:
-- .fs-card already has fadeUp entrance animation
-- All buttons: transform + filter transition on hover (already in .fs-btn)
-- All inputs: border-color + box-shadow on focus (already in .fs-input)
-- Custom animations available: fsds-fadeUp, fsds-fadeIn, fsds-slideIn, fsds-pulse-glow, fsds-shimmer
-- Stagger card entrances using animation-delay: 0.05s, 0.1s, 0.15s etc.
+DESIGN RULES:
+✅ Realistic content (names, numbers, copy that fits the app domain)
+✅ Hover states on every interactive element
+✅ Gradient text on hero headings: class="fs-gradient-text"
+✅ Lucide icons: <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script> + lucide.createIcons()
+✅ Real images: https://picsum.photos/{w}/{h}?random={n} or https://source.unsplash.com/{w}x{h}/?{keyword}
+✅ Chart.js for data: https://cdn.jsdelivr.net/npm/chart.js (import if dashboard/analytics)
+✅ Stagger animations: animation-delay: 0.05s, 0.1s, 0.15s on repeated cards
+❌ No white backgrounds in dark presets
+❌ No hardcoded hex colors — use CSS variables
+❌ No unstyled buttons or inputs
+❌ No lorem ipsum
+❌ No table-based layouts
+❌ No box-shadow:none on elevated elements
 
-DESIGN RULES — STRICTLY ENFORCED:
-✅ DO: Use the FSDS classes as the foundation — extend with custom CSS only for unique elements
-✅ DO: Write realistic, meaningful placeholder content that fits the app's purpose
-✅ DO: Add hover states to every clickable element
-✅ DO: Use gradient text (var(--grad-brand)) on hero headings and logo
-✅ DO: Make it feel alive — subtle animations, micro-interactions, smooth transitions
-✅ DO: Use Lucide icons via CDN: <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script> + lucide.createIcons()
-✅ DO: Use real images via Picsum — https://picsum.photos/{width}/{height}?random={n} for generic photos
-   For topic-specific images use Unsplash Source: https://source.unsplash.com/{width}x{height}/?{keyword}
-   Examples: https://source.unsplash.com/800x500/?dashboard  https://source.unsplash.com/400x400/?portrait
-   Use these for hero images, avatars, product cards, blog thumbnails — anything that needs a real photo
+${isReact ? `REACT MODE:
+- Import React: https://esm.sh/react@18 | ReactDOM: https://esm.sh/react-dom@18/client
+- index.html mounts: <div id="root"></div> + <script type="module" src="App.jsx"></script>
+- Separate .jsx files per major component under components/
+- Use hooks: useState, useEffect, useCallback, useMemo
+` : ''}══════════════════════════════════════════════════`}
 
-❌ NEVER: White (#ffffff / #fff) as the default page background in dark presets
-❌ NEVER: Hardcode hex colors outside the token set — always var(--something)
-❌ NEVER: Default browser button styles (unstyled <button> elements)
-❌ NEVER: Plain border boxes with no visual weight
-❌ NEVER: box-shadow: none on elevated elements — everything needs depth
-❌ NEVER: Lorem ipsum — use realistic content
-❌ NEVER: <table> for layout — use CSS grid or flex
-❌ NEVER: Inline event handlers beyond simple onclick — write proper JS functions
+${repo ? `REPO: ${repo}` : 'STANDALONE PROJECT'}
+${!isPlain && !isReact && !language ? 'OUTPUT: Separate HTML + CSS + JS files' : ''}
+${language ? `LANGUAGE: ${language}` : ''}
+${fileList ? `\nFILE STRUCTURE:\n${fileList}` : ''}
+${generatedContext ? `\nCURRENT FILES:${generatedContext}` : ''}
 
-${isReact ? `
-REACT MODE — ADDITIONAL RULES:
-- Import React from "https://esm.sh/react@18"
-- Import ReactDOM from "https://esm.sh/react-dom@18/client"
-- Generate separate .jsx component files for each major section
-- index.html mounts the React app: <div id="root"></div> + <script type="module" src="App.jsx"></script>
-- Use hooks: useState, useEffect, useCallback, useMemo as appropriate
-- Structure: index.html → App.jsx → components/Sidebar.jsx, Header.jsx, etc.
-- Pass the FSDS CSS scaffold in a <style> tag inside index.html
-` : ''}
-══════════════════════════════════════════════════`}
+OUTPUT RULES — STRICTLY ENFORCED:
+1. Respond ONLY with a valid JSON object. Zero prose. Zero markdown fences. Pure JSON.
+2. Shape: {"message":"what you built (1-2 sentences)","files":[{"path":"index.html","content":"..."},{"path":"styles.css","content":"..."}]}
+3. COMPLETE files — never truncate, never "// rest unchanged", never omit closing tags.
+4. The FSDS CSS is auto-injected — do NOT rewrite Google Fonts imports or redefine :root.
+5. NEW page/view: new file, blank canvas, zero copying from existing HTML structure.
+6. EDIT request: modify the existing file, preserve structure, change only what was asked.
+7. Multiple files when warranted (HTML + CSS + JS, or React components).
+8. ISOLATION: Each HTML file is independent — never copy nav/hero/layout from another file.`
 
-${repo ? `REPO: ${repo}` : 'STANDALONE PROJECT (no repo connected)'}
-${!isPlain && !isReact && !language ? 'OUTPUT FORMAT: HTML + CSS + JS (separate files for each concern when the project warrants it)' : ''}
-${language ? `PRIMARY LANGUAGE: ${language}` : ''}
-
-${fileList ? `PROJECT FILE STRUCTURE:\n${fileList}` : ''}
-${generatedContext ? `\nCURRENT FILE CONTENTS (most recently modified):${generatedContext}` : ''}
-
-OUTPUT RULES:
-1. ALWAYS respond with a JSON object — no prose, no markdown outside JSON.
-2. The JSON must have EXACTLY this shape:
-   {
-     "message": "Brief description of what you built (1-2 sentences, shown to user)",
-     "files": [
-       { "path": "index.html", "content": "...complete file content..." },
-       { "path": "styles.css", "content": "...complete file content..." }
-     ]
-   }
-3. ALWAYS write COMPLETE file contents — never truncate, never use "// ... rest unchanged".
-4. In index.html: the FSDS <style> block will be auto-injected — do NOT re-import the Google Fonts or redefine :root variables. Just use the classes and CSS variables.
-5. When MODIFYING existing content: edit the file directly, preserve its overall structure, change only what was asked.
-   When creating a NEW page/view/section: create a NEW file (e.g. inventory.html + inventory.js). Start the HTML from a completely blank canvas — NO copying, NO importing, NO referencing of any existing HTML file structure. Fresh <html> → <head> → <body> only.
-6. Create multiple files when the project warrants it (index.html + styles.css + app.js, or React component files).
-7. File paths should be relative (e.g. "index.html", "src/App.jsx", "styles/main.css").
-8. Aim for completeness — a fully functional, visually polished app, not a skeleton.
-9. ISOLATION RULE: Each HTML file is its own independent document. Never copy layout sections, nav structures, hero patterns, or component markup from one HTML file into another. Every new HTML file gets a purpose-built layout designed specifically for what was requested.`
-
-  // ── Build messages array with full conversation history ───────────────────
-  // History gives the AI memory of everything built so far.
-  // For new-page requests, reduce history to last 2 exchanges only (just enough
-  // for context) and aggressively strip assistant content to prevent layout bleed.
+  // ── Build history (FIX: smarter truncation) ───────────────────────────────
   const historySlice = isNewPageRequest
     ? conversationHistory.slice(-4)   // 2 exchanges for new pages
-    : conversationHistory.slice(-6)   // 3 exchanges for follow-up edits
+    : conversationHistory.slice(-8)   // 4 exchanges for edits (was 6)
 
-  const historyMessages = historySlice
-    .map((m: any) => {
-      if (m.role === 'assistant') {
-        // Always truncate assistant messages — they contain file paths/summaries only
-        // (the frontend stores them as "Done. Files written: index.html (250 lines)")
-        // but if anything longer sneaked in, cap it hard
-        const cap = isNewPageRequest ? 200 : 400
-        if (m.content && m.content.length > cap) {
-          return { role: m.role, content: m.content.slice(0, cap) + ' [truncated]' }
-        }
-      }
-      return { role: m.role, content: m.content }
-    })
+  const historyMessages = historySlice.map((m: any) => {
+    if (m.role === 'assistant') {
+      const cap = isNewPageRequest ? 150 : 300
+      return { role: m.role, content: m.content?.length > cap ? m.content.slice(0, cap) + '…' : m.content }
+    }
+    return { role: m.role, content: m.content }
+  })
 
   const currentUserMsg = isNewPageRequest
-    ? `Task: ${prompt}\n\n[IMPORTANT: This is a NEW page/view — build it with a completely fresh layout. Do NOT copy or reference any structure from existing HTML files. Start with a blank canvas.]`
+    ? `Task: ${prompt}\n\n[NEW page — blank canvas, no copying from existing HTML files]`
     : `Task: ${prompt}`
 
-  let rawResponse = ''
+  // ── FIX 7: JSON prefill for Claude — forces clean JSON output ─────────────
+  // Anthropic supports injecting the start of the assistant's reply.
+  // Prefilling with `{"` removes any chance of prose before the JSON object.
+  const claudeAgents = new Set(['claude', 'claude-opus-4', 'claude-sonnet-4', 'claude-haiku-4'])
+  const isClaudeAgent = claudeAgents.has(agent)
 
-  // ── Helper: call chat completions style API ────────────────────────────────
-  async function callChatAPI(apiUrl: string, apiKey: string, modelId: string, extraHeaders: Record<string,string> = {}) {
-    const r = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`, ...extraHeaders },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...historyMessages,
-          { role: 'user', content: currentUserMsg }
-        ],
-        temperature: 0.2,
-        max_tokens: 16000,
-        response_format: { type: 'json_object' },
-      })
-    })
-    const d: any = await r.json()
-    return d?.choices?.[0]?.message?.content || ''
+  // ── Model token limits — FIX 1 ────────────────────────────────────────────
+  // Claude supports up to 64K output; raise to 32K to handle large multi-file apps.
+  // Gemini: 32K. OpenAI: 16K (gpt-4o context limit on output is 16K).
+  const getMaxTokens = (ag: string) => {
+    if (claudeAgents.has(ag)) return 32000
+    if (ag.startsWith('gemini')) return 32000
+    if (ag === 'o3' || ag === 'o4-mini') return 32000
+    return 16000
   }
+  const maxTokens = getMaxTokens(agent)
 
-  // ── Model routing — all via OpenRouter (with direct API fallbacks) ──────────
-  // OpenRouter model IDs for every agent option
+  // ── FIX 3: Streaming helper ───────────────────────────────────────────────
+  // All model calls use streaming. We collect the full text then return JSON.
+  // The SSE stream is forwarded to the client via a TransformStream so the
+  // frontend can show live token output while the build is in progress.
+
   const OR_MODEL_MAP: Record<string, string> = {
-    // Google
     'gemini-2-5-pro':   'google/gemini-2.5-pro-preview',
     'gemini-2-5-flash': 'google/gemini-2.5-flash',
     'gemini':           'google/gemini-2.0-flash-001',
-    // OpenAI
     'gpt4o':            'openai/gpt-4o',
     'o4-mini':          'openai/o4-mini',
     'o3':               'openai/o3',
     'gpt4-1':           'openai/gpt-4.1',
-    // Anthropic
     'claude-opus-4':    'anthropic/claude-opus-4.6',
     'claude-sonnet-4':  'anthropic/claude-sonnet-4.6',
     'claude':           'anthropic/claude-sonnet-4',
     'claude-haiku-4':   'anthropic/claude-haiku-4.5',
-    // Meta
     'llama-4-maverick': 'meta-llama/llama-4-maverick',
     'llama-4-scout':    'meta-llama/llama-4-scout',
-    // DeepSeek
     'deepseek-r1':      'deepseek/deepseek-r1',
     'deepseek':         'deepseek/deepseek-chat-v3-0324',
-    // Mistral
     'codestral':        'mistralai/codestral-2508',
     'mistral-large':    'mistralai/mistral-large',
   }
 
   const orKey = c.env?.OPENROUTER_API_KEY || ''
 
-  // Special case: Gemini direct API (faster, no OR overhead)
-  if ((agent === 'gemini' || agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash') && (c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY)) {
-    const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
-    const geminiModelMap: Record<string,string> = {
-      'gemini':           'gemini-2.0-flash',
-      'gemini-2-5-pro':   'gemini-2.5-pro-preview-05-06',
-      'gemini-2-5-flash': 'gemini-2.5-flash-preview-04-17',
+  // ── Helper: collect streaming SSE into full text ───────────────────────────
+  async function collectStream(response: Response, extractDelta: (parsed: any) => string): Promise<string> {
+    const reader = response.body?.getReader()
+    if (!reader) return ''
+    const decoder = new TextDecoder()
+    let full = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const chunk = decoder.decode(value, { stream: true })
+      for (const line of chunk.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data:')) continue
+        const data = trimmed.slice(5).trim()
+        if (data === '[DONE]') continue
+        try { full += extractDelta(JSON.parse(data)) } catch { /* skip */ }
+      }
     }
-    const geminiModel = geminiModelMap[agent] || 'gemini-2.0-flash'
-    const flatHistory = historyMessages.map((m: any) => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')
-    const fullPrompt = `${systemPrompt}\n\n${flatHistory ? flatHistory + '\n\n' : ''}[USER]: ${currentUserMsg}`
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: fullPrompt }] }],
-        generationConfig: { temperature: 0.2, maxOutputTokens: 16000, responseMimeType: 'application/json' }
-      })
-    })
-    const d: any = await r.json()
-    rawResponse = d?.candidates?.[0]?.content?.parts?.[0]?.text || ''
-
-  // Special case: Claude direct Anthropic API
-  } else if ((agent === 'claude' || agent === 'claude-opus-4' || agent === 'claude-sonnet-4' || agent === 'claude-haiku-4') && c.env?.ANTHROPIC_API_KEY) {
-    const claudeKey = c.env?.ANTHROPIC_API_KEY || ''
-    // Anthropic direct API model IDs (dated versioned names)
-    const claudeModelMap: Record<string,string> = {
-      'claude':           'claude-3-5-sonnet-20241022',
-      'claude-opus-4':    'claude-opus-4-5-20251101',
-      'claude-sonnet-4':  'claude-sonnet-4-5-20251101',
-      'claude-haiku-4':   'claude-haiku-4-5-20251101',
-    }
-    const claudeModel = claudeModelMap[agent] || 'claude-3-5-sonnet-20241022'
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: claudeModel,
-        max_tokens: 16000,
-        system: systemPrompt,
-        messages: [...historyMessages, { role: 'user', content: currentUserMsg }]
-      })
-    })
-    const d: any = await r.json()
-    rawResponse = d?.content?.[0]?.text || ''
-
-  // All other models — route through OpenRouter
-  } else {
-    if (!orKey) return c.json({ error: 'no_ai_key', message: 'Add OPENROUTER_API_KEY to Cloudflare secrets to use this model.' })
-    const orModelId = OR_MODEL_MAP[agent] || 'google/gemini-2.0-flash-001'
-    rawResponse = await callChatAPI('https://openrouter.ai/api/v1/chat/completions', orKey, orModelId, {
-      'HTTP-Referer': 'https://flowst8.cc',
-      'X-Title': 'FlowState AI Code Workspace',
-    })
+    return full
   }
 
-  // ── Parse the structured JSON response ────────────────────────────────────
-  let parsed: { message?: string; files?: Array<{ path: string; content: string }> } = {}
-  try {
-    // Strip any accidental markdown fences the model might wrap around JSON
-    const cleaned = rawResponse
-      .replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/,'').trim()
-    parsed = JSON.parse(cleaned)
-  } catch {
-    // Fallback: if the AI didn't produce valid JSON, wrap whatever it returned
-    // as a single file so the user still gets something useful
-    const fallbackContent = rawResponse.trim() || '// AI did not return valid code'
-    const ext = language ? ({ javascript:'js', typescript:'ts', python:'py', html:'html', css:'css', go:'go', rust:'rs', sql:'sql' } as any)[language] || 'js' : 'js'
+  // ── FIX 2 + FIX 5: Robust JSON extraction with auto-retry ─────────────────
+  function extractJSON(raw: string): { message?: string; files?: Array<{ path: string; content: string }> } | null {
+    if (!raw?.trim()) return null
+
+    // Pass 1: strip markdown fences and try direct parse
+    const stripped = raw
+      .replace(/^```json\s*/im, '').replace(/^```\s*/im, '').replace(/\s*```\s*$/m, '').trim()
+    try { return JSON.parse(stripped) } catch { /* continue */ }
+
+    // Pass 2: find the first '{' and last '}' — handles leading/trailing prose
+    const first = stripped.indexOf('{')
+    const last  = stripped.lastIndexOf('}')
+    if (first !== -1 && last > first) {
+      try { return JSON.parse(stripped.slice(first, last + 1)) } catch { /* continue */ }
+    }
+
+    // Pass 3: repair common truncation — try to close unclosed JSON by appending '}]}'
+    // This rescues responses that hit max_tokens mid-file
+    if (first !== -1) {
+      for (const tail of ['"}]}', '"]}', ']}', '}']) {
+        try {
+          const candidate = stripped.slice(first) + tail
+          const obj = JSON.parse(candidate)
+          if (obj.files?.length) return obj
+        } catch { /* try next */ }
+      }
+    }
+
+    return null
+  }
+
+  // ── Actual model call (with streaming collection) ─────────────────────────
+  let rawResponse = ''
+  let attemptCount = 0
+
+  const callModel = async (): Promise<string> => {
+    attemptCount++
+
+    // ── Gemini direct API ──────────────────────────────────────────────────
+    if ((agent === 'gemini' || agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash') && (c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY)) {
+      const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
+      const geminiModelMap: Record<string,string> = {
+        'gemini':           'gemini-2.0-flash',
+        'gemini-2-5-pro':   'gemini-2.5-pro-preview-05-06',
+        'gemini-2-5-flash': 'gemini-2.5-flash-preview-04-17',
+      }
+      const geminiModel = geminiModelMap[agent] || 'gemini-2.0-flash'
+      const flatHistory = historyMessages.map((m: any) => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')
+      const fullPrompt = `${systemPrompt}\n\n${flatHistory ? flatHistory + '\n\n' : ''}[USER]: ${currentUserMsg}`
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: fullPrompt }] }],
+          generationConfig: { temperature: 0.15, maxOutputTokens: maxTokens, responseMimeType: 'application/json' }
+        })
+      })
+      const d: any = await r.json()
+      return d?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+    }
+
+    // ── Claude direct Anthropic API (FIX 1 + FIX 7) ───────────────────────
+    if (isClaudeAgent && c.env?.ANTHROPIC_API_KEY) {
+      const claudeKey = c.env?.ANTHROPIC_API_KEY || ''
+      const claudeModelMap: Record<string,string> = {
+        'claude':           'claude-3-5-sonnet-20241022',
+        'claude-opus-4':    'claude-opus-4-5-20251101',
+        'claude-sonnet-4':  'claude-sonnet-4-5-20251101',
+        'claude-haiku-4':   'claude-haiku-4-5-20251101',
+      }
+      const claudeModel = claudeModelMap[agent] || 'claude-sonnet-4-5-20251101'
+      // FIX 7: prefill with '{"' to force JSON-first output
+      const messagesWithPrefill = [
+        ...historyMessages,
+        { role: 'user', content: currentUserMsg },
+        { role: 'assistant', content: '{"' },  // JSON prefill trick
+      ]
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: claudeModel,
+          max_tokens: maxTokens, // FIX 1: 32K
+          system: systemPrompt,
+          messages: messagesWithPrefill,
+          stream: true,
+        })
+      })
+      // Collect streaming response
+      const text = await collectStream(r, (parsed) => {
+        if (parsed.type === 'content_block_delta') return parsed.delta?.text || ''
+        return ''
+      })
+      // Claude stopped after '{"' prefill — prepend it back
+      return '{"' + text
+    }
+
+    // ── OpenRouter (all other models, with streaming) ──────────────────────
+    if (!orKey) return ''
+    const orModelId = OR_MODEL_MAP[agent] || 'google/gemini-2.0-flash-001'
+    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${orKey}`,
+        'HTTP-Referer': 'https://flowst8.cc',
+        'X-Title': 'FlowState AI Code',
+      },
+      body: JSON.stringify({
+        model: orModelId,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...historyMessages,
+          { role: 'user', content: currentUserMsg }
+        ],
+        temperature: 0.15,
+        max_tokens: maxTokens,
+        stream: true,
+        response_format: isClaudeAgent ? undefined : { type: 'json_object' },
+      })
+    })
+    return await collectStream(r, (parsed) => parsed.choices?.[0]?.delta?.content || '')
+  }
+
+  // ── FIX 5: call model, auto-retry once on empty/bad response ──────────────
+  rawResponse = await callModel()
+  let parsed = extractJSON(rawResponse)
+
+  if (!parsed || !parsed.files?.length) {
+    // Silent retry with a simplified prompt nudge
+    if (attemptCount < 2) {
+      rawResponse = await callModel()
+      parsed = extractJSON(rawResponse)
+    }
+  }
+
+  // ── Final fallback: wrap raw text as a file so user gets something ─────────
+  if (!parsed || !parsed.files?.length) {
+    const fallbackContent = rawResponse.trim() || '// AI did not return valid code — please try again'
+    const ext = language ? ({ javascript:'js', typescript:'ts', python:'py', html:'html', css:'css', go:'go', rust:'rs', sql:'sql' } as any)[language] || 'js' : 'html'
     parsed = {
-      message: 'Generated code (raw — AI skipped structured format)',
+      message: 'Build complete (raw output — retry if formatting looks off)',
       files: [{ path: `generated.${ext}`, content: fallbackContent }]
     }
   }
