@@ -9146,9 +9146,20 @@ em{color:var(--accent);font-style:italic}
             </div>
 
             <!-- Voice settings sliders -->
-            <div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap">
-              <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Stability <span id="sts-stab-val">0.5</span><input id="sts-stability" type="range" min="0" max="1" step="0.05" value="0.5" oninput="document.getElementById('sts-stab-val').textContent=this.value" style="width:100%;accent-color:var(--cyan)"></label>
-              <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Similarity <span id="sts-sim-val">0.75</span><input id="sts-similarity" type="range" min="0" max="1" step="0.05" value="0.75" oninput="document.getElementById('sts-sim-val').textContent=this.value" style="width:100%;accent-color:var(--cyan)"></label>
+            <div style="margin-bottom:6px">
+              <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-s);margin-bottom:2px"><span>Stability</span><span id="sts-stab-val">0.5</span></div>
+              <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-s);opacity:.6;margin-bottom:4px"><span>More variable</span><span>More stable</span></div>
+              <input id="sts-stability" type="range" min="0" max="1" step="0.05" value="0.5" oninput="document.getElementById('sts-stab-val').textContent=parseFloat(this.value).toFixed(2)" style="width:100%;accent-color:var(--cyan);margin-bottom:10px">
+            </div>
+            <div style="margin-bottom:6px">
+              <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-s);margin-bottom:2px"><span>Similarity</span><span id="sts-sim-val">0.75</span></div>
+              <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-s);opacity:.6;margin-bottom:4px"><span>Low</span><span>High</span></div>
+              <input id="sts-similarity" type="range" min="0" max="1" step="0.05" value="0.75" oninput="document.getElementById('sts-sim-val').textContent=parseFloat(this.value).toFixed(2)" style="width:100%;accent-color:var(--cyan);margin-bottom:10px">
+            </div>
+            <div style="margin-bottom:14px">
+              <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-s);margin-bottom:2px"><span>Style Exaggeration</span><span id="sts-style-val">0.00</span></div>
+              <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-s);opacity:.6;margin-bottom:4px"><span>None</span><span>Exaggerated</span></div>
+              <input id="sts-style-ex" type="range" min="0" max="1" step="0.05" value="0" oninput="document.getElementById('sts-style-val').textContent=parseFloat(this.value).toFixed(2)" style="width:100%;accent-color:var(--cyan)">
             </div>
 
             <!-- Record / upload audio -->
@@ -9203,13 +9214,32 @@ em{color:var(--accent);font-style:italic}
             <!-- Create clone form -->
             <div style="background:rgba(16,185,129,.05);border:1px solid rgba(16,185,129,.15);border-radius:10px;padding:14px;margin-bottom:16px">
               <div style="font-size:11px;color:var(--text-s);font-weight:500;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">CREATE NEW CLONE</div>
-              <input id="clone-name-input" type="text" placeholder="Voice name (e.g. My Voice)" class="fs-input" style="width:100%;margin-bottom:10px;box-sizing:border-box">
-              <div style="font-size:11px;color:var(--text-s);margin-bottom:6px">Audio samples (MP3/WAV, 1–25 files, 30s+ each)</div>
-              <label style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(255,255,255,.04);border:1px dashed rgba(16,185,129,.3);border-radius:8px;cursor:pointer;font-size:12px;color:var(--text-s);margin-bottom:10px">
-                <i class="fas fa-plus-circle" style="color:#10b981;font-size:14px"></i>
-                <span id="clone-file-label">Click to select audio samples&#8230;</span>
+
+              <!-- Voice name -->
+              <input id="clone-name-input" type="text" placeholder="Voice name (e.g. My Voice)" class="fs-input" style="width:100%;margin-bottom:12px;box-sizing:border-box">
+
+              <!-- Upload / drag-drop zone -->
+              <div id="clone-drop-zone"
+                style="border:2px dashed rgba(16,185,129,.35);border-radius:10px;padding:22px 16px;text-align:center;cursor:pointer;margin-bottom:10px;transition:border-color .2s,background .2s"
+                onclick="document.getElementById('clone-file-input').click()"
+                ondragover="cloneDropOver(event)" ondragleave="cloneDropLeave(event)" ondrop="cloneDropped(event)">
+                <i class="fas fa-arrow-up-from-bracket" style="font-size:22px;color:rgba(16,185,129,.6);margin-bottom:8px;display:block"></i>
+                <div style="font-size:12px;color:var(--text-p);font-weight:600;margin-bottom:3px">Click to upload, or drag and drop</div>
+                <div style="font-size:11px;color:var(--text-s)">Audio files up to 50 MB each &middot; MP3, WAV, M4A, WEBM</div>
                 <input type="file" id="clone-file-input" accept="audio/*" multiple onchange="cloneFilesSelected(this)" style="display:none">
-              </label>
+              </div>
+
+              <!-- Record button -->
+              <button id="clone-rec-btn" onclick="toggleCloneRecording()" class="btn-gen" style="width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:var(--text-p);font-size:12px;padding:9px;margin-bottom:12px;display:flex;align-items:center;justify-content:center;gap:7px">
+                <i class="fas fa-microphone" style="color:#10b981"></i> Record audio
+              </button>
+
+              <!-- Added samples list -->
+              <div id="clone-samples-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
+              <div id="clone-duration-info" style="font-size:11px;color:var(--text-s);margin-bottom:10px;display:none">
+                <i class="fas fa-clock" style="color:#10b981"></i> <span id="clone-duration-text">0:00 total duration</span>
+              </div>
+
               <button onclick="createVoiceClone()" id="clone-btn" class="btn-gen" style="background:linear-gradient(135deg,#10b981,#059669);width:100%">
                 <i class="fas fa-dna"></i>&nbsp; Create Voice Clone
               </button>

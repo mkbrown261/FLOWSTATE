@@ -6529,7 +6529,8 @@ async function generateSTS() {
     fd.append('model_id',         modelId);
     fd.append('stability',        String(stability));
     fd.append('similarity_boost', String(similarity));
-    fd.append('style',            '0');
+    const styleEx = parseFloat(document.getElementById('sts-style-ex')?.value || '0');
+    fd.append('style',            String(styleEx));
 
     const res = await fetch('/api/audio/sts', { method: 'POST', body: fd });
     const ct  = res.headers.get('content-type') || '';
@@ -6634,20 +6635,125 @@ async function deleteClonedVoice(voiceId, name) {
   }
 }
 
+// ── Clone sample manager ──────────────────────────────────────────────────────
+let _cloneSamples   = [];  // array of { id, name, blob, url, duration }
+let _cloneRecorder  = null;
+let _cloneRecording = false;
+let _cloneRecChunks = [];
+let _cloneSampleIdCounter = 0;
+
+function _cloneRenderSamples() {
+  const list     = document.getElementById('clone-samples-list');
+  const durInfo  = document.getElementById('clone-duration-info');
+  const durText  = document.getElementById('clone-duration-text');
+  if (!list) return;
+
+  if (!_cloneSamples.length) {
+    list.innerHTML = '';
+    if (durInfo) durInfo.style.display = 'none';
+    return;
+  }
+
+  list.innerHTML = _cloneSamples.map(s => `
+    <div style="display:flex;align-items:center;gap:8px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.18);border-radius:8px;padding:8px 10px">
+      <i class="fas fa-file-audio" style="color:#10b981;font-size:13px;flex-shrink:0"></i>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:11px;font-weight:600;color:var(--text-p);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(s.name)}</div>
+        <div style="font-size:10px;color:var(--text-s)">${s.duration || ''} &middot; ${(s.blob.size/1024).toFixed(0)} KB</div>
+      </div>
+      <button onclick="clonePlaySample(${s.id})" style="background:none;border:none;cursor:pointer;color:#10b981;padding:3px 5px;font-size:12px" title="Preview"><i class="fas fa-play"></i></button>
+      <button onclick="cloneRemoveSample(${s.id})" style="background:none;border:none;cursor:pointer;color:#ef4444;padding:3px 5px;font-size:12px" title="Remove"><i class="fas fa-times"></i></button>
+    </div>`).join('');
+
+  if (durInfo) durInfo.style.display = 'block';
+  if (durText) durText.textContent = `${_cloneSamples.length} sample${_cloneSamples.length>1?'s':''} added`;
+}
+
+function clonePlaySample(id) {
+  const s = _cloneSamples.find(x => x.id === id);
+  if (!s) return;
+  const a = new Audio(s.url);
+  a.play().catch(() => {});
+}
+
+function cloneRemoveSample(id) {
+  _cloneSamples = _cloneSamples.filter(x => x.id !== id);
+  _cloneRenderSamples();
+}
+
 function cloneFilesSelected(input) {
-  const files = input.files;
-  const label = document.getElementById('clone-file-label');
-  if (!files.length) return;
-  if (label) label.textContent = `${files.length} file${files.length>1?'s':''} selected`;
+  const files = Array.from(input.files || []);
+  files.forEach(f => {
+    _cloneSampleIdCounter++;
+    _cloneSamples.push({ id: _cloneSampleIdCounter, name: f.name, blob: f, url: URL.createObjectURL(f), duration: '' });
+  });
+  input.value = ''; // allow re-selecting same file
+  _cloneRenderSamples();
+}
+
+function cloneDropOver(e) {
+  e.preventDefault();
+  const zone = document.getElementById('clone-drop-zone');
+  if (zone) { zone.style.borderColor = 'rgba(16,185,129,.8)'; zone.style.background = 'rgba(16,185,129,.08)'; }
+}
+function cloneDropLeave(e) {
+  const zone = document.getElementById('clone-drop-zone');
+  if (zone) { zone.style.borderColor = 'rgba(16,185,129,.35)'; zone.style.background = ''; }
+}
+function cloneDropped(e) {
+  e.preventDefault();
+  cloneDropLeave(e);
+  const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('audio/') || /\.(mp3|wav|m4a|ogg|webm|flac)$/i.test(f.name));
+  if (!files.length) { notify('Drop audio files only', 'info'); return; }
+  files.forEach(f => {
+    _cloneSampleIdCounter++;
+    _cloneSamples.push({ id: _cloneSampleIdCounter, name: f.name, blob: f, url: URL.createObjectURL(f), duration: '' });
+  });
+  _cloneRenderSamples();
+}
+
+async function toggleCloneRecording() {
+  const btn = document.getElementById('clone-rec-btn');
+
+  if (_cloneRecording) {
+    _cloneRecorder?.stop();
+    _cloneRecording = false;
+    if (btn) btn.innerHTML = '<i class="fas fa-microphone" style="color:#10b981"></i> Record audio';
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    _cloneRecChunks = [];
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+    _cloneRecorder = new MediaRecorder(stream, { mimeType });
+
+    _cloneRecorder.ondataavailable = e => { if (e.data.size > 0) _cloneRecChunks.push(e.data); };
+    _cloneRecorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(_cloneRecChunks, { type: mimeType });
+      const now  = new Date();
+      const name = `Recording ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}.webm`;
+      _cloneSampleIdCounter++;
+      _cloneSamples.push({ id: _cloneSampleIdCounter, name, blob, url: URL.createObjectURL(blob), duration: '' });
+      _cloneRenderSamples();
+      if (btn) btn.innerHTML = '<i class="fas fa-microphone" style="color:#10b981"></i> Record audio';
+    };
+
+    _cloneRecorder.start();
+    _cloneRecording = true;
+    if (btn) btn.innerHTML = '<i class="fas fa-stop" style="color:#ef4444"></i> Stop recording';
+    notify('Recording started — click again to stop', 'info');
+  } catch(e) {
+    notify('Microphone access denied: ' + e.message, 'error');
+  }
 }
 
 async function createVoiceClone() {
-  const name  = document.getElementById('clone-name-input')?.value?.trim();
-  const input = document.getElementById('clone-file-input');
-  const files = input?.files;
+  const name = document.getElementById('clone-name-input')?.value?.trim();
 
-  if (!name)          { notify('Enter a voice name', 'info'); return; }
-  if (!files?.length) { notify('Select at least one audio sample', 'info'); return; }
+  if (!name)                { notify('Enter a voice name', 'info');              return; }
+  if (!_cloneSamples.length){ notify('Add at least one audio sample', 'info');   return; }
 
   const btn    = document.getElementById('clone-btn');
   const status = document.getElementById('clone-status');
@@ -6658,7 +6764,7 @@ async function createVoiceClone() {
   try {
     const fd = new FormData();
     fd.append('name', name);
-    for (const f of files) fd.append('files', f, f.name);
+    for (const s of _cloneSamples) fd.append('files', s.blob, s.name);
 
     const res  = await fetch('/api/audio/voices/clone', { method: 'POST', body: fd });
     const data = await res.json();
@@ -6666,11 +6772,10 @@ async function createVoiceClone() {
     if (data.voice_id) {
       if (status) status.textContent = `✅ Voice "${name}" created!`;
       notify(`✅ Voice clone "${name}" created!`, 'success');
-      // Clear form
+      // Reset form
       if (document.getElementById('clone-name-input')) document.getElementById('clone-name-input').value = '';
-      if (input) input.value = '';
-      const label = document.getElementById('clone-file-label');
-      if (label) label.textContent = 'Click to select audio samples…';
+      _cloneSamples = [];
+      _cloneRenderSamples();
       loadClonedVoices();
     } else {
       if (status) status.textContent = '❌ ' + (data.error || 'Clone failed');
