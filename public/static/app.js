@@ -6066,7 +6066,8 @@ async function loadTokenBalance() {
     if (data.error) return;
     _tokenBalance = data;
     const fmt = n => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+'M'
-                   : n >= 1_000     ? Math.round(n/1_000)+'k'
+                   : n >= 10_000   ? Math.round(n/1_000)+'k'
+                   : n >= 1_000    ? (n/1_000).toFixed(1)+'k'
                    : String(n);
     const el = document.getElementById('token-balance-display');
     if (el) {
