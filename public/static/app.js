@@ -765,7 +765,7 @@ function switchTab(id) {
   if (id==='learn')    loadLearnCards();
   if (id==='restore')  loadRestore();
   if (id==='clawbot')  initClawbot();
-  if (id==='audio')    { loadTTSVoices(); }
+  if (id==='audio')    { loadTTSVoices(); loadClonedVoices(); }
   if (id==='generate') {
     setTimeout(()=>{
       buildGenPicker('img');
@@ -812,7 +812,7 @@ function switchGenSub(sub) {
   if (sub==='imggen')    { setTimeout(()=>buildGenPicker('img'), 30); }
   if (sub==='vidgen')    { setTimeout(()=>buildGenPicker('vid'), 30); }
   if (sub==='i2v')       { setTimeout(()=>buildGenPicker('i2v'), 30); }
-  if (sub==='tts')       { loadTTSVoices(); }
+  if (sub==='tts')       { loadTTSVoices(); loadClonedVoices(); }
   if (sub==='higgsfield'){ initHiggsfield(); }
   if (sub==='code')      { initCodeWorkspace(); }
 }
@@ -6213,9 +6213,16 @@ function toggleAudPicker(e, key) {
 }
 function _closeAudPickers() { _audPickerOpen = ''; _refreshAudPickers(); }
 function _refreshAudPickers() {
-  ['dur','bpm','voice','ttsmodel'].forEach(k => {
-    const dd = document.getElementById(k === 'voice' ? 'tts-voice-dropdown' : k === 'ttsmodel' ? 'tts-model-dropdown' : `aud-${k}-dropdown`);
-    const chevron = document.querySelector(`#${k === 'voice' ? 'tts-voice-pill' : k === 'ttsmodel' ? 'tts-model-pill' : `aud-${k}-pill`} .fa-chevron-down, #${k === 'voice' ? 'tts-voice-pill' : k === 'ttsmodel' ? 'tts-model-pill' : `aud-${k}-pill`} .fa-chevron-up`);
+  const map = {
+    'dur':       'aud-dur-dropdown',
+    'bpm':       'aud-bpm-dropdown',
+    'voice':     'tts-voice-dropdown',
+    'ttsmodel':  'tts-model-dropdown',
+    'sts-voice': 'sts-voice-dropdown',
+    'stsmodel':  'sts-model-dropdown',
+  };
+  Object.entries(map).forEach(([k, ddId]) => {
+    const dd = document.getElementById(ddId);
     if (dd) dd.style.display = _audPickerOpen === k ? 'block' : 'none';
   });
 }
@@ -6404,6 +6411,274 @@ async function generateTTS() {
     if (statusText) statusText.textContent = 'Error: ' + e.message;
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-microphone"></i> Generate Voice'; }
+  }
+}
+
+// ── Voice Studio inner tab switcher ──────────────────────────────────────────
+let _voiceTab = 'tts'; // 'tts' | 'sts' | 'clone'
+
+function switchVoiceTab(tab) {
+  _voiceTab = tab;
+  ['tts','sts','clone'].forEach(t => {
+    const btn   = document.getElementById('vstab-' + t);
+    const panel = document.getElementById('vs-panel-' + t);
+    if (btn)   { btn.classList.toggle('active-voice-tab', t === tab); }
+    if (panel) { panel.style.display = t === tab ? 'flex' : 'none'; }
+  });
+  if (tab === 'clone') loadClonedVoices();
+}
+
+// ── Speech-to-Speech state & helpers ─────────────────────────────────────────
+let _stsVoiceId  = 'pNInz6obpgDQGcFmaJgB';
+let _stsModelId  = 'eleven_english_sts_v2';
+let _stsRecorder = null;
+let _stsRecording = false;
+let _stsAudioBlob = null;
+let _stsAudioChunks = [];
+
+function setSTSVoice(id, label) {
+  _stsVoiceId = id;
+  const lbl = document.getElementById('sts-voice-label');
+  if (lbl) lbl.textContent = label.split(' - ')[0] + (label.includes(' - ') ? ' — ' + label.split(' - ')[1] : '');
+  document.querySelectorAll('[id^="stvr-"]').forEach(r => r.className = 'gs-radio');
+  _audPickerOpen = ''; _refreshAudPickers();
+}
+
+function setSTSModel(id, label) {
+  _stsModelId = id;
+  const lbl = document.getElementById('sts-model-label');
+  if (lbl) lbl.textContent = label;
+  ['en2','ml2'].forEach(k => { const r = document.getElementById('stmr-' + k); if (r) r.className = 'gs-radio'; });
+  const keyMap = { 'eleven_english_sts_v2':'en2', 'eleven_multilingual_sts_v2':'ml2' };
+  const active = document.getElementById('stmr-' + keyMap[id]);
+  if (active) active.className = 'gs-radio gs-radio-active';
+  _audPickerOpen = ''; _refreshAudPickers();
+}
+
+async function toggleSTSRecording() {
+  const btn    = document.getElementById('sts-rec-btn');
+  const status = document.getElementById('sts-rec-status');
+  const player = document.getElementById('sts-preview-player');
+
+  if (_stsRecording) {
+    // Stop recording
+    _stsRecorder?.stop();
+    _stsRecording = false;
+    if (btn) { btn.innerHTML = '<i class="fas fa-circle" style="color:#fff;font-size:10px"></i>&nbsp; Record'; btn.style.background = 'linear-gradient(135deg,#ef4444,#dc2626)'; }
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    _stsAudioChunks = [];
+    _stsRecorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg' });
+
+    _stsRecorder.ondataavailable = e => { if (e.data.size > 0) _stsAudioChunks.push(e.data); };
+    _stsRecorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      _stsAudioBlob = new Blob(_stsAudioChunks, { type: _stsRecorder.mimeType });
+      const url = URL.createObjectURL(_stsAudioBlob);
+      if (player) { player.src = url; player.style.display = 'block'; }
+      if (status) status.textContent = `✅ Recording ready — ${(_stsAudioBlob.size / 1024).toFixed(0)} KB`;
+    };
+
+    _stsRecorder.start();
+    _stsRecording = true;
+    if (btn) { btn.innerHTML = '<i class="fas fa-stop" style="color:#fff;font-size:10px"></i>&nbsp; Stop Recording'; btn.style.background = 'linear-gradient(135deg,#dc2626,#991b1b)'; }
+    if (status) { status.innerHTML = '<i class="fas fa-circle" style="color:#ef4444;animation:pulse 1s infinite"></i> Recording…'; }
+  } catch(e) {
+    if (status) status.textContent = '❌ Microphone access denied: ' + e.message;
+  }
+}
+
+function stsFileSelected(input) {
+  const file = input.files[0];
+  if (!file) return;
+  _stsAudioBlob = file;
+  const player = document.getElementById('sts-preview-player');
+  const status = document.getElementById('sts-rec-status');
+  const url = URL.createObjectURL(file);
+  if (player) { player.src = url; player.style.display = 'block'; }
+  if (status) status.textContent = `✅ File loaded — ${file.name} (${(file.size/1024).toFixed(0)} KB)`;
+}
+
+async function generateSTS() {
+  if (!_stsAudioBlob) { notify('Record or upload audio first', 'info'); return; }
+
+  const voiceId    = _stsVoiceId;
+  const modelId    = _stsModelId;
+  const stability  = parseFloat(document.getElementById('sts-stability')?.value || '0.5');
+  const similarity = parseFloat(document.getElementById('sts-similarity')?.value || '0.75');
+
+  const statusDiv  = document.getElementById('sts-status');
+  const statusText = document.getElementById('sts-status-text');
+  const player     = document.getElementById('sts-player');
+  const dlLink     = document.getElementById('sts-download');
+  const btn        = document.getElementById('sts-btn');
+
+  if (statusDiv)  statusDiv.style.display = 'block';
+  if (statusText) statusText.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Converting voice…';
+  if (player)     player.style.display = 'none';
+  if (dlLink)     dlLink.style.display = 'none';
+  if (btn)        { btn.disabled = true; btn.innerHTML = '⏳ Converting…'; }
+
+  try {
+    const fd = new FormData();
+    fd.append('audio',            _stsAudioBlob, 'recording.webm');
+    fd.append('voice_id',         voiceId);
+    fd.append('model_id',         modelId);
+    fd.append('stability',        String(stability));
+    fd.append('similarity_boost', String(similarity));
+    fd.append('style',            '0');
+
+    const res = await fetch('/api/audio/sts', { method: 'POST', body: fd });
+    const ct  = res.headers.get('content-type') || '';
+
+    if (ct.includes('audio')) {
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      if (player)     { player.src = url; player.style.display = 'block'; }
+      if (dlLink)     { dlLink.href = url; dlLink.style.display = 'inline-block'; }
+      if (statusText) statusText.textContent = '✅ Voice converted!';
+      notify('🎙️ Speech-to-speech done!', 'success');
+    } else {
+      const data = await res.json();
+      if (statusText) statusText.textContent = '❌ ' + (data.error || 'Conversion failed');
+    }
+  } catch(e) {
+    if (statusText) statusText.textContent = 'Error: ' + e.message;
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-waveform-lines"></i>&nbsp; Convert Voice'; }
+  }
+}
+
+// ── Voice Cloning ─────────────────────────────────────────────────────────────
+async function loadClonedVoices() {
+  const list = document.getElementById('clone-list');
+  if (!list) return;
+  list.innerHTML = '<div style="font-size:11px;color:var(--text-s);text-align:center;padding:12px;opacity:.6"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+
+  try {
+    const res   = await fetch('/api/audio/voices/clones');
+    const data  = await res.json();
+    const voices = data.voices || [];
+
+    if (!voices.length) {
+      list.innerHTML = '<div style="font-size:11px;color:var(--text-s);text-align:center;padding:14px;opacity:.5"><i class="fas fa-dna" style="display:block;font-size:20px;margin-bottom:6px;opacity:.3"></i>No cloned voices yet</div>';
+      return;
+    }
+
+    list.innerHTML = voices.map(v => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:rgba(255,255,255,.04);border-radius:8px;border:1px solid rgba(16,185,129,.12)">
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--text-p)">${escHtml(v.name)}</div>
+          <div style="font-size:10px;color:var(--text-s);font-family:monospace">${escHtml(v.voice_id.slice(0,16))}…</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          ${v.preview_url ? `<button onclick="playClonePreview('${escHtml(v.preview_url)}')" style="background:rgba(16,185,129,.15);border:1px solid rgba(16,185,129,.3);color:#10b981;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer"><i class="fas fa-play" style="font-size:9px"></i></button>` : ''}
+          <button onclick="useCloneInTTS('${escHtml(v.voice_id)}','${escHtml(v.name)}')" style="background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.3);color:var(--accent);border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer" title="Use in TTS"><i class="fas fa-microphone" style="font-size:9px"></i></button>
+          <button onclick="deleteClonedVoice('${escHtml(v.voice_id)}','${escHtml(v.name)}')" style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);color:#ef4444;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer"><i class="fas fa-trash" style="font-size:9px"></i></button>
+        </div>
+      </div>`).join('');
+
+    // Also inject cloned voices into TTS and STS voice dropdowns
+    _injectClonedVoiceRows(voices);
+  } catch(e) {
+    list.innerHTML = '<div style="font-size:11px;color:#ef4444;text-align:center;padding:10px">Error loading clones</div>';
+  }
+}
+
+function _injectClonedVoiceRows(voices) {
+  const containers = [
+    { id: 'tts-cloned-voice-rows', setter: 'setTTSVoice' },
+    { id: 'sts-cloned-voice-rows', setter: 'setSTSVoice' },
+  ];
+  containers.forEach(({ id, setter }) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = voices.length
+      ? '<div style="height:1px;background:rgba(255,255,255,.06);margin:4px 0"></div>' +
+        voices.map(v => `<div class="gs-model-row" onclick="${setter}('${escHtml(v.voice_id)}','${escHtml(v.name)}')"><div><div style="font-weight:600;font-size:13px">${escHtml(v.name)}</div><div style="font-size:11px;color:var(--text-s)">My Clone &middot; <i class='fas fa-dna'></i></div></div><div class="gs-radio"></div></div>`).join('')
+      : '';
+  });
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function playClonePreview(url) {
+  const a = new Audio(url);
+  a.play().catch(() => notify('Could not play preview', 'info'));
+}
+
+function useCloneInTTS(voiceId, name) {
+  setTTSVoice(voiceId, name);
+  switchVoiceTab('tts');
+  notify(`Voice set to "${name}"`, 'success');
+}
+
+async function deleteClonedVoice(voiceId, name) {
+  if (!confirm(`Delete cloned voice "${name}"? This cannot be undone.`)) return;
+  try {
+    const res  = await fetch('/api/audio/voices/' + voiceId, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      notify(`Deleted voice "${name}"`, 'success');
+      loadClonedVoices();
+    } else {
+      notify('Delete failed: ' + (data.error || 'unknown error'), 'error');
+    }
+  } catch(e) {
+    notify('Delete error: ' + e.message, 'error');
+  }
+}
+
+function cloneFilesSelected(input) {
+  const files = input.files;
+  const label = document.getElementById('clone-file-label');
+  if (!files.length) return;
+  if (label) label.textContent = `${files.length} file${files.length>1?'s':''} selected`;
+}
+
+async function createVoiceClone() {
+  const name  = document.getElementById('clone-name-input')?.value?.trim();
+  const input = document.getElementById('clone-file-input');
+  const files = input?.files;
+
+  if (!name)          { notify('Enter a voice name', 'info'); return; }
+  if (!files?.length) { notify('Select at least one audio sample', 'info'); return; }
+
+  const btn    = document.getElementById('clone-btn');
+  const status = document.getElementById('clone-status');
+
+  if (btn)    { btn.disabled = true; btn.innerHTML = '⏳ Creating clone…'; }
+  if (status) { status.style.display = 'block'; status.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading samples & creating clone…'; }
+
+  try {
+    const fd = new FormData();
+    fd.append('name', name);
+    for (const f of files) fd.append('files', f, f.name);
+
+    const res  = await fetch('/api/audio/voices/clone', { method: 'POST', body: fd });
+    const data = await res.json();
+
+    if (data.voice_id) {
+      if (status) status.textContent = `✅ Voice "${name}" created!`;
+      notify(`✅ Voice clone "${name}" created!`, 'success');
+      // Clear form
+      if (document.getElementById('clone-name-input')) document.getElementById('clone-name-input').value = '';
+      if (input) input.value = '';
+      const label = document.getElementById('clone-file-label');
+      if (label) label.textContent = 'Click to select audio samples…';
+      loadClonedVoices();
+    } else {
+      if (status) status.textContent = '❌ ' + (data.error || 'Clone failed');
+    }
+  } catch(e) {
+    if (status) status.textContent = 'Error: ' + e.message;
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-dna"></i>&nbsp; Create Voice Clone'; }
   }
 }
 

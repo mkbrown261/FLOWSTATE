@@ -3654,6 +3654,134 @@ app.get('/api/audio/tts/voices', async (c) => {
   } catch { return c.json({ voices: [] }) }
 })
 
+// ─── ElevenLabs Speech-to-Speech ─────────────────────────────────────────────
+app.post('/api/audio/sts', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const elKey = c.env?.ELEVENLABS_API_KEY
+  if (!elKey) return c.json({ error: 'ElevenLabs API key not configured' }, 503)
+
+  try {
+    // Forward the multipart form directly to ElevenLabs
+    const formData = await c.req.formData()
+    const voiceId  = formData.get('voice_id') as string || 'pNInz6obpgDQGcFmaJgB'
+    const modelId  = formData.get('model_id') as string || 'eleven_english_sts_v2'
+    const audioFile = formData.get('audio') as File | null
+    if (!audioFile) return c.json({ error: 'audio file required' }, 400)
+
+    const stability        = parseFloat(formData.get('stability') as string || '0.5')
+    const similarity_boost = parseFloat(formData.get('similarity_boost') as string || '0.75')
+    const style            = parseFloat(formData.get('style') as string || '0')
+
+    const body = new FormData()
+    body.append('audio', audioFile, audioFile.name || 'recording.webm')
+    body.append('model_id', modelId)
+    body.append('voice_settings', JSON.stringify({ stability, similarity_boost, style, use_speaker_boost: true }))
+
+    const res = await fetch(`https://api.elevenlabs.io/v1/speech-to-speech/${voiceId}/stream`, {
+      method: 'POST',
+      headers: { 'xi-api-key': elKey },
+      body,
+    })
+
+    if (!res.ok) {
+      const err: any = await res.json().catch(() => ({}))
+      return c.json({ error: err?.detail?.message || `ElevenLabs STS error ${res.status}` }, 500)
+    }
+    return new Response(res.body, {
+      headers: {
+        'Content-Type': 'audio/mpeg',
+        'Cache-Control': 'no-cache',
+        'Content-Disposition': 'inline; filename="sts.mp3"',
+      },
+    })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// ─── ElevenLabs Voice Cloning (IVC) ──────────────────────────────────────────
+// List cloned voices for this user (all voices tagged with category=cloned)
+app.get('/api/audio/voices/clones', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const elKey = c.env?.ELEVENLABS_API_KEY
+  if (!elKey) return c.json({ voices: [] })
+
+  try {
+    const res  = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': elKey } })
+    const data: any = await res.json()
+    const clones = (data.voices || [])
+      .filter((v: any) => v.category === 'cloned')
+      .map((v: any) => ({ voice_id: v.voice_id, name: v.name, preview_url: v.preview_url }))
+    return c.json({ voices: clones })
+  } catch { return c.json({ voices: [] }) }
+})
+
+// Create a new IVC clone — multipart: name (text) + files[] (audio)
+app.post('/api/audio/voices/clone', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const elKey = c.env?.ELEVENLABS_API_KEY
+  if (!elKey) return c.json({ error: 'ElevenLabs API key not configured' }, 503)
+
+  try {
+    const formData = await c.req.formData()
+    const name = (formData.get('name') as string || '').trim()
+    if (!name) return c.json({ error: 'Voice name is required' }, 400)
+
+    // Build multipart for ElevenLabs add-voice
+    const body = new FormData()
+    body.append('name', name)
+    body.append('description', `Cloned voice created via FlowState`)
+
+    // Collect all audio files submitted as 'files'
+    const files = formData.getAll('files') as File[]
+    if (!files.length) return c.json({ error: 'At least one audio sample is required' }, 400)
+    for (const f of files) {
+      body.append('files', f, f.name || 'sample.mp3')
+    }
+
+    const res  = await fetch('https://api.elevenlabs.io/v1/voices/add', {
+      method: 'POST',
+      headers: { 'xi-api-key': elKey },
+      body,
+    })
+    const data: any = await res.json()
+    if (!res.ok) return c.json({ error: data?.detail?.message || `Clone error ${res.status}` }, 500)
+    return c.json({ voice_id: data.voice_id, name })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// Delete a cloned voice
+app.delete('/api/audio/voices/:voice_id', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const elKey = c.env?.ELEVENLABS_API_KEY
+  if (!elKey) return c.json({ error: 'ElevenLabs API key not configured' }, 503)
+
+  const voiceId = c.req.param('voice_id')
+  try {
+    const res = await fetch(`https://api.elevenlabs.io/v1/voices/${voiceId}`, {
+      method: 'DELETE',
+      headers: { 'xi-api-key': elKey },
+    })
+    if (!res.ok) {
+      const err: any = await res.json().catch(() => ({}))
+      return c.json({ error: err?.detail?.message || `Delete error ${res.status}` }, 500)
+    }
+    return c.json({ success: true })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // ─── Mindful Minimum ──────────────────────────────────────────────────────────
 app.get('/api/mindful/policy', (c) => {
   const tier = (c.req.query('tier') as any) || 'free'
@@ -7861,6 +7989,9 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .gen-subtab-btn:hover{color:var(--text-p);background:rgba(168,85,247,.08)}
 .gen-subtab-btn.active{color:var(--accent);background:rgba(168,85,247,.14);border-color:rgba(168,85,247,.3)}
 .gen-subtab-btn i{font-size:12px}
+.gen-subtab-btn--inner{padding:5px 12px;font-size:11px;font-weight:600;border-radius:8px}
+.gen-subtab-btn--inner.active-voice-tab{color:var(--cyan);background:rgba(6,182,212,.13);border-color:rgba(6,182,212,.3)}
+.gen-subtab-btn--inner:hover:not(.active-voice-tab){background:rgba(255,255,255,.06)}
 /* ── Generate body wrap (sub-panes + sidebar row) ── */
 .gen-body-wrap{display:flex;flex:1;overflow:hidden;position:relative}
 .gen-sub-pane{display:none;flex:1;overflow:hidden;flex-direction:row;height:100%}
@@ -8676,7 +8807,7 @@ em{color:var(--accent);font-style:italic}
     <button class="gen-subtab-btn"        id="gsub-vidgen"    onclick="switchGenSub('vidgen')"><i class="fas fa-video"></i> Video Gen</button>
     <button class="gen-subtab-btn"        id="gsub-i2v"       onclick="switchGenSub('i2v')"><i class="fas fa-photo-film"></i> Image&rarr;Video</button>
     <button class="gen-subtab-btn"        id="gsub-music"     onclick="switchGenSub('music')"><i class="fas fa-music"></i> AI Music</button>
-    <button class="gen-subtab-btn"        id="gsub-tts"       onclick="switchGenSub('tts')"><i class="fas fa-microphone"></i> Text to Speech</button>
+    <button class="gen-subtab-btn"        id="gsub-tts"       onclick="switchGenSub('tts')"><i class="fas fa-waveform-lines"></i> Voice Studio</button>
     <button class="gen-subtab-btn"        id="gsub-filetools" onclick="switchGenSub('filetools')"><i class="fas fa-folder-open"></i> File Tools</button>
     <button class="gen-subtab-btn"        id="gsub-higgsfield" onclick="switchGenSub('higgsfield')" style="background:linear-gradient(135deg,rgba(0,212,255,.12),rgba(0,255,163,.10));border-color:rgba(0,212,255,.3);color:#00d4ff"><i class="fas fa-film"></i> ✦ Higgsfield AI</button>
     <button class="gen-subtab-btn"        id="gsub-code"       onclick="switchGenSub('code')" style="background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(168,85,247,.10));border-color:rgba(16,185,129,.3);color:#10b981"><i class="fas fa-code"></i> ✦ AI Code</button>
@@ -8868,87 +8999,247 @@ em{color:var(--accent);font-style:italic}
 
     <!-- ═══════════════════════ TEXT TO SPEECH ═══════════════════════ -->
     <div class="gen-sub-pane" id="gen-pane-tts">
-      <div class="gen-main-area">
-        <div class="gen-panel" style="flex:1">
-          <div class="gen-section-header">
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="width:28px;height:28px;border-radius:8px;background:rgba(168,85,247,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-microphone" style="color:var(--accent);font-size:13px"></i></span>
-              <span class="gen-title" style="margin:0">Text to Speech</span>
-              <span style="font-size:11px;font-weight:600;color:#10b981;margin-left:4px">&#9679; ElevenLabs Live</span>
+      <div class="gen-main-area" style="flex-direction:column;overflow-y:auto">
+
+        <!-- ── Voice Studio inner sub-tabs ── -->
+        <div style="display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid rgba(255,255,255,.07);padding-bottom:10px">
+          <button id="vstab-tts" onclick="switchVoiceTab('tts')" class="gen-subtab-btn gen-subtab-btn--inner active-voice-tab" style="font-size:11px;padding:5px 12px"><i class="fas fa-keyboard" style="margin-right:5px"></i>Text to Speech</button>
+          <button id="vstab-sts" onclick="switchVoiceTab('sts')" class="gen-subtab-btn gen-subtab-btn--inner" style="font-size:11px;padding:5px 12px"><i class="fas fa-microphone-alt" style="margin-right:5px"></i>Speech to Speech</button>
+          <button id="vstab-clone" onclick="switchVoiceTab('clone')" class="gen-subtab-btn gen-subtab-btn--inner" style="font-size:11px;padding:5px 12px"><i class="fas fa-dna" style="margin-right:5px"></i>Voice Cloning</button>
+          <span style="margin-left:auto;font-size:11px;font-weight:600;color:#10b981;display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:50%;background:#10b981;display:inline-block"></span>ElevenLabs Live</span>
+        </div>
+
+        <!-- ══════════════════════ TEXT TO SPEECH PANEL ══════════════════════ -->
+        <div id="vs-panel-tts" class="vs-panel" style="display:flex;gap:14px;flex-wrap:wrap">
+          <div class="gen-panel" style="flex:1;min-width:260px">
+            <div class="gen-section-header" style="margin-bottom:12px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="width:26px;height:26px;border-radius:7px;background:rgba(168,85,247,.18);display:flex;align-items:center;justify-content:center"><i class="fas fa-keyboard" style="color:var(--accent);font-size:12px"></i></span>
+                <span class="gen-title" style="margin:0;font-size:13px">Text to Speech</span>
+              </div>
+              <span id="tts-voice-count" style="font-size:11px;color:var(--text-s)">Loading voices&#8230;</span>
             </div>
-            <span id="tts-voice-count" style="font-size:11px;color:var(--text-s)">Loading voices&#8230;</span>
-          </div>
-          <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
-            <div class="gs-gen-picker" style="position:relative;flex:1" id="tts-voice-picker-wrap">
-              <button class="gs-model-pill" onclick="toggleAudPicker(event,'voice')" id="tts-voice-pill" style="width:100%;justify-content:space-between">
-                <span style="display:flex;align-items:center;gap:6px"><i class="fas fa-user-circle" style="font-size:13px;color:var(--accent)"></i><span id="tts-voice-label">Adam - Dominant, Firm</span></span>
-                <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
-              </button>
-              <div class="gs-model-dropdown" id="tts-voice-dropdown" style="display:none;min-width:260px;max-height:320px;overflow-y:auto">
-                <div class="gs-model-row" onclick="setTTSVoice('pNInz6obpgDQGcFmaJgB','Adam - Dominant, Firm')"><div><div style="font-weight:600;font-size:13px">Adam</div><div style="font-size:11px;color:var(--text-s)">Dominant, Firm &middot; Male &middot; American</div></div><div class="gs-radio gs-radio-active" id="tvr-adam"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('EXAVITQu4vr4xnSDxMaL','Sarah - Mature, Confident')"><div><div style="font-weight:600;font-size:13px">Sarah</div><div style="font-size:11px;color:var(--text-s)">Mature, Confident &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-sarah"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('JBFqnCBsd6RMkjVDRZzb','George - Warm Storyteller')"><div><div style="font-weight:600;font-size:13px">George</div><div style="font-size:11px;color:var(--text-s)">Warm Storyteller &middot; Male &middot; British</div></div><div class="gs-radio" id="tvr-george"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('nPczCjzI2devNBz1zQrb','Brian - Deep, Resonant')"><div><div style="font-weight:600;font-size:13px">Brian</div><div style="font-size:11px;color:var(--text-s)">Deep, Resonant &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-brian"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('IKne3meq5aSn9XLyUdCD','Charlie - Deep, Energetic')"><div><div style="font-weight:600;font-size:13px">Charlie</div><div style="font-size:11px;color:var(--text-s)">Deep, Energetic &middot; Male &middot; Australian</div></div><div class="gs-radio" id="tvr-charlie"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('cgSgspJ2msm6clMCkdW9','Jessica - Playful, Bright')"><div><div style="font-weight:600;font-size:13px">Jessica</div><div style="font-size:11px;color:var(--text-s)">Playful, Bright &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-jessica"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('onwK4e9ZLuTAKqWW03F9','Daniel - Steady Broadcaster')"><div><div style="font-weight:600;font-size:13px">Daniel</div><div style="font-size:11px;color:var(--text-s)">Steady Broadcaster &middot; Male &middot; British</div></div><div class="gs-radio" id="tvr-daniel"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('CwhRBWXzGAHq8TQ4Fs17','Roger - Laid-Back, Casual')"><div><div style="font-weight:600;font-size:13px">Roger</div><div style="font-size:11px;color:var(--text-s)">Laid-Back, Casual &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-roger"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('SAz9YHcvj6GT2YYXdXww','River - Relaxed, Neutral')"><div><div style="font-weight:600;font-size:13px">River</div><div style="font-size:11px;color:var(--text-s)">Relaxed, Neutral &middot; Non-binary &middot; American</div></div><div class="gs-radio" id="tvr-river"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('TX3LPaxmHKxFdv7VOQHJ','Liam - Energetic Creator')"><div><div style="font-weight:600;font-size:13px">Liam</div><div style="font-size:11px;color:var(--text-s)">Energetic Creator &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-liam"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('bIHbv24MWmeRgasZH58o','Will - Relaxed Optimist')"><div><div style="font-weight:600;font-size:13px">Will</div><div style="font-size:11px;color:var(--text-s)">Relaxed Optimist &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-will"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('cjVigY5qzO86Huf0OWal','Eric - Smooth, Trustworthy')"><div><div style="font-weight:600;font-size:13px">Eric</div><div style="font-size:11px;color:var(--text-s)">Smooth, Trustworthy &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-eric"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('iP95p4xoKVk53GoZ742B','Chris - Charming, Casual')"><div><div style="font-weight:600;font-size:13px">Chris</div><div style="font-size:11px;color:var(--text-s)">Charming, Casual &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-chris"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('pqHfZKP75CvOlQylNhV4','Bill - Wise, Mature')"><div><div style="font-weight:600;font-size:13px">Bill</div><div style="font-size:11px;color:var(--text-s)">Wise, Mature &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-bill"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('XrExE9yKIg1WjnnlVkGX','Matilda - Professional')"><div><div style="font-weight:600;font-size:13px">Matilda</div><div style="font-size:11px;color:var(--text-s)">Professional &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-matilda"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('pFZP5JQG7iQjIQuC4Bku','Lily - Velvety Actress')"><div><div style="font-weight:600;font-size:13px">Lily</div><div style="font-size:11px;color:var(--text-s)">Velvety Actress &middot; Female &middot; British</div></div><div class="gs-radio" id="tvr-lily"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('FGY2WhTYpPnrIDTdsKH5','Laura - Enthusiast, Quirky')"><div><div style="font-weight:600;font-size:13px">Laura</div><div style="font-size:11px;color:var(--text-s)">Enthusiast, Quirky &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-laura"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('N2lVS1w4EtoT3dr4eOWO','Callum - Husky Trickster')"><div><div style="font-weight:600;font-size:13px">Callum</div><div style="font-size:11px;color:var(--text-s)">Husky Trickster &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-callum"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('SOYHLrjzK2X1ezoPC6cr','Harry - Fierce Warrior')"><div><div style="font-weight:600;font-size:13px">Harry</div><div style="font-size:11px;color:var(--text-s)">Fierce Warrior &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-harry"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('vfaqCOvlrKi4Zp7C2IAm','Demon Monster')"><div><div style="font-weight:600;font-size:13px">Demon Monster</div><div style="font-size:11px;color:var(--text-s)">Character Animation &middot; Deep</div></div><div class="gs-radio" id="tvr-demon"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('94D02IUHyb3D4r3i3feh','Rashid - Deep Narrative')"><div><div style="font-weight:600;font-size:13px">Rashid</div><div style="font-size:11px;color:var(--text-s)">Deep Narrative &middot; Male &middot; African</div></div><div class="gs-radio" id="tvr-rashid"></div></div>
-                <div class="gs-model-row" onclick="setTTSVoice('UFO0Yv86wqRxAt1DmXUu','Mordred - Evil Villain')"><div><div style="font-weight:600;font-size:13px">Mordred</div><div style="font-size:11px;color:var(--text-s)">Evil Villain &middot; Male &middot; German accent</div></div><div class="gs-radio" id="tvr-mordred"></div></div>
+            <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+              <div class="gs-gen-picker" style="position:relative;flex:1" id="tts-voice-picker-wrap">
+                <button class="gs-model-pill" onclick="toggleAudPicker(event,'voice')" id="tts-voice-pill" style="width:100%;justify-content:space-between">
+                  <span style="display:flex;align-items:center;gap:6px"><i class="fas fa-user-circle" style="font-size:13px;color:var(--accent)"></i><span id="tts-voice-label">Adam - Dominant, Firm</span></span>
+                  <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+                </button>
+                <div class="gs-model-dropdown" id="tts-voice-dropdown" style="display:none;min-width:260px;max-height:320px;overflow-y:auto">
+                  <div class="gs-model-row" onclick="setTTSVoice('pNInz6obpgDQGcFmaJgB','Adam - Dominant, Firm')"><div><div style="font-weight:600;font-size:13px">Adam</div><div style="font-size:11px;color:var(--text-s)">Dominant, Firm &middot; Male &middot; American</div></div><div class="gs-radio gs-radio-active" id="tvr-adam"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('EXAVITQu4vr4xnSDxMaL','Sarah - Mature, Confident')"><div><div style="font-weight:600;font-size:13px">Sarah</div><div style="font-size:11px;color:var(--text-s)">Mature, Confident &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-sarah"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('JBFqnCBsd6RMkjVDRZzb','George - Warm Storyteller')"><div><div style="font-weight:600;font-size:13px">George</div><div style="font-size:11px;color:var(--text-s)">Warm Storyteller &middot; Male &middot; British</div></div><div class="gs-radio" id="tvr-george"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('nPczCjzI2devNBz1zQrb','Brian - Deep, Resonant')"><div><div style="font-weight:600;font-size:13px">Brian</div><div style="font-size:11px;color:var(--text-s)">Deep, Resonant &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-brian"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('IKne3meq5aSn9XLyUdCD','Charlie - Deep, Energetic')"><div><div style="font-weight:600;font-size:13px">Charlie</div><div style="font-size:11px;color:var(--text-s)">Deep, Energetic &middot; Male &middot; Australian</div></div><div class="gs-radio" id="tvr-charlie"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('cgSgspJ2msm6clMCkdW9','Jessica - Playful, Bright')"><div><div style="font-weight:600;font-size:13px">Jessica</div><div style="font-size:11px;color:var(--text-s)">Playful, Bright &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-jessica"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('onwK4e9ZLuTAKqWW03F9','Daniel - Steady Broadcaster')"><div><div style="font-weight:600;font-size:13px">Daniel</div><div style="font-size:11px;color:var(--text-s)">Steady Broadcaster &middot; Male &middot; British</div></div><div class="gs-radio" id="tvr-daniel"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('CwhRBWXzGAHq8TQ4Fs17','Roger - Laid-Back, Casual')"><div><div style="font-weight:600;font-size:13px">Roger</div><div style="font-size:11px;color:var(--text-s)">Laid-Back, Casual &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-roger"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('SAz9YHcvj6GT2YYXdXww','River - Relaxed, Neutral')"><div><div style="font-weight:600;font-size:13px">River</div><div style="font-size:11px;color:var(--text-s)">Relaxed, Neutral &middot; Non-binary &middot; American</div></div><div class="gs-radio" id="tvr-river"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('TX3LPaxmHKxFdv7VOQHJ','Liam - Energetic Creator')"><div><div style="font-weight:600;font-size:13px">Liam</div><div style="font-size:11px;color:var(--text-s)">Energetic Creator &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-liam"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('bIHbv24MWmeRgasZH58o','Will - Relaxed Optimist')"><div><div style="font-weight:600;font-size:13px">Will</div><div style="font-size:11px;color:var(--text-s)">Relaxed Optimist &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-will"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('cjVigY5qzO86Huf0OWal','Eric - Smooth, Trustworthy')"><div><div style="font-weight:600;font-size:13px">Eric</div><div style="font-size:11px;color:var(--text-s)">Smooth, Trustworthy &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-eric"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('iP95p4xoKVk53GoZ742B','Chris - Charming, Casual')"><div><div style="font-weight:600;font-size:13px">Chris</div><div style="font-size:11px;color:var(--text-s)">Charming, Casual &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-chris"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('pqHfZKP75CvOlQylNhV4','Bill - Wise, Mature')"><div><div style="font-weight:600;font-size:13px">Bill</div><div style="font-size:11px;color:var(--text-s)">Wise, Mature &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-bill"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('XrExE9yKIg1WjnnlVkGX','Matilda - Professional')"><div><div style="font-weight:600;font-size:13px">Matilda</div><div style="font-size:11px;color:var(--text-s)">Professional &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-matilda"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('pFZP5JQG7iQjIQuC4Bku','Lily - Velvety Actress')"><div><div style="font-weight:600;font-size:13px">Lily</div><div style="font-size:11px;color:var(--text-s)">Velvety Actress &middot; Female &middot; British</div></div><div class="gs-radio" id="tvr-lily"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('FGY2WhTYpPnrIDTdsKH5','Laura - Enthusiast, Quirky')"><div><div style="font-weight:600;font-size:13px">Laura</div><div style="font-size:11px;color:var(--text-s)">Enthusiast, Quirky &middot; Female &middot; American</div></div><div class="gs-radio" id="tvr-laura"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('N2lVS1w4EtoT3dr4eOWO','Callum - Husky Trickster')"><div><div style="font-weight:600;font-size:13px">Callum</div><div style="font-size:11px;color:var(--text-s)">Husky Trickster &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-callum"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('SOYHLrjzK2X1ezoPC6cr','Harry - Fierce Warrior')"><div><div style="font-weight:600;font-size:13px">Harry</div><div style="font-size:11px;color:var(--text-s)">Fierce Warrior &middot; Male &middot; American</div></div><div class="gs-radio" id="tvr-harry"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('vfaqCOvlrKi4Zp7C2IAm','Demon Monster')"><div><div style="font-weight:600;font-size:13px">Demon Monster</div><div style="font-size:11px;color:var(--text-s)">Character Animation &middot; Deep</div></div><div class="gs-radio" id="tvr-demon"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('94D02IUHyb3D4r3i3feh','Rashid - Deep Narrative')"><div><div style="font-weight:600;font-size:13px">Rashid</div><div style="font-size:11px;color:var(--text-s)">Deep Narrative &middot; Male &middot; African</div></div><div class="gs-radio" id="tvr-rashid"></div></div>
+                  <div class="gs-model-row" onclick="setTTSVoice('UFO0Yv86wqRxAt1DmXUu','Mordred - Evil Villain')"><div><div style="font-weight:600;font-size:13px">Mordred</div><div style="font-size:11px;color:var(--text-s)">Evil Villain &middot; Male &middot; German accent</div></div><div class="gs-radio" id="tvr-mordred"></div></div>
+                  <div id="tts-cloned-voice-rows"></div>
+                </div>
+              </div>
+              <div class="gs-gen-picker" style="position:relative" id="tts-model-picker-wrap">
+                <button class="gs-model-pill" onclick="toggleAudPicker(event,'ttsmodel')" id="tts-model-pill">
+                  <i class="fas fa-bolt" style="font-size:11px;color:#f59e0b"></i>
+                  <span id="tts-model-label">Turbo v2.5</span>
+                  <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+                </button>
+                <div class="gs-model-dropdown" id="tts-model-dropdown" style="display:none;min-width:220px">
+                  <div class="gs-model-row" onclick="setTTSModel('eleven_turbo_v2_5','Turbo v2.5')"><div><div style="font-weight:600;font-size:13px">Turbo v2.5</div><div style="font-size:11px;color:var(--text-s)">Fastest &middot; Best for real-time</div></div><div class="gs-radio gs-radio-active" id="tmr-t25"></div></div>
+                  <div class="gs-model-row" onclick="setTTSModel('eleven_flash_v2_5','Flash v2.5')"><div><div style="font-weight:600;font-size:13px">Flash v2.5</div><div style="font-size:11px;color:var(--text-s)">Ultra fast &middot; Low latency</div></div><div class="gs-radio" id="tmr-f25"></div></div>
+                  <div class="gs-model-row" onclick="setTTSModel('eleven_turbo_v2','Turbo v2')"><div><div style="font-weight:600;font-size:13px">Turbo v2</div><div style="font-size:11px;color:var(--text-s)">Fast &middot; Balanced quality</div></div><div class="gs-radio" id="tmr-t2"></div></div>
+                  <div class="gs-model-row" onclick="setTTSModel('eleven_multilingual_v2','Multilingual v2')"><div><div style="font-weight:600;font-size:13px">Multilingual v2</div><div style="font-size:11px;color:var(--text-s)">Best quality &middot; 29 languages</div></div><div class="gs-radio" id="tmr-ml2"></div></div>
+                </div>
               </div>
             </div>
-            <div class="gs-gen-picker" style="position:relative" id="tts-model-picker-wrap">
-              <button class="gs-model-pill" onclick="toggleAudPicker(event,'ttsmodel')" id="tts-model-pill">
-                <i class="fas fa-bolt" style="font-size:11px;color:#f59e0b"></i>
-                <span id="tts-model-label">Turbo v2.5</span>
-                <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
-              </button>
-              <div class="gs-model-dropdown" id="tts-model-dropdown" style="display:none;min-width:220px">
-                <div class="gs-model-row" onclick="setTTSModel('eleven_turbo_v2_5','Turbo v2.5')"><div><div style="font-weight:600;font-size:13px">Turbo v2.5</div><div style="font-size:11px;color:var(--text-s)">Fastest &middot; Best for real-time</div></div><div class="gs-radio gs-radio-active" id="tmr-t25"></div></div>
-                <div class="gs-model-row" onclick="setTTSModel('eleven_flash_v2_5','Flash v2.5')"><div><div style="font-weight:600;font-size:13px">Flash v2.5</div><div style="font-size:11px;color:var(--text-s)">Ultra fast &middot; Low latency</div></div><div class="gs-radio" id="tmr-f25"></div></div>
-                <div class="gs-model-row" onclick="setTTSModel('eleven_turbo_v2','Turbo v2')"><div><div style="font-weight:600;font-size:13px">Turbo v2</div><div style="font-size:11px;color:var(--text-s)">Fast &middot; Balanced quality</div></div><div class="gs-radio" id="tmr-t2"></div></div>
-                <div class="gs-model-row" onclick="setTTSModel('eleven_multilingual_v2','Multilingual v2')"><div><div style="font-weight:600;font-size:13px">Multilingual v2</div><div style="font-size:11px;color:var(--text-s)">Best quality &middot; 29 languages</div></div><div class="gs-radio" id="tmr-ml2"></div></div>
+            <div style="display:flex;gap:14px;margin-bottom:12px;flex-wrap:wrap">
+              <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Stability <span id="tts-stab-val">0.5</span><input id="tts-stability" type="range" min="0" max="1" step="0.05" value="0.5" oninput="document.getElementById('tts-stab-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
+              <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Similarity <span id="tts-sim-val">0.75</span><input id="tts-similarity" type="range" min="0" max="1" step="0.05" value="0.75" oninput="document.getElementById('tts-sim-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
+              <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Style <span id="tts-style-val">0</span><input id="tts-style-ex" type="range" min="0" max="1" step="0.05" value="0" oninput="document.getElementById('tts-style-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
+            </div>
+            <textarea id="tts-text" placeholder="Enter text to convert to speech&#8230;" class="gen-pmt" rows="4"></textarea>
+            <button onclick="generateTTS()" id="tts-btn" class="btn-gen" style="background:linear-gradient(135deg,#a855f7,#06b6d4)">
+              <i class="fas fa-microphone"></i>&nbsp; Generate Voice
+            </button>
+            <div id="tts-status" style="display:none;margin-top:12px;text-align:center">
+              <div id="tts-status-text" style="font-size:12px;color:var(--text-s);margin-bottom:8px"></div>
+              <audio id="tts-player" controls style="width:100%;margin-bottom:6px"></audio>
+              <a id="tts-download" href="#" download="flowstate-tts.mp3" style="display:none;font-size:11px;color:var(--accent);text-decoration:none"><i class="fas fa-download"></i> Download MP3</a>
+            </div>
+          </div>
+          <!-- TTS sidebar info -->
+          <div style="width:160px;flex-shrink:0;display:flex;flex-direction:column;gap:8px">
+            <div class="gen-sidebar-section" style="background:rgba(255,255,255,.03);border-radius:10px;padding:12px">
+              <div class="gen-sidebar-label" style="margin-bottom:8px">VOICE ENGINE</div>
+              <div class="gen-sidebar-row"><i class="fas fa-check-circle" style="color:#10b981"></i> ElevenLabs Live</div>
+              <div class="gen-sidebar-row"><i class="fas fa-globe" style="color:var(--accent)"></i> 29 Languages</div>
+              <div class="gen-sidebar-row"><i class="fas fa-users" style="color:var(--cyan)"></i> <span id="tts-sidebar-voice-count">21</span> Voices</div>
+            </div>
+            <div id="gsb-tts-log" class="gen-sidebar-log" style="flex:1"></div>
+          </div>
+        </div>
+
+        <!-- ══════════════════════ SPEECH TO SPEECH PANEL ══════════════════════ -->
+        <div id="vs-panel-sts" class="vs-panel" style="display:none;gap:14px;flex-wrap:wrap">
+          <div class="gen-panel" style="flex:1;min-width:260px">
+            <div class="gen-section-header" style="margin-bottom:14px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="width:26px;height:26px;border-radius:7px;background:rgba(6,182,212,.15);display:flex;align-items:center;justify-content:center"><i class="fas fa-microphone-alt" style="color:var(--cyan);font-size:12px"></i></span>
+                <span class="gen-title" style="margin:0;font-size:13px">Speech to Speech</span>
+              </div>
+              <span style="font-size:11px;color:var(--text-s)">Transform your voice into any ElevenLabs voice</span>
+            </div>
+
+            <!-- Target voice picker (reuse TTS voices) -->
+            <div style="margin-bottom:12px">
+              <div style="font-size:11px;color:var(--text-s);margin-bottom:5px;font-weight:500">TARGET VOICE</div>
+              <div class="gs-gen-picker" style="position:relative">
+                <button class="gs-model-pill" onclick="toggleAudPicker(event,'sts-voice')" id="sts-voice-pill" style="width:100%;justify-content:space-between">
+                  <span style="display:flex;align-items:center;gap:6px"><i class="fas fa-user-circle" style="font-size:13px;color:var(--cyan)"></i><span id="sts-voice-label">Adam - Dominant, Firm</span></span>
+                  <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+                </button>
+                <div class="gs-model-dropdown" id="sts-voice-dropdown" style="display:none;min-width:260px;max-height:280px;overflow-y:auto">
+                  <div class="gs-model-row" onclick="setSTSVoice('pNInz6obpgDQGcFmaJgB','Adam - Dominant, Firm')"><div><div style="font-weight:600;font-size:13px">Adam</div><div style="font-size:11px;color:var(--text-s)">Dominant, Firm &middot; Male</div></div><div class="gs-radio gs-radio-active" id="stvr-adam"></div></div>
+                  <div class="gs-model-row" onclick="setSTSVoice('EXAVITQu4vr4xnSDxMaL','Sarah - Mature, Confident')"><div><div style="font-weight:600;font-size:13px">Sarah</div><div style="font-size:11px;color:var(--text-s)">Mature, Confident &middot; Female</div></div><div class="gs-radio" id="stvr-sarah"></div></div>
+                  <div class="gs-model-row" onclick="setSTSVoice('JBFqnCBsd6RMkjVDRZzb','George - Warm Storyteller')"><div><div style="font-weight:600;font-size:13px">George</div><div style="font-size:11px;color:var(--text-s)">Warm Storyteller &middot; Male &middot; British</div></div><div class="gs-radio" id="stvr-george"></div></div>
+                  <div class="gs-model-row" onclick="setSTSVoice('nPczCjzI2devNBz1zQrb','Brian - Deep, Resonant')"><div><div style="font-weight:600;font-size:13px">Brian</div><div style="font-size:11px;color:var(--text-s)">Deep, Resonant &middot; Male</div></div><div class="gs-radio" id="stvr-brian"></div></div>
+                  <div class="gs-model-row" onclick="setSTSVoice('IKne3meq5aSn9XLyUdCD','Charlie - Deep, Energetic')"><div><div style="font-weight:600;font-size:13px">Charlie</div><div style="font-size:11px;color:var(--text-s)">Deep, Energetic &middot; Male &middot; Australian</div></div><div class="gs-radio" id="stvr-charlie"></div></div>
+                  <div class="gs-model-row" onclick="setSTSVoice('cgSgspJ2msm6clMCkdW9','Jessica - Playful, Bright')"><div><div style="font-weight:600;font-size:13px">Jessica</div><div style="font-size:11px;color:var(--text-s)">Playful, Bright &middot; Female</div></div><div class="gs-radio" id="stvr-jessica"></div></div>
+                  <div class="gs-model-row" onclick="setSTSVoice('onwK4e9ZLuTAKqWW03F9','Daniel - Steady Broadcaster')"><div><div style="font-weight:600;font-size:13px">Daniel</div><div style="font-size:11px;color:var(--text-s)">Steady Broadcaster &middot; Male &middot; British</div></div><div class="gs-radio" id="stvr-daniel"></div></div>
+                  <div class="gs-model-row" onclick="setSTSVoice('CwhRBWXzGAHq8TQ4Fs17','Roger - Laid-Back, Casual')"><div><div style="font-weight:600;font-size:13px">Roger</div><div style="font-size:11px;color:var(--text-s)">Laid-Back, Casual &middot; Male</div></div><div class="gs-radio" id="stvr-roger"></div></div>
+                  <div class="gs-model-row" onclick="setSTSVoice('SAz9YHcvj6GT2YYXdXww','River - Relaxed, Neutral')"><div><div style="font-weight:600;font-size:13px">River</div><div style="font-size:11px;color:var(--text-s)">Relaxed, Neutral &middot; Non-binary</div></div><div class="gs-radio" id="stvr-river"></div></div>
+                  <div class="gs-model-row" onclick="setSTSVoice('TX3LPaxmHKxFdv7VOQHJ','Liam - Energetic Creator')"><div><div style="font-weight:600;font-size:13px">Liam</div><div style="font-size:11px;color:var(--text-s)">Energetic Creator &middot; Male</div></div><div class="gs-radio" id="stvr-liam"></div></div>
+                  <div class="gs-model-row" onclick="setSTSVoice('XrExE9yKIg1WjnnlVkGX','Matilda - Professional')"><div><div style="font-weight:600;font-size:13px">Matilda</div><div style="font-size:11px;color:var(--text-s)">Professional &middot; Female &middot; American</div></div><div class="gs-radio" id="stvr-matilda"></div></div>
+                  <div id="sts-cloned-voice-rows"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- STS model picker -->
+            <div style="margin-bottom:12px">
+              <div style="font-size:11px;color:var(--text-s);margin-bottom:5px;font-weight:500">STS MODEL</div>
+              <div class="gs-gen-picker" style="position:relative">
+                <button class="gs-model-pill" onclick="toggleAudPicker(event,'stsmodel')" id="sts-model-pill">
+                  <i class="fas fa-bolt" style="font-size:11px;color:#f59e0b"></i>
+                  <span id="sts-model-label">English STS v2</span>
+                  <i class="fas fa-chevron-down" style="font-size:9px;opacity:.5"></i>
+                </button>
+                <div class="gs-model-dropdown" id="sts-model-dropdown" style="display:none;min-width:240px">
+                  <div class="gs-model-row" onclick="setSTSModel('eleven_english_sts_v2','English STS v2')"><div><div style="font-weight:600;font-size:13px">English STS v2</div><div style="font-size:11px;color:var(--text-s)">English only &middot; High quality</div></div><div class="gs-radio gs-radio-active" id="stmr-en2"></div></div>
+                  <div class="gs-model-row" onclick="setSTSModel('eleven_multilingual_sts_v2','Multilingual STS v2')"><div><div style="font-weight:600;font-size:13px">Multilingual STS v2</div><div style="font-size:11px;color:var(--text-s)">29 languages &middot; Best quality</div></div><div class="gs-radio" id="stmr-ml2"></div></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Voice settings sliders -->
+            <div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+              <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Stability <span id="sts-stab-val">0.5</span><input id="sts-stability" type="range" min="0" max="1" step="0.05" value="0.5" oninput="document.getElementById('sts-stab-val').textContent=this.value" style="width:100%;accent-color:var(--cyan)"></label>
+              <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Similarity <span id="sts-sim-val">0.75</span><input id="sts-similarity" type="range" min="0" max="1" step="0.05" value="0.75" oninput="document.getElementById('sts-sim-val').textContent=this.value" style="width:100%;accent-color:var(--cyan)"></label>
+            </div>
+
+            <!-- Record / upload audio -->
+            <div style="background:rgba(6,182,212,.06);border:1px dashed rgba(6,182,212,.25);border-radius:10px;padding:14px;margin-bottom:12px">
+              <div style="font-size:11px;color:var(--text-s);margin-bottom:10px;font-weight:500;text-transform:uppercase;letter-spacing:.05em">INPUT AUDIO</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+                <button id="sts-rec-btn" onclick="toggleSTSRecording()" class="btn-gen" style="flex:1;background:linear-gradient(135deg,#ef4444,#dc2626);padding:8px 12px;font-size:12px">
+                  <i class="fas fa-circle" style="color:#fff;font-size:10px"></i>&nbsp; Record
+                </button>
+                <label style="flex:1" class="btn-gen" style="padding:8px 12px;font-size:12px;cursor:pointer;background:rgba(255,255,255,.07);text-align:center;display:flex;align-items:center;justify-content:center;gap:6px">
+                  <i class="fas fa-upload" style="font-size:11px"></i> Upload
+                  <input type="file" id="sts-file-input" accept="audio/*" onchange="stsFileSelected(this)" style="display:none">
+                </label>
+              </div>
+              <div id="sts-rec-status" style="font-size:11px;color:var(--text-s);margin-bottom:8px;min-height:18px"></div>
+              <audio id="sts-preview-player" controls style="width:100%;display:none;margin-bottom:4px"></audio>
+            </div>
+
+            <button onclick="generateSTS()" id="sts-btn" class="btn-gen" style="background:linear-gradient(135deg,#06b6d4,#0891b2)">
+              <i class="fas fa-waveform-lines"></i>&nbsp; Convert Voice
+            </button>
+            <div id="sts-status" style="display:none;margin-top:12px;text-align:center">
+              <div id="sts-status-text" style="font-size:12px;color:var(--text-s);margin-bottom:8px"></div>
+              <audio id="sts-player" controls style="width:100%;margin-bottom:6px"></audio>
+              <a id="sts-download" href="#" download="flowstate-sts.mp3" style="display:none;font-size:11px;color:var(--cyan);text-decoration:none"><i class="fas fa-download"></i> Download MP3</a>
+            </div>
+          </div>
+          <!-- STS info sidebar -->
+          <div style="width:160px;flex-shrink:0">
+            <div class="gen-sidebar-section" style="background:rgba(255,255,255,.03);border-radius:10px;padding:12px">
+              <div class="gen-sidebar-label" style="margin-bottom:8px">HOW IT WORKS</div>
+              <div style="font-size:11px;color:var(--text-s);line-height:1.6">
+                <div style="margin-bottom:6px"><i class="fas fa-microphone" style="color:var(--cyan);width:14px"></i> Record or upload your voice</div>
+                <div style="margin-bottom:6px"><i class="fas fa-exchange-alt" style="color:var(--cyan);width:14px"></i> Pick a target ElevenLabs voice</div>
+                <div><i class="fas fa-music" style="color:var(--cyan);width:14px"></i> Get audio back in that voice</div>
               </div>
             </div>
           </div>
-          <div style="display:flex;gap:14px;margin-bottom:12px;flex-wrap:wrap">
-            <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Stability <span id="tts-stab-val">0.5</span><input id="tts-stability" type="range" min="0" max="1" step="0.05" value="0.5" oninput="document.getElementById('tts-stab-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
-            <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Similarity <span id="tts-sim-val">0.75</span><input id="tts-similarity" type="range" min="0" max="1" step="0.05" value="0.75" oninput="document.getElementById('tts-sim-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
-            <label style="flex:1;min-width:120px;font-size:11px;color:var(--text-s)">Style <span id="tts-style-val">0</span><input id="tts-style-ex" type="range" min="0" max="1" step="0.05" value="0" oninput="document.getElementById('tts-style-val').textContent=this.value" style="width:100%;accent-color:var(--accent)"></label>
+        </div>
+
+        <!-- ══════════════════════ VOICE CLONING PANEL ══════════════════════ -->
+        <div id="vs-panel-clone" class="vs-panel" style="display:none;gap:14px;flex-wrap:wrap">
+          <div class="gen-panel" style="flex:1;min-width:260px">
+            <div class="gen-section-header" style="margin-bottom:14px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="width:26px;height:26px;border-radius:7px;background:rgba(16,185,129,.15);display:flex;align-items:center;justify-content:center"><i class="fas fa-dna" style="color:#10b981;font-size:12px"></i></span>
+                <span class="gen-title" style="margin:0;font-size:13px">Voice Cloning (IVC)</span>
+              </div>
+              <span style="font-size:11px;color:var(--text-s)">Clone any voice from audio samples</span>
+            </div>
+
+            <!-- Create clone form -->
+            <div style="background:rgba(16,185,129,.05);border:1px solid rgba(16,185,129,.15);border-radius:10px;padding:14px;margin-bottom:16px">
+              <div style="font-size:11px;color:var(--text-s);font-weight:500;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">CREATE NEW CLONE</div>
+              <input id="clone-name-input" type="text" placeholder="Voice name (e.g. My Voice)" class="fs-input" style="width:100%;margin-bottom:10px;box-sizing:border-box">
+              <div style="font-size:11px;color:var(--text-s);margin-bottom:6px">Audio samples (MP3/WAV, 1–25 files, 30s+ each)</div>
+              <label style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(255,255,255,.04);border:1px dashed rgba(16,185,129,.3);border-radius:8px;cursor:pointer;font-size:12px;color:var(--text-s);margin-bottom:10px">
+                <i class="fas fa-plus-circle" style="color:#10b981;font-size:14px"></i>
+                <span id="clone-file-label">Click to select audio samples&#8230;</span>
+                <input type="file" id="clone-file-input" accept="audio/*" multiple onchange="cloneFilesSelected(this)" style="display:none">
+              </label>
+              <button onclick="createVoiceClone()" id="clone-btn" class="btn-gen" style="background:linear-gradient(135deg,#10b981,#059669);width:100%">
+                <i class="fas fa-dna"></i>&nbsp; Create Voice Clone
+              </button>
+              <div id="clone-status" style="display:none;margin-top:8px;font-size:11px;text-align:center;color:var(--text-s)"></div>
+            </div>
+
+            <!-- Existing clones list -->
+            <div>
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <div style="font-size:11px;color:var(--text-s);font-weight:500;text-transform:uppercase;letter-spacing:.05em">MY CLONED VOICES</div>
+                <button onclick="loadClonedVoices()" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--accent);padding:0"><i class="fas fa-sync-alt" style="font-size:10px"></i> Refresh</button>
+              </div>
+              <div id="clone-list" style="display:flex;flex-direction:column;gap:6px;min-height:60px">
+                <div style="font-size:11px;color:var(--text-s);text-align:center;padding:16px;opacity:.6"><i class="fas fa-spinner fa-spin"></i> Loading clones…</div>
+              </div>
+            </div>
           </div>
-          <textarea id="tts-text" placeholder="Enter text to convert to speech&#8230;" class="gen-pmt" rows="4"></textarea>
-          <button onclick="generateTTS()" id="tts-btn" class="btn-gen" style="background:linear-gradient(135deg,#a855f7,#06b6d4)">
-            <i class="fas fa-microphone"></i>&nbsp; Generate Voice
-          </button>
-          <div id="tts-status" style="display:none;margin-top:12px;text-align:center">
-            <div id="tts-status-text" style="font-size:12px;color:var(--text-s);margin-bottom:8px"></div>
-            <audio id="tts-player" controls style="width:100%;margin-bottom:6px"></audio>
-            <a id="tts-download" href="#" download="flowstate-tts.mp3" style="display:none;font-size:11px;color:var(--accent);text-decoration:none"><i class="fas fa-download"></i> Download MP3</a>
+          <!-- Clone info sidebar -->
+          <div style="width:160px;flex-shrink:0">
+            <div class="gen-sidebar-section" style="background:rgba(255,255,255,.03);border-radius:10px;padding:12px">
+              <div class="gen-sidebar-label" style="margin-bottom:8px">TIPS</div>
+              <div style="font-size:11px;color:var(--text-s);line-height:1.7">
+                <div style="margin-bottom:5px"><i class="fas fa-check" style="color:#10b981;width:14px"></i> Use clean, clear audio</div>
+                <div style="margin-bottom:5px"><i class="fas fa-check" style="color:#10b981;width:14px"></i> Minimum 30 sec per sample</div>
+                <div style="margin-bottom:5px"><i class="fas fa-check" style="color:#10b981;width:14px"></i> Avoid music/noise</div>
+                <div><i class="fas fa-check" style="color:#10b981;width:14px"></i> More samples = better quality</div>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="gen-sidebar">
-        <div class="gen-sidebar-hd"><i class="fas fa-bolt"></i> Live Status</div>
-        <div class="gen-sidebar-empty"><i class="fas fa-microphone" style="font-size:22px;opacity:.25;margin-bottom:8px;display:block"></i>Generate speech to see voice details here</div>
-        <div id="gsb-tts-log" class="gen-sidebar-log"></div>
-        <div class="gen-sidebar-section" style="margin-top:auto">
-          <div class="gen-sidebar-label">VOICE ENGINE</div>
-          <div class="gen-sidebar-row"><i class="fas fa-check-circle" style="color:#10b981"></i> ElevenLabs Live</div>
-          <div class="gen-sidebar-row"><i class="fas fa-globe" style="color:var(--accent)"></i> 29 Languages</div>
-          <div class="gen-sidebar-row"><i class="fas fa-users" style="color:var(--cyan)"></i> <span id="tts-sidebar-voice-count">21</span> Voices</div>
-        </div>
+
       </div>
     </div>
 
