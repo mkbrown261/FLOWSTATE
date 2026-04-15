@@ -10534,11 +10534,171 @@ function _codeSetActiveBadge(path) {
 
 // ── AI Code Generation — BUILDER MODE ────────────────────────────────────────
 // Flow: user prompt → inject full context → AI returns [{path,content}] → write files → preview
+// ── Entry point for the Build button (main prompt) ────────────────────────────
+// Routes through intent detection so conversations work from the top bar too.
 async function codeGenerate() {
   if (_codeState.generating) return;
   if (!FS_USER) { notify('Sign in to use AI Code Workspace', 'info'); return; }
   const prompt = document.getElementById('code-prompt-input')?.value?.trim();
   if (!prompt) { notify('Describe what you want to build', 'warning'); return; }
+  // Route through the unified message handler
+  await _codeHandleMessage(prompt, /* fromBuildButton= */true);
+}
+
+// ── Core dispatch: intent → chat | clarify | build ────────────────────────────
+async function _codeHandleMessage(prompt, fromBuildButton = false) {
+  if (_codeState.generating) return;
+  if (!FS_USER) { notify('Sign in to use AI Code Workspace', 'info'); return; }
+
+  // Show user's message in chat panel immediately
+  _codeChatAddMessage('user', prompt);
+  codeChatTab('convo');
+
+  // If called from build button, also copy to main prompt for legacy compatibility
+  if (fromBuildButton) {
+    // prompt already in the input; we'll clear it after
+  } else {
+    // Sync to main prompt (for context display)
+    const mainInp = document.getElementById('code-prompt-input');
+    if (mainInp) mainInp.value = prompt;
+  }
+
+  // Show typing indicator while we classify
+  const typingId = _codeShowTyping();
+
+  try {
+    const intentRes = await fetch('/api/code/intent', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        hasFiles: Object.keys(_codeState.generatedFiles).length > 0,
+        conversationHistory: _codeState.conversationHistory,
+        activeFile: _codeState.activeFile || '',
+        agent: _codeState.agent,
+      })
+    });
+    const intent = intentRes.ok ? await intentRes.json() : { type: 'build', acknowledgment: 'On it…' };
+
+    _codeHideTyping(typingId);
+
+    if (intent.type === 'chat') {
+      // ── Pure conversation — no build ──────────────────────────────────────
+      // Show reply from intent classifier directly (it already asked /code/chat via the reply field)
+      if (intent.reply) {
+        _codeChatAddMessage('ai', intent.reply);
+        // Add suggestions if any
+        if (intent.suggestions?.length) _codeChatAddSuggestions(intent.suggestions);
+        // Save to history
+        _codeState.conversationHistory.push({ role: 'user', content: prompt });
+        _codeState.conversationHistory.push({ role: 'assistant', content: intent.reply });
+      } else {
+        // Fallback: call /api/code/chat for full reply
+        const chatTypingId = _codeShowTyping();
+        try {
+          const chatRes = await fetch('/api/code/chat', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt,
+              conversationHistory: _codeState.conversationHistory,
+              generatedFiles: Object.fromEntries(
+                Object.entries(_codeState.generatedFiles).map(([k,v]) => [k, v.content])
+              ),
+              agent: _codeState.agent,
+            })
+          });
+          _codeHideTyping(chatTypingId);
+          const chatData = chatRes.ok ? await chatRes.json() : null;
+          const reply = chatData?.reply || "I'm not sure how to answer that — try rephrasing?";
+          _codeChatAddMessage('ai', reply);
+          if (intent.suggestions?.length) _codeChatAddSuggestions(intent.suggestions);
+          _codeState.conversationHistory.push({ role: 'user', content: prompt });
+          _codeState.conversationHistory.push({ role: 'assistant', content: reply });
+        } catch {
+          _codeHideTyping(chatTypingId);
+          _codeChatAddMessage('ai', "Connection error — check your network.");
+        }
+      }
+      // Clear main prompt
+      const inp = document.getElementById('code-prompt-input');
+      if (inp) inp.value = '';
+      return;
+    }
+
+    if (intent.type === 'clarify') {
+      // ── Need more info — ask a question ──────────────────────────────────
+      const q = intent.question || "Could you give me more details about what you want to build?";
+      _codeChatAddMessage('ai', q);
+      // Clear prompt so user can type their answer
+      const inp = document.getElementById('code-prompt-input');
+      if (inp) inp.value = '';
+      return;
+    }
+
+    // ── Build or Edit — show acknowledgment, then stream code ────────────────
+    if (intent.acknowledgment) {
+      _codeChatAddMessage('ai', intent.acknowledgment);
+    }
+
+  } catch {
+    _codeHideTyping(typingId);
+    // On intent failure, fall through to build silently
+  }
+
+  // ── Now do the actual code build ─────────────────────────────────────────────
+  await _codeRunBuild(prompt);
+}
+
+// ── Typing indicator helpers ──────────────────────────────────────────────────
+function _codeShowTyping() {
+  const container = document.getElementById('code-chat-messages');
+  if (!container) return null;
+  const empty = container.querySelector('.code-chat-empty');
+  if (empty) empty.remove();
+  const el = document.createElement('div');
+  const id = 'typing-' + Date.now();
+  el.id = id;
+  el.className = 'code-chat-typing';
+  el.innerHTML = '<span></span><span></span><span></span>';
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
+  return id;
+}
+
+function _codeHideTyping(id) {
+  if (!id) return;
+  const el = document.getElementById(id);
+  if (el) el.remove();
+}
+
+// ── Suggestion chips ──────────────────────────────────────────────────────────
+function _codeChatAddSuggestions(suggestions) {
+  if (!suggestions?.length) return;
+  const container = document.getElementById('code-chat-messages');
+  if (!container) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'code-chat-suggest-wrap';
+  suggestions.slice(0, 3).forEach(s => {
+    const chip = document.createElement('button');
+    chip.className = 'code-chat-suggest-chip';
+    chip.textContent = s;
+    chip.onclick = () => {
+      // Clicking a suggestion fires it as a new message
+      chip.closest('.code-chat-suggest-wrap')?.remove();
+      _codeHandleMessage(s);
+    };
+    wrap.appendChild(chip);
+  });
+  container.appendChild(wrap);
+  container.scrollTop = container.scrollHeight;
+}
+
+// ── The actual build (previously the body of codeGenerate) ───────────────────
+async function _codeRunBuild(prompt) {
+  if (_codeState.generating) return;
   const lang = '';  // deprecated — style preset replaces language selector
   const stylePreset = document.getElementById('code-style-preset')?.value || 'flowstate-dark';
 
@@ -10552,11 +10712,7 @@ async function codeGenerate() {
     if (editor) editor.innerHTML = `<div class="code-generating"><div class="code-gen-pulse"></div><span>AI is building your project…</span></div>`;
   }
 
-  // Add user message to chat panel
-  _codeChatAddMessage('user', prompt);
-  // Switch chat to convo tab
-  codeChatTab('convo');
-
+  // (User message already shown by _codeHandleMessage before this is called)
   // Hide previous AI message banner (now in chat)
   const msgEl = document.getElementById('code-ai-message');
   if (msgEl) msgEl.style.display = 'none';
@@ -10694,11 +10850,18 @@ async function codeGenerate() {
       _codeState.conversationHistory = _codeState.conversationHistory.slice(-20);
     }
 
-    // ── Show AI message in chat panel ─────────────────────────────────────────
-    if (data.message) {
-      const aiMsg = `${data.message} (${files.length} file${files.length>1?'s':''} written)`;
-      _codeChatAddMessage('ai', aiMsg);
-    }
+    // ── Show AI message in chat panel + suggestion chips ─────────────────────
+    const postBuildMsg = data.message
+      ? `${data.message} (${files.length} file${files.length>1?'s':''} written)`
+      : `Done — ${files.length} file${files.length>1?'s':''} written.`;
+    _codeChatAddMessage('ai', postBuildMsg);
+    // Suggest next steps based on what was built
+    const fileNames = files.map(f => f.path);
+    const hasHtmlFile = fileNames.some(f => f.endsWith('.html'));
+    const nextSteps = hasHtmlFile
+      ? ['Add a dark mode toggle', 'Make it mobile responsive', 'Add animations to cards', 'Add a contact form']
+      : ['Add unit tests', 'Add error handling', 'Connect to an API', 'Add TypeScript types'];
+    _codeChatAddSuggestions(nextSteps.slice(0, 3));
 
     // ── Auto-preview if there's an HTML file ─────────────────────────────────
     const hasHtml = files.some(f => f.path.endsWith('.html'));
@@ -11029,34 +11192,36 @@ function codeChatSend() {
   const inp = document.getElementById('code-chat-input');
   const msg = inp?.value?.trim();
   if (!msg) return;
-
-  // Show user message in chat
-  _codeChatAddMessage('user', msg);
   inp.value = '';
   inp.style.height = 'auto';
-
-  // Copy to main prompt and fire build
-  const mainInp = document.getElementById('code-prompt-input');
-  if (mainInp) mainInp.value = msg;
-
-  codeGenerate();
+  _codeHandleMessage(msg);
 }
 
 function _codeChatAddMessage(role, content) {
   const container = document.getElementById('code-chat-messages');
   if (!container) return;
 
-  // Remove empty state
+  // Remove empty state placeholder
   const empty = container.querySelector('.code-chat-empty');
   if (empty) empty.remove();
 
   const el = document.createElement('div');
   el.className = `code-chat-bubble code-chat-${role}`;
-  el.textContent = content;
-  container.appendChild(el);
 
-  // Scroll to bottom
+  if (role === 'ai') {
+    // Render newlines as <br> and bold **text** for AI messages
+    const safe = content
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br>');
+    el.innerHTML = safe;
+  } else {
+    el.textContent = content;
+  }
+
+  container.appendChild(el);
   container.scrollTop = container.scrollHeight;
+  return el;
 }
 
 function _codeChatAddLog(msg) {

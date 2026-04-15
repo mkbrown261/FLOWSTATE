@@ -1052,6 +1052,197 @@ app.post('/api/deploy/cloudflare', async (c) => {
   }
 })
 
+// ─── POST /api/code/intent ────────────────────────────────────────────────────
+// Fast intent classifier — cheap model, ~300ms, decides what the user wants
+// Returns: { type, acknowledgment, question, suggestions }
+// type = "build" | "edit" | "chat" | "clarify"
+app.post('/api/code/intent', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const { prompt = '', hasFiles = false, conversationHistory = [], activeFile = '', agent = 'claude-sonnet-4' } = await c.req.json()
+  if (!prompt.trim()) return c.json({ type: 'clarify', question: 'What would you like to build?' })
+
+  // Build a concise context string of what already exists
+  const historyContext = conversationHistory.slice(-4)
+    .map((m: any) => `${m.role === 'user' ? 'User' : 'AI'}: ${String(m.content).slice(0, 120)}`)
+    .join('\n')
+
+  const classifierPrompt = `You are an intent classifier for an AI code builder. Classify the user's message and respond with ONLY valid JSON.
+
+CONTEXT:
+- Has existing project files: ${hasFiles}
+- Currently open file: ${activeFile || 'none'}
+- Recent conversation:
+${historyContext || '(none)'}
+
+USER MESSAGE: "${prompt}"
+
+CLASSIFICATION RULES:
+- "build": User wants to create something new from scratch (no files exist yet, or starting a new page/feature)
+- "edit": User wants to change, fix, update, or improve existing files
+- "chat": User is asking a question, making a comment, or having a conversation — NOT requesting code
+- "clarify": Prompt is too vague to build anything specific (under 6 words with no clear deliverable, or genuinely ambiguous)
+
+For "build" or "edit": write a short, energetic acknowledgment (2-3 sentences max) that:
+  1. Shows you understood exactly what they want
+  2. Lists the key things you're going to build/change
+  3. Ends with something like "Building now..." or "On it..."
+  Be specific. Not "I'll create a dashboard" — say "I'm building a dark analytics dashboard with a sidebar, 4 KPI cards, a revenue line chart, and a recent activity table."
+
+For "chat": write a helpful, direct conversational reply (no code, no files). Answer questions, give advice, explain concepts. Sound like a senior dev pair-programming with them.
+
+For "clarify": ask ONE specific clarifying question to get enough info to build. Don't ask multiple questions.
+
+RESPOND WITH ONLY THIS JSON (no markdown, no prose):
+{
+  "type": "build"|"edit"|"chat"|"clarify",
+  "acknowledgment": "...(for build/edit only, empty string otherwise)",
+  "reply": "...(for chat type, your full conversational response, empty otherwise)",
+  "question": "...(for clarify type only, empty otherwise)",
+  "suggestions": ["next step 1", "next step 2", "next step 3"]
+}`
+
+  try {
+    // Use fast cheap model for intent — Claude Haiku or Gemini Flash
+    const intentModel = c.env?.ANTHROPIC_API_KEY ? 'claude-haiku-4-5-20251101' : null
+    const orKey = c.env?.OPENROUTER_API_KEY || ''
+    let raw = ''
+
+    if (intentModel && c.env?.ANTHROPIC_API_KEY) {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': c.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: intentModel,
+          max_tokens: 1024,
+          messages: [
+            { role: 'user', content: classifierPrompt },
+            { role: 'assistant', content: '{' }, // prefill for clean JSON
+          ]
+        })
+      })
+      const d: any = await r.json()
+      raw = '{' + (d?.content?.[0]?.text || '')
+    } else if (orKey) {
+      const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${orKey}`, 'HTTP-Referer': 'https://flowst8.cc' },
+        body: JSON.stringify({
+          model: 'google/gemini-2.0-flash-001',
+          messages: [{ role: 'user', content: classifierPrompt }],
+          max_tokens: 1024,
+          temperature: 0.1,
+          response_format: { type: 'json_object' },
+        })
+      })
+      const d: any = await r.json()
+      raw = d?.choices?.[0]?.message?.content || ''
+    }
+
+    // Parse with fallback
+    const cleaned = raw.replace(/^```json\s*/i,'').replace(/```$/,'').trim()
+    const first = cleaned.indexOf('{'), last = cleaned.lastIndexOf('}')
+    const result = first !== -1 ? JSON.parse(cleaned.slice(first, last+1)) : null
+
+    if (!result?.type) {
+      // If classifier fails, default to build behavior so user isn't blocked
+      return c.json({ type: 'build', acknowledgment: "On it — building now...", reply: '', question: '', suggestions: [] })
+    }
+
+    return c.json(result)
+  } catch {
+    return c.json({ type: 'build', acknowledgment: "Got it, building now...", reply: '', question: '', suggestions: [] })
+  }
+})
+
+// ─── POST /api/code/chat ──────────────────────────────────────────────────────
+// Pure conversational response — no files, no build. Just AI talking.
+// Used when intent = "chat"
+app.post('/api/code/chat', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const { prompt = '', conversationHistory = [], generatedFiles = {}, agent = 'claude-sonnet-4' } = await c.req.json()
+
+  // Build a summary of what exists in the project
+  const fileNames = Object.keys(generatedFiles)
+  const projectSummary = fileNames.length
+    ? `Current project files: ${fileNames.join(', ')}`
+    : 'No files built yet in this session.'
+
+  const historyMessages = (conversationHistory as any[]).slice(-8).map((m: any) => ({
+    role: m.role as 'user' | 'assistant',
+    content: String(m.content).slice(0, 400)
+  }))
+
+  const systemMsg = `You are an expert AI developer and coding partner inside the FlowState AI Code Builder. You are in CONVERSATION mode — the user is asking a question or chatting, NOT requesting code generation right now.
+
+${projectSummary}
+
+Your personality: direct, knowledgeable, like a senior engineer pair-programming with a friend. You:
+- Give specific, actionable answers — not vague advice
+- Reference the user's actual project when relevant
+- Suggest concrete next steps when it makes sense
+- Keep responses concise (2-5 sentences for simple questions, longer only when truly needed)
+- Sound like a human expert, not a documentation page
+- Never say "Great question!" or filler phrases
+- If they ask what you can do, explain you can build full web apps, React apps, dashboards, landing pages, etc. — and they can ask you to build anything
+
+Do NOT generate any code files. Just have a conversation.`
+
+  try {
+    const orKey = c.env?.OPENROUTER_API_KEY || ''
+    let reply = ''
+
+    // Use the selected agent for chat too — feels consistent
+    if ((agent === 'claude' || agent === 'claude-sonnet-4' || agent === 'claude-opus-4' || agent === 'claude-haiku-4') && c.env?.ANTHROPIC_API_KEY) {
+      const claudeModelMap: Record<string,string> = {
+        'claude': 'claude-3-5-sonnet-20241022',
+        'claude-sonnet-4': 'claude-sonnet-4-5-20251101',
+        'claude-opus-4': 'claude-opus-4-5-20251101',
+        'claude-haiku-4': 'claude-haiku-4-5-20251101',
+      }
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': c.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: claudeModelMap[agent] || 'claude-sonnet-4-5-20251101',
+          max_tokens: 1024,
+          system: systemMsg,
+          messages: [...historyMessages, { role: 'user', content: prompt }]
+        })
+      })
+      const d: any = await r.json()
+      reply = d?.content?.[0]?.text || "I'm not sure how to answer that — try rephrasing?"
+    } else if (orKey) {
+      const orModelMap: Record<string,string> = {
+        'gpt4o': 'openai/gpt-4o', 'gpt4-1': 'openai/gpt-4.1',
+        'gemini': 'google/gemini-2.0-flash-001', 'gemini-2-5-pro': 'google/gemini-2.5-pro-preview',
+        'deepseek': 'deepseek/deepseek-chat-v3-0324',
+      }
+      const orModel = orModelMap[agent] || 'google/gemini-2.0-flash-001'
+      const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${orKey}`, 'HTTP-Referer': 'https://flowst8.cc' },
+        body: JSON.stringify({
+          model: orModel,
+          messages: [{ role: 'system', content: systemMsg }, ...historyMessages, { role: 'user', content: prompt }],
+          max_tokens: 1024, temperature: 0.7,
+        })
+      })
+      const d: any = await r.json()
+      reply = d?.choices?.[0]?.message?.content || "I'm not sure how to answer that."
+    } else {
+      reply = "No AI key configured — add ANTHROPIC_API_KEY or OPENROUTER_API_KEY to your Cloudflare secrets."
+    }
+
+    return c.json({ ok: true, reply })
+  } catch (e: any) {
+    return c.json({ ok: false, reply: "Something went wrong on my end — try again?" })
+  }
+})
+
 // POST /api/github/ai-code — AI builder: streams SSE token chunks, final JSON contains files
 // Body: { prompt, repo, agent, conversationHistory, fileTree, generatedFiles, language, activeFile? }
 app.post('/api/github/ai-code', async (c) => {
@@ -7713,6 +7904,16 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .code-chat-user{background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.25);color:var(--text-p);align-self:flex-end;border-bottom-right-radius:3px}
 .code-chat-ai{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);color:#10b981;align-self:flex-start;border-bottom-left-radius:3px}
 .code-chat-log{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);color:var(--text-m);font-size:10px;border-radius:7px;padding:5px 8px}
+/* Typing indicator */
+.code-chat-typing{display:flex;align-items:center;gap:3px;padding:9px 12px;background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.15);border-radius:10px;border-bottom-left-radius:3px;align-self:flex-start}
+.code-chat-typing span{width:5px;height:5px;border-radius:50%;background:#10b981;display:inline-block;animation:typingDot 1.2s ease-in-out infinite}
+.code-chat-typing span:nth-child(2){animation-delay:.2s}
+.code-chat-typing span:nth-child(3){animation-delay:.4s}
+@keyframes typingDot{0%,80%,100%{transform:scale(.6);opacity:.4}40%{transform:scale(1);opacity:1}}
+/* Suggestion chips */
+.code-chat-suggest-wrap{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px;align-self:flex-start;max-width:100%}
+.code-chat-suggest-chip{padding:4px 9px;border-radius:12px;border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.06);color:#10b981;font-size:10px;cursor:pointer;transition:.15s;white-space:nowrap}
+.code-chat-suggest-chip:hover{background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.5)}
 .code-chat-input-wrap{border-top:1px solid var(--border);padding:8px 10px;display:flex;gap:6px;align-items:flex-end;flex-shrink:0}
 .code-chat-input{flex:1;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:12px;color:var(--text-p);outline:none;resize:none;font-family:inherit;line-height:1.5;min-height:36px;max-height:100px}
 .code-chat-input:focus{border-color:var(--accent)}
