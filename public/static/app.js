@@ -10198,8 +10198,8 @@ let _codeState = {
   currentView: 'code',    // 'code' | 'preview'
   viewport: 'desktop',    // 'desktop' | 'tablet' | 'mobile'
   // Agent
-  agent: 'gemini',
-  agentName: 'Gemini 2.0 Flash',
+  agent: 'claude-sonnet-4',
+  agentName: 'Claude Sonnet 4.6',
   agentPickerOpen: false,
   // Project persistence
   projectId: null,        // D1 project ID for the current session
