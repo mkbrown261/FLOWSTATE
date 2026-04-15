@@ -10196,10 +10196,15 @@ let _codeState = {
   generating: false,
   projectStarted: false,
   currentView: 'code',    // 'code' | 'preview'
+  viewport: 'desktop',    // 'desktop' | 'tablet' | 'mobile'
   // Agent
   agent: 'gemini',
   agentName: 'Gemini 2.0 Flash',
   agentPickerOpen: false,
+  // Project persistence
+  projectId: null,        // D1 project ID for the current session
+  previewId: null,        // R2 preview ID (for live URL)
+  previewUrl: null,       // Full live URL
 };
 
 // ── Code AI Agent models ──────────────────────────────────────────────────────
@@ -10553,6 +10558,7 @@ async function codeGenerate() {
 
   // Show preset badge in log
   const PRESET_LABELS = {
+    'ai-decides': '✨ AI Decides',
     'flowstate-dark': '⚡ FlowState Dark', 'flowstate-light': '☀️ FlowState Light',
     'glassmorphism': '🔮 Glassmorphism', 'brutalist': '🔲 Brutalist',
     'terminal': '💻 Terminal', 'minimal-saas': '🧊 Minimal SaaS',
@@ -10660,17 +10666,27 @@ async function codeGenerate() {
       }
     }
 
-    // ── Show push buttons ─────────────────────────────────────────────────────
+    // ── Show action buttons ───────────────────────────────────────────────────
     const copyBtn = document.getElementById('btn-code-copy');
     const pushBtn = document.getElementById('btn-code-push');
+    const zipBtn  = document.getElementById('btn-code-zip');
     if (copyBtn) copyBtn.style.display = 'flex';
+    if (zipBtn)  zipBtn.style.display  = 'flex';
     if (pushBtn && _codeState.ghConnected) pushBtn.style.display = 'flex';
     if (_codeState.ghConnected && _codeState.selectedRepo) {
       const pushAllWrap = document.getElementById('code-push-all-wrap');
       if (pushAllWrap) pushAllWrap.style.display = 'block';
     }
 
-    // ── Show Deploy to Cloudflare button (always — user may have CF token) ────
+    // ── Show Publish Live URL button (always after first build) ───────────────
+    const publishWrap = document.getElementById('code-publish-wrap');
+    if (publishWrap) publishWrap.style.display = 'block';
+
+    // ── Auto-publish to get live URL ──────────────────────────────────────────
+    // Publish silently in background — user gets live URL without clicking
+    codePublishPreview().catch(() => {});
+
+    // ── Show Deploy to Cloudflare button (if user has CF token) ──────────────
     const deployWrap = document.getElementById('code-deploy-cf-wrap');
     if (deployWrap) deployWrap.style.display = 'block';
 
@@ -10715,6 +10731,9 @@ function codeNewSession() {
   _codeState.activeFileContent = '';
   _codeState.projectStarted = false;
   _codeState.currentView = 'code';
+  _codeState.projectId = null;
+  _codeState.previewId = null;
+  _codeState.previewUrl = null;
 
   // Reset editor
   const editor = document.getElementById('code-editor-wrap');
@@ -10740,13 +10759,23 @@ function codeNewSession() {
   const msgEl = document.getElementById('code-ai-message');
   if (msgEl) msgEl.style.display = 'none';
 
-  // Hide deploy button + result
+  // Hide all action panels
   const deployWrap = document.getElementById('code-deploy-cf-wrap');
   if (deployWrap) deployWrap.style.display = 'none';
   const deployResult = document.getElementById('code-deploy-result');
   if (deployResult) deployResult.style.display = 'none';
+  const publishWrap = document.getElementById('code-publish-wrap');
+  if (publishWrap) publishWrap.style.display = 'none';
+  const previewResult = document.getElementById('code-preview-result');
+  if (previewResult) previewResult.style.display = 'none';
   const pushAllWrap = document.getElementById('code-push-all-wrap');
   if (pushAllWrap) pushAllWrap.style.display = 'none';
+  const zipBtn = document.getElementById('btn-code-zip');
+  if (zipBtn) zipBtn.style.display = 'none';
+  const openBrowser = document.getElementById('btn-code-open-browser');
+  if (openBrowser) openBrowser.style.display = 'none';
+  const vpControls = document.getElementById('code-viewport-controls');
+  if (vpControls) vpControls.style.display = 'none';
 
   _codeUpdateSessionBadge();
   codeLog('🔄 New session started', 'info');
@@ -10772,21 +10801,295 @@ function codeUseExample(el) {
 // ── View toggle: Code ↔ Preview ───────────────────────────────────────────────
 function codeSetView(view) {
   _codeState.currentView = view;
-  const editorWrap  = document.getElementById('code-editor-wrap');
-  const previewWrap = document.getElementById('code-preview-wrap');
-  const btnCode     = document.getElementById('btn-view-code');
-  const btnPreview  = document.getElementById('btn-view-preview');
+  const editorWrap      = document.getElementById('code-editor-wrap');
+  const previewWrap     = document.getElementById('code-preview-wrap');
+  const btnCode         = document.getElementById('btn-view-code');
+  const btnPreview      = document.getElementById('btn-view-preview');
+  const vpControls      = document.getElementById('code-viewport-controls');
+  const openBrowserBtn  = document.getElementById('btn-code-open-browser');
+
   if (view === 'preview') {
     if (editorWrap)  editorWrap.style.display  = 'none';
-    if (previewWrap) previewWrap.style.display = 'block';
+    if (previewWrap) { previewWrap.style.display = 'flex'; }
     if (btnCode)    btnCode.classList.remove('active');
     if (btnPreview) btnPreview.classList.add('active');
+    if (vpControls) vpControls.style.display = 'flex';
+    // Show open-in-browser if we have a live URL
+    if (openBrowserBtn && _codeState.previewUrl) {
+      openBrowserBtn.href = _codeState.previewUrl;
+      openBrowserBtn.style.display = 'flex';
+    }
     _codeUpdatePreview();
   } else {
     if (editorWrap)  editorWrap.style.display  = '';
     if (previewWrap) previewWrap.style.display = 'none';
     if (btnCode)    btnCode.classList.add('active');
     if (btnPreview) btnPreview.classList.remove('active');
+    if (vpControls) vpControls.style.display = 'none';
+  }
+}
+
+// ── Viewport size control (mobile / tablet / desktop) ─────────────────────────
+function codeSetViewport(size) {
+  _codeState.viewport = size;
+  const viewport = document.getElementById('code-preview-viewport');
+  const previewWrap = document.getElementById('code-preview-wrap');
+  const btns = { desktop: 'vp-desktop', tablet: 'vp-tablet', mobile: 'vp-mobile' };
+
+  // Update active button
+  Object.entries(btns).forEach(([k, id]) => {
+    const btn = document.getElementById(id);
+    if (btn) btn.classList.toggle('active', k === size);
+  });
+
+  if (!viewport) return;
+
+  if (size === 'mobile') {
+    viewport.style.width = '375px';
+    viewport.style.height = '812px';
+    viewport.style.boxShadow = '0 0 0 1px rgba(255,255,255,.1), 0 8px 32px rgba(0,0,0,.6)';
+    viewport.style.borderRadius = '20px';
+    viewport.style.overflow = 'hidden';
+    if (previewWrap) previewWrap.style.padding = '16px';
+  } else if (size === 'tablet') {
+    viewport.style.width = '768px';
+    viewport.style.height = '100%';
+    viewport.style.boxShadow = '0 0 0 1px rgba(255,255,255,.1)';
+    viewport.style.borderRadius = '8px';
+    viewport.style.overflow = 'hidden';
+    if (previewWrap) previewWrap.style.padding = '8px';
+  } else {
+    viewport.style.width = '100%';
+    viewport.style.height = '100%';
+    viewport.style.boxShadow = 'none';
+    viewport.style.borderRadius = '0';
+    viewport.style.overflow = 'hidden';
+    if (previewWrap) previewWrap.style.padding = '0';
+  }
+}
+
+// ── Publish live preview to R2 ────────────────────────────────────────────────
+async function codePublishPreview() {
+  const files = Object.entries(_codeState.generatedFiles);
+  if (!files.length) { notify('Build something first', 'warning'); return; }
+
+  const btn = document.getElementById('btn-code-publish');
+  if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Publishing…'; btn.disabled = true; }
+  codeLog('🌐 Publishing live preview…', 'info');
+
+  try {
+    const payload = {
+      files: files.map(([path, fd]) => ({ path, content: fd.content })),
+      projectId: _codeState.previewId || null,
+    };
+    const r = await fetch('/api/preview/publish', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+
+    if (d.ok && d.url) {
+      // Build absolute URL
+      const absUrl = window.location.origin + d.url;
+      _codeState.previewId = d.previewId;
+      _codeState.previewUrl = absUrl;
+
+      codeLog(`✅ Live at: ${absUrl}`, 'success');
+      notify('Live preview ready! 🌐', 'success');
+
+      // Show result panel
+      const resultEl   = document.getElementById('code-preview-result');
+      const liveUrlEl  = document.getElementById('code-preview-live-url');
+      const openBtnEl  = document.getElementById('code-preview-open-btn');
+      const openBrowser = document.getElementById('btn-code-open-browser');
+
+      if (liveUrlEl)  { liveUrlEl.textContent = absUrl; liveUrlEl.href = absUrl; }
+      if (openBtnEl)  openBtnEl.href = absUrl;
+      if (openBrowser){ openBrowser.href = absUrl; openBrowser.style.display = 'flex'; }
+      if (resultEl)   resultEl.style.display = 'block';
+
+      // Auto-save project to D1 as well
+      await _codeSaveProject();
+
+      // Track
+      _clawTrackAction('published_preview', { type: 'preview', url: absUrl });
+      _clawLogProject({ deployUrl: absUrl });
+    } else {
+      const msg = d.message || d.error || 'Publish failed';
+      codeLog('❌ ' + msg, 'error');
+      notify(msg, 'warning');
+    }
+  } catch(e) {
+    codeLog('❌ Network error: ' + e.message, 'error');
+    notify('Publish failed — check your connection', 'warning');
+  } finally {
+    if (btn) { btn.innerHTML = '<i class="fas fa-globe"></i> Publish Live URL'; btn.disabled = false; }
+  }
+}
+
+function codePreviewCopyUrl() {
+  const url = _codeState.previewUrl || document.getElementById('code-preview-live-url')?.textContent;
+  if (!url) return;
+  navigator.clipboard.writeText(url).then(() => notify('URL copied!', 'success'));
+}
+
+// ── Download as ZIP ───────────────────────────────────────────────────────────
+async function codeDownloadZip() {
+  const files = Object.entries(_codeState.generatedFiles);
+  if (!files.length) { notify('No files to download', 'warning'); return; }
+
+  const btn = document.getElementById('btn-code-zip');
+  if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+  codeLog('📦 Packing ZIP…', 'info');
+
+  try {
+    const projectName = _codeState.activeFile?.split('/')[0]?.replace(/\.[^.]+$/, '') || 'project';
+    const r = await fetch('/api/code/zip', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        files: files.map(([path, fd]) => ({ path, content: fd.content })),
+        projectName
+      })
+    });
+
+    if (!r.ok) { notify('ZIP failed', 'warning'); return; }
+
+    const blob = await r.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `${projectName}.zip`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    codeLog(`✅ Downloaded ${projectName}.zip`, 'success');
+  } catch(e) {
+    codeLog('❌ ZIP error: ' + e.message, 'error');
+    notify('Download failed', 'warning');
+  } finally {
+    if (btn) btn.innerHTML = '<i class="fas fa-download"></i>';
+  }
+}
+
+// ── Project persistence (D1) ──────────────────────────────────────────────────
+async function _codeSaveProject() {
+  const files = Object.fromEntries(
+    Object.entries(_codeState.generatedFiles).map(([p, fd]) => [p, fd.content])
+  );
+  if (!Object.keys(files).length) return;
+
+  const name = Object.keys(files)[0]?.split('/')[0]?.replace(/\.[^.]+$/, '') || 'Untitled';
+  try {
+    const r = await fetch('/api/code/project/save', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId: _codeState.projectId,
+        name,
+        files,
+        previewId: _codeState.previewId || null,
+      })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      _codeState.projectId = d.projectId;
+      codeLog(`💾 Project saved`, 'success');
+    }
+  } catch(e) { /* silent — persistence is a bonus, not required */ }
+}
+
+async function codeLoadProjectsList() {
+  const listEl = document.getElementById('code-projects-list');
+  if (listEl) listEl.innerHTML = '<div class="code-file-empty">Loading…</div>';
+  const panel = document.getElementById('code-projects-panel');
+  if (panel) panel.style.display = 'block';
+
+  try {
+    const r = await fetch('/api/code/projects', { credentials: 'include' });
+    const d = await r.json();
+    const projects = d.projects || [];
+
+    if (!listEl) return;
+    if (!projects.length) {
+      listEl.innerHTML = '<div class="code-file-empty">No saved projects yet</div>';
+      return;
+    }
+
+    listEl.innerHTML = '';
+    projects.forEach(p => {
+      const btn = document.createElement('button');
+      btn.className = 'code-file-item';
+      const date = p.updated_at ? new Date(p.updated_at).toLocaleDateString() : '';
+      btn.innerHTML = `<i class="fas fa-folder" style="color:#f59e0b"></i>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis">${escHtml(p.name || 'Untitled')}</span>
+        <span style="font-size:9px;color:var(--text-m);flex-shrink:0">${date}</span>`;
+      btn.onclick = () => codeLoadProject(p.id);
+      listEl.appendChild(btn);
+    });
+  } catch(e) {
+    if (listEl) listEl.innerHTML = '<div class="code-file-empty">Failed to load</div>';
+  }
+}
+
+async function codeLoadProject(id) {
+  codeLog(`📂 Loading project ${id}…`, 'info');
+  try {
+    const r = await fetch(`/api/code/project/${id}`, { credentials: 'include' });
+    const d = await r.json();
+    if (!d.ok) { notify('Could not load project', 'warning'); return; }
+
+    const proj = d.project;
+    // Clear current session
+    _codeState.generatedFiles = {};
+    _codeState.conversationHistory = [];
+    _codeState.activeFile = null;
+    _codeState.projectStarted = false;
+    _codeState.projectId = proj.id;
+    _codeState.previewId = proj.preview_id || null;
+
+    // Restore live URL if preview exists
+    if (proj.preview_id) {
+      _codeState.previewUrl = window.location.origin + `/preview/${proj.preview_id}/index.html`;
+      const openBrowser = document.getElementById('btn-code-open-browser');
+      if (openBrowser) { openBrowser.href = _codeState.previewUrl; openBrowser.style.display = 'flex'; }
+    }
+
+    // Restore files
+    const fileList = document.getElementById('code-gen-file-list');
+    if (fileList) fileList.innerHTML = '<div class="code-file-empty">Files appear here as the AI builds…</div>';
+
+    Object.entries(proj.files || {}).forEach(([path, content]) => {
+      _codeState.generatedFiles[path] = { content, sha: null };
+      _codeAddFileToPanel(path);
+    });
+
+    // Open first HTML file
+    const firstHtml = Object.keys(proj.files || {}).find(p => p.endsWith('.html')) || Object.keys(proj.files || {})[0];
+    if (firstHtml) {
+      _codeState.activeFile = firstHtml;
+      _codeState.activeFileContent = proj.files[firstHtml];
+      _codeState.projectStarted = true;
+      _codeRenderCode(proj.files[firstHtml], firstHtml);
+
+      const toggle = document.getElementById('code-view-toggle');
+      if (toggle) toggle.style.display = 'flex';
+      const publishWrap = document.getElementById('code-publish-wrap');
+      if (publishWrap) publishWrap.style.display = 'block';
+      const zipBtn = document.getElementById('btn-code-zip');
+      if (zipBtn) zipBtn.style.display = 'flex';
+      const copyBtn = document.getElementById('btn-code-copy');
+      if (copyBtn) copyBtn.style.display = 'flex';
+
+      setTimeout(() => codeSetView('preview'), 200);
+    }
+
+    _codeUpdateSessionBadge();
+    codeLog(`✅ Loaded: ${proj.name || id}`, 'success');
+    notify(`Loaded: ${proj.name || 'Project'}`, 'success');
+  } catch(e) {
+    codeLog('❌ Load failed: ' + e.message, 'error');
+    notify('Load failed', 'warning');
   }
 }
 

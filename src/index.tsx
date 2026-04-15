@@ -597,6 +597,296 @@ app.delete('/api/cloudflare/token', async (c) => {
   return c.json({ ok: true })
 })
 
+// ─── Live Preview via R2 ──────────────────────────────────────────────────────
+// POST /api/preview/publish — store generated files in R2, return a preview URL
+// Body: { files: [{path, content}], projectId?: string }
+// Returns: { ok, previewId, url } where url = /preview/{previewId}/index.html
+app.post('/api/preview/publish', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const { files, projectId } = await c.req.json()
+  if (!files || !Array.isArray(files) || files.length === 0)
+    return c.json({ error: 'no_files' }, 400)
+
+  // Use provided projectId or generate a new one
+  const previewId = projectId || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`
+  const prefix = `previews/${previewId}/`
+
+  try {
+    // Store every file in R2 under previews/{previewId}/{path}
+    await Promise.all(files.map(async (f: { path: string; content: string }) => {
+      if (!f.path || f.content === undefined) return
+      const key = prefix + f.path.replace(/^\/+/, '')
+      const ext = f.path.split('.').pop()?.toLowerCase() || ''
+      const ct = ext === 'html' ? 'text/html' :
+                 ext === 'css'  ? 'text/css' :
+                 ext === 'js' || ext === 'jsx' || ext === 'ts' || ext === 'tsx' ? 'application/javascript' :
+                 ext === 'json' ? 'application/json' :
+                 ext === 'svg'  ? 'image/svg+xml' : 'text/plain'
+      const enc = new TextEncoder()
+      await c.env.R2.put(key, enc.encode(f.content), {
+        httpMetadata: { contentType: ct }
+      })
+    }))
+
+    // Store a manifest so we know which files belong to this preview
+    const manifest = { files: files.map((f: any) => f.path), createdAt: Date.now(), email: session.email }
+    await c.env.R2.put(prefix + '_manifest.json', JSON.stringify(manifest), {
+      httpMetadata: { contentType: 'application/json' }
+    })
+
+    const url = `/preview/${previewId}/index.html`
+    return c.json({ ok: true, previewId, url })
+  } catch (e: any) {
+    return c.json({ error: 'publish_failed', message: e.message }, 500)
+  }
+})
+
+// GET /preview/:id/:path* — serve R2-stored preview files
+app.get('/preview/:id/:path{.*}', async (c) => {
+  const id   = c.req.param('id')
+  const path = c.req.param('path') || 'index.html'
+  const key  = `previews/${id}/${path}`
+
+  const obj = await c.env.R2.get(key)
+  if (!obj) {
+    // If path has no extension, try appending /index.html
+    const indexKey = `previews/${id}/${path.replace(/\/$/, '')}/index.html`
+    const indexObj = await c.env.R2.get(indexKey)
+    if (!indexObj) return c.text('Not found', 404)
+    const headers = new Headers()
+    headers.set('Content-Type', 'text/html; charset=utf-8')
+    headers.set('Cache-Control', 'no-store')
+    return new Response(indexObj.body, { headers })
+  }
+
+  const headers = new Headers()
+  const ct = obj.httpMetadata?.contentType || 'text/plain'
+  headers.set('Content-Type', ct.includes('html') ? 'text/html; charset=utf-8' : ct)
+  headers.set('Cache-Control', 'no-store')
+  return new Response(obj.body, { headers })
+})
+
+// ─── Project Persistence (D1) ─────────────────────────────────────────────────
+// POST /api/code/project/save — save generated files to D1 for this session
+// Body: { projectId, name, files: {path: content}, previewId? }
+app.post('/api/code/project/save', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const { projectId, name, files, previewId } = await c.req.json()
+  if (!files || typeof files !== 'object') return c.json({ error: 'no_files' }, 400)
+
+  const db = c.env.DB
+  if (!db) return c.json({ error: 'db_unavailable' }, 503)
+
+  const id = projectId || `proj-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`
+  const now = new Date().toISOString()
+
+  try {
+    // Ensure table exists
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS code_projects (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        name TEXT,
+        files TEXT NOT NULL,
+        preview_id TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      )
+    `).run()
+
+    const filesJson = JSON.stringify(files)
+    await db.prepare(`
+      INSERT INTO code_projects (id, email, name, files, preview_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        files = excluded.files,
+        preview_id = excluded.preview_id,
+        updated_at = excluded.updated_at
+    `).bind(id, session.email, name || 'Untitled Project', filesJson, previewId || null, now, now).run()
+
+    return c.json({ ok: true, projectId: id })
+  } catch (e: any) {
+    return c.json({ error: 'save_failed', message: e.message }, 500)
+  }
+})
+
+// GET /api/code/projects — list this user's saved projects
+app.get('/api/code/projects', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const db = c.env.DB
+  if (!db) return c.json({ projects: [] })
+
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS code_projects (
+        id TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT,
+        files TEXT NOT NULL, preview_id TEXT, created_at TEXT, updated_at TEXT
+      )
+    `).run()
+
+    const rows = await db.prepare(
+      `SELECT id, name, preview_id, created_at, updated_at FROM code_projects WHERE email = ? ORDER BY updated_at DESC LIMIT 20`
+    ).bind(session.email).all()
+
+    return c.json({ projects: rows.results || [] })
+  } catch {
+    return c.json({ projects: [] })
+  }
+})
+
+// GET /api/code/project/:id — load a specific saved project
+app.get('/api/code/project/:id', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const db = c.env.DB
+  if (!db) return c.json({ error: 'db_unavailable' }, 503)
+
+  const id = c.req.param('id')
+  try {
+    const row: any = await db.prepare(
+      `SELECT * FROM code_projects WHERE id = ? AND email = ?`
+    ).bind(id, session.email).first()
+
+    if (!row) return c.json({ error: 'not_found' }, 404)
+    return c.json({ ok: true, project: { ...row, files: JSON.parse(row.files || '{}') } })
+  } catch (e: any) {
+    return c.json({ error: 'load_failed', message: e.message }, 500)
+  }
+})
+
+// DELETE /api/code/project/:id — delete a saved project
+app.delete('/api/code/project/:id', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  const db = c.env.DB
+  if (!db) return c.json({ error: 'db_unavailable' }, 503)
+  const id = c.req.param('id')
+  try {
+    await db.prepare(`DELETE FROM code_projects WHERE id = ? AND email = ?`).bind(id, session.email).run()
+    return c.json({ ok: true })
+  } catch { return c.json({ error: 'delete_failed' }, 500) }
+})
+
+// ─── Download as Zip ──────────────────────────────────────────────────────────
+// POST /api/code/zip — return all project files as a ZIP archive
+// Body: { files: [{path, content}], projectName? }
+app.post('/api/code/zip', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  const { files, projectName = 'project' } = await c.req.json()
+  if (!files || !Array.isArray(files) || files.length === 0)
+    return c.json({ error: 'no_files' }, 400)
+
+  // Build a ZIP file manually (PKZIP format, stored/deflated)
+  // Using pure JS without Node.js zlib — store method (no compression) for simplicity
+  const enc = new TextEncoder()
+
+  const localHeaders: Uint8Array[] = []
+  const centralHeaders: Uint8Array[] = []
+  let localOffset = 0
+
+  const toU16 = (n: number) => new Uint8Array([n & 0xff, (n >> 8) & 0xff])
+  const toU32 = (n: number) => new Uint8Array([n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >> 24) & 0xff])
+
+  // DOS date/time for "now"
+  const now2 = new Date()
+  const dosTime = ((now2.getHours() << 11) | (now2.getMinutes() << 5) | (now2.getSeconds() >> 1))
+  const dosDate = (((now2.getFullYear() - 1980) << 9) | ((now2.getMonth() + 1) << 5) | now2.getDate())
+
+  // CRC-32 table
+  const crcTable = new Uint32Array(256)
+  for (let i = 0; i < 256; i++) {
+    let c2 = i
+    for (let j = 0; j < 8; j++) c2 = c2 & 1 ? 0xedb88320 ^ (c2 >>> 1) : c2 >>> 1
+    crcTable[i] = c2
+  }
+  const crc32 = (data: Uint8Array) => {
+    let crc = 0xffffffff
+    for (let i = 0; i < data.length; i++) crc = crcTable[(crc ^ data[i]) & 0xff] ^ (crc >>> 8)
+    return (crc ^ 0xffffffff) >>> 0
+  }
+
+  const concat = (...arrays: Uint8Array[]) => {
+    const total = arrays.reduce((s, a) => s + a.length, 0)
+    const out = new Uint8Array(total)
+    let off = 0; for (const a of arrays) { out.set(a, off); off += a.length }
+    return out
+  }
+
+  for (const f of files as Array<{ path: string; content: string }>) {
+    const fname = enc.encode(f.path.replace(/^\/+/, ''))
+    const data  = enc.encode(f.content || '')
+    const crc   = crc32(data)
+
+    // Local file header (signature 0x04034b50)
+    const local = concat(
+      new Uint8Array([0x50,0x4b,0x03,0x04]),  // signature
+      toU16(20),        // version needed: 2.0
+      toU16(0),         // general purpose bit flag
+      toU16(0),         // compression: stored
+      toU16(dosTime), toU16(dosDate),
+      toU32(crc),
+      toU32(data.length), toU32(data.length), // compressed = uncompressed (stored)
+      toU16(fname.length), toU16(0),           // filename len, extra len
+      fname, data
+    )
+
+    // Central directory entry (signature 0x02014b50)
+    const central = concat(
+      new Uint8Array([0x50,0x4b,0x01,0x02]),  // signature
+      toU16(20), toU16(20),  // version made by, version needed
+      toU16(0),              // flags
+      toU16(0),              // compression: stored
+      toU16(dosTime), toU16(dosDate),
+      toU32(crc),
+      toU32(data.length), toU32(data.length),
+      toU16(fname.length), toU16(0), toU16(0), // fname len, extra len, comment len
+      toU16(0), toU16(0),    // disk start, internal attrs
+      toU32(0),              // external attrs
+      toU32(localOffset),    // offset of local header
+      fname
+    )
+
+    localHeaders.push(local)
+    centralHeaders.push(central)
+    localOffset += local.length
+  }
+
+  const localData   = concat(...localHeaders)
+  const centralData = concat(...centralHeaders)
+  const centralSize = centralData.length
+  const centralOff  = localData.length
+
+  // End of central directory (signature 0x06054b50)
+  const eocd = concat(
+    new Uint8Array([0x50,0x4b,0x05,0x06]),  // signature
+    toU16(0), toU16(0),    // disk numbers
+    toU16(files.length), toU16(files.length),
+    toU32(centralSize), toU32(centralOff),
+    toU16(0)               // comment len
+  )
+
+  const zipBytes = concat(localData, centralData, eocd)
+  const safeName = projectName.replace(/[^a-z0-9_-]/gi, '-').toLowerCase()
+
+  return new Response(zipBytes, {
+    headers: {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${safeName}.zip"`,
+      'Content-Length': String(zipBytes.length),
+    }
+  })
+})
+
 // POST /api/deploy/cloudflare — deploy generated files to user's own Cloudflare Pages account
 // Body: { files: [{path, content}], projectName?: string }
 app.post('/api/deploy/cloudflare', async (c) => {
@@ -803,9 +1093,23 @@ app.post('/api/github/ai-code', async (c) => {
   // ── FSDS CSS scaffold injected into every generation ─────────────────────
   // Per-preset CSS token overrides sit on top of the base FSDS scaffold
   const FSDS_PRESETS: Record<string, { label: string; cssOverride: string; promptHint: string; isReact?: boolean }> = {
+    'ai-decides': {
+      label: 'AI Decides',
+      promptHint: `You are building a STANDALONE app — choose an original color palette that fits the app's domain and purpose. DO NOT use purple (#a855f7) or FlowState brand colors. Examples by domain:
+- Fintech/Banking → navy (#0f172a) + gold (#f59e0b) or teal (#0d9488)
+- Fitness/Health → deep green (#064e3b) + orange (#f97316) or electric lime (#84cc16)
+- Social/Community → deep blue (#1e3a5f) + coral (#f87171) or amber (#fbbf24)
+- Productivity/Tools → slate (#1e293b) + indigo (#818cf8) or sky (#38bdf8)
+- Creative/Design → near-black (#0c0c0f) + electric pink (#f0abfc) or mint (#6ee7b7)
+- E-commerce → charcoal (#111827) + emerald (#34d399) or warm orange (#fb923c)
+- Gaming → dark (#07071a) + neon cyan (#22d3ee) or hot magenta (#e879f9)
+- Medical/Health → dark navy (#0f1f3d) + clean cyan (#67e8f9) or soft green (#86efac)
+Pick ONE primary accent and ONE secondary accent that feel intentional and premium for THIS specific app. Override --accent, --accent-dim, --grad-brand, --border, --border-accent to match.`,
+      cssOverride: '', // AI will define its own accent by instruction
+    },
     'flowstate-dark': {
       label: 'FlowState Dark',
-      promptHint: 'Use the FlowState Dark theme: deep dark backgrounds (#0a0a12 base), purple (#a855f7) as the primary accent, green (#00ffa3) for success states, cyan (#00d4ff) for secondary accents. This is the default premium dark aesthetic.',
+      promptHint: 'Use the FlowState Dark theme: deep dark backgrounds (#0a0a12 base), purple (#a855f7) as the primary accent, green (#00ffa3) for success states, cyan (#00d4ff) for secondary accents. This is the FlowState brand aesthetic.',
       cssOverride: '', // base scaffold IS the dark theme — no overrides needed
     },
     'flowstate-light': {
@@ -887,37 +1191,39 @@ app.post('/api/github/ai-code', async (c) => {
     },
   }
 
-  const preset = FSDS_PRESETS[stylePreset] || FSDS_PRESETS['flowstate-dark']
+  const preset = FSDS_PRESETS[stylePreset] || FSDS_PRESETS['ai-decides']
   const isReact = stylePreset === 'react-app' || stylePreset === 'react-dashboard'
   const isPlain = stylePreset === 'plain'
+  const isAiDecides = stylePreset === 'ai-decides' || !FSDS_PRESETS[stylePreset]
   const isBrutalist = stylePreset === 'brutalist'
   const isTerminal = stylePreset === 'terminal'
   const isGlass = stylePreset === 'glassmorphism'
 
   // ── Base FSDS CSS scaffold (injected into every non-plain generation) ─────
+  // When ai-decides: use a neutral slate-dark base — no brand purple
   const FSDS_BASE_CSS = isPlain ? '' : `
 <style>
-/* ── FlowState Design System (FSDS) — Auto-injected ── */
+/* ── FSDS Design System — Auto-injected ── */
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  /* Surfaces */
-  --bg:            #0a0a12;
-  --surface-1:     #111122;
-  --surface-2:     #1a1a2e;
-  --surface-3:     #16213e;
+  /* Surfaces — neutral dark base (AI overrides accent vars freely) */
+  --bg:            ${isAiDecides ? '#0c0f1a' : '#0a0a12'};
+  --surface-1:     ${isAiDecides ? '#111827' : '#111122'};
+  --surface-2:     ${isAiDecides ? '#1e2535' : '#1a1a2e'};
+  --surface-3:     ${isAiDecides ? '#263044' : '#16213e'};
 
   /* Text */
   --text-primary:  #f0f0f0;
   --text-secondary:#aaaaaa;
-  --text-muted:    #666680;
+  --text-muted:    #666880;
 
-  /* Brand accents */
-  --accent:        #a855f7;
-  --accent-bright: #c084fc;
-  --accent-dim:    rgba(168,85,247,.15);
+  /* Accent — AI MUST override these with domain-appropriate colors */
+  --accent:        ${isAiDecides ? '#38bdf8' : '#a855f7'};
+  --accent-bright: ${isAiDecides ? '#7dd3fc' : '#c084fc'};
+  --accent-dim:    ${isAiDecides ? 'rgba(56,189,248,.15)' : 'rgba(168,85,247,.15)'};
   --green:         #00ffa3;
   --cyan:          #00d4ff;
   --pink:          #ec4899;
@@ -925,20 +1231,20 @@ app.post('/api/github/ai-code', async (c) => {
   --red:           #ef4444;
 
   /* Borders */
-  --border:        rgba(168,85,247,.18);
-  --border-accent: rgba(168,85,247,.5);
+  --border:        ${isAiDecides ? 'rgba(56,189,248,.15)' : 'rgba(168,85,247,.18)'};
+  --border-accent: ${isAiDecides ? 'rgba(56,189,248,.4)' : 'rgba(168,85,247,.5)'};
   --border-subtle: rgba(255,255,255,.06);
 
-  /* Gradients */
-  --grad-brand:    linear-gradient(135deg, #a855f7, #ec4899);
-  --grad-cyber:    linear-gradient(135deg, #00d4ff, #a855f7);
+  /* Gradients — AI-decides gets a neutral start; AI overrides --grad-brand */
+  --grad-brand:    ${isAiDecides ? 'linear-gradient(135deg, #38bdf8, #818cf8)' : 'linear-gradient(135deg, #a855f7, #ec4899)'};
+  --grad-cyber:    ${isAiDecides ? 'linear-gradient(135deg, #22d3ee, #818cf8)' : 'linear-gradient(135deg, #00d4ff, #a855f7)'};
   --grad-success:  linear-gradient(135deg, #00ffa3, #00d4ff);
 
   /* Shadows */
   --shadow-sm:  0 1px 3px rgba(0,0,0,.5);
   --shadow-md:  0 4px 16px rgba(0,0,0,.6), 0 2px 4px rgba(0,0,0,.4);
   --shadow-lg:  0 8px 32px rgba(0,0,0,.7), 0 4px 8px rgba(0,0,0,.5);
-  --shadow-glow: 0 0 24px rgba(168,85,247,.4);
+  --shadow-glow: ${isAiDecides ? '0 0 24px rgba(56,189,248,.4)' : '0 0 24px rgba(168,85,247,.4)'};
 
   /* Radii */
   --radius-sm:   6px;
@@ -1138,13 +1444,26 @@ ${isTerminal ? `@keyframes fsds-scanline { 0%{background-position:0 0}100%{backg
   const systemPrompt = `You are an expert AI software engineer and UI builder — like a senior engineer at a top-tier product company (Linear, Raycast, Vercel). You BUILD production-quality code by creating and modifying files. You never just talk about code.
 
 ${isPlain ? '' : `══════════════════════════════════════════════════
-FLOWSTATE DESIGN SYSTEM (FSDS) — YOUR VISUAL CONTRACT
+DESIGN SYSTEM — YOUR VISUAL CONTRACT
 ══════════════════════════════════════════════════
-You are building with the FlowState Design System. Every output MUST look like a premium, production-grade application. The FSDS CSS scaffold is automatically injected into every HTML file — use its classes and variables.
+You are building a premium, production-grade application. A CSS scaffold is auto-injected into every HTML file — use its classes and CSS variables as your foundation.
 
 ACTIVE PRESET: ${preset.label}
 ${preset.promptHint}
 
+${isAiDecides ? `COLOR SELECTION — MANDATORY:
+Your first action is to decide the color palette for THIS specific app. Add a <style> block at the top of your CSS (after the injected FSDS block) that overrides ONLY these CSS variables based on what fits the app:
+  :root {
+    --accent: [your chosen primary accent];
+    --accent-bright: [lighter version];
+    --accent-dim: [rgba version at 15% opacity];
+    --border: [rgba version at 15% opacity];
+    --border-accent: [rgba version at 40% opacity];
+    --shadow-glow: [0 0 24px rgba version at 40% opacity];
+    --grad-brand: [linear-gradient using your accent + complementary color];
+  }
+Choose boldly. Make it feel like this app has its own identity — not like every other dark-mode SaaS.
+` : ''}
 TYPOGRAPHY — NON-NEGOTIABLE:
 - Display/Headings: 'Plus Jakarta Sans' (weights 700–900, loaded via Google Fonts)
 - Body text: 'Inter' (weights 400–500)
@@ -1152,12 +1471,12 @@ TYPOGRAPHY — NON-NEGOTIABLE:
 - NEVER use: system-ui, Arial, Roboto, Helvetica as the primary font
 - The Google Fonts @import is already in the injected <style> block — just use font-family: var(--font-display) or var(--font-body)
 
-CSS VARIABLES — USE THESE, DO NOT INVENT NEW HEX VALUES:
+CSS VARIABLES — USE THESE AS BASE, EXTEND WITH YOUR OWN OVERRIDES:
 Surfaces:  var(--bg), var(--surface-1), var(--surface-2), var(--surface-3)
 Text:      var(--text-primary), var(--text-secondary), var(--text-muted)
-Accents:   var(--accent) [purple], var(--green), var(--cyan), var(--pink), var(--amber), var(--red)
+Accents:   var(--accent), var(--green), var(--cyan), var(--pink), var(--amber), var(--red)
 Borders:   var(--border), var(--border-accent), var(--border-subtle)
-Gradients: var(--grad-brand) [purple→pink], var(--grad-cyber) [cyan→purple], var(--grad-success) [green→cyan]
+Gradients: var(--grad-brand), var(--grad-cyber), var(--grad-success)
 Shadows:   var(--shadow-sm), var(--shadow-md), var(--shadow-lg), var(--shadow-glow)
 Radii:     var(--radius-sm)=6px, var(--radius-md)=10px, var(--radius-lg)=16px, var(--radius-xl)=24px, var(--radius-full)=999px
 Fonts:     var(--font-display), var(--font-body), var(--font-mono)
@@ -7308,6 +7627,8 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .code-view-btn{padding:4px 10px;border-radius:5px;border:none;font-size:11px;font-weight:600;cursor:pointer;transition:.15s;color:var(--text-m);background:transparent;display:flex;align-items:center;gap:5px}
 .code-view-btn.active{background:rgba(168,85,247,.25);color:var(--accent)}
 .code-view-btn:hover:not(.active){color:var(--text-p)}
+.code-viewport-btn{padding:4px 7px;font-size:11px}
+.code-viewport-btn.active{border-color:var(--accent);color:var(--accent);background:rgba(168,85,247,.1)}
 .code-example-prompt{padding:8px 14px;background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:8px;font-size:12px;color:var(--text-s);cursor:pointer;transition:.15s;text-align:left}
 .code-example-prompt:hover{background:rgba(168,85,247,.14);color:var(--text-p);border-color:rgba(168,85,247,.4)}
 .code-log-panel{width:200px;flex-shrink:0;background:rgba(8,8,18,.7);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;padding-top:4px}
@@ -8795,7 +9116,10 @@ em{color:var(--accent);font-style:italic}
 
         <!-- AI Generated Files — always visible once building starts -->
         <div class="code-file-explorer">
-          <div class="code-panel-label"><i class="fas fa-sparkles" style="color:#a855f7"></i> Project Files</div>
+          <div class="code-panel-label" style="display:flex;align-items:center;justify-content:space-between">
+            <span><i class="fas fa-sparkles" style="color:#a855f7"></i> Project Files</span>
+            <button onclick="codeLoadProjectsList()" title="Browse saved projects" style="font-size:9px;padding:2px 7px;border-radius:5px;border:1px solid var(--border);background:transparent;color:var(--text-m);cursor:pointer;white-space:nowrap"><i class="fas fa-folder-open" style="font-size:9px;color:#f59e0b"></i> Saved</button>
+          </div>
           <div id="code-gen-file-list" class="code-file-tree">
             <div class="code-file-empty">Files appear here as the AI builds…</div>
           </div>
@@ -8807,26 +9131,56 @@ em{color:var(--accent);font-style:italic}
           <div id="code-file-tree" class="code-file-tree"></div>
         </div>
 
-        <!-- Push all button -->
-        <div style="padding:8px 10px;border-top:1px solid var(--border);flex-shrink:0;display:none" id="code-push-all-wrap">
-          <button onclick="codePushAllToGitHub()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:8px;border-radius:9px;background:linear-gradient(135deg,#10b981,#059669);border:none;color:#fff;font-size:12px;font-weight:700;cursor:pointer" id="btn-code-push-all">
-            <i class="fab fa-github"></i> Push All Files
-          </button>
+        <!-- Saved Projects panel -->
+        <div class="code-file-explorer" id="code-projects-panel" style="display:none">
+          <div class="code-panel-label" style="display:flex;align-items:center;justify-content:space-between">
+            <span><i class="fas fa-folder-open" style="color:#f59e0b"></i> Saved Projects</span>
+            <button onclick="codeLoadProjectsList()" style="font-size:9px;padding:2px 6px;border-radius:5px;border:1px solid var(--border);background:transparent;color:var(--text-m);cursor:pointer" title="Refresh">↺</button>
+          </div>
+          <div id="code-projects-list" class="code-file-tree">
+            <div class="code-file-empty">No saved projects yet</div>
+          </div>
         </div>
 
-        <!-- Deploy to Cloudflare button -->
-        <div style="padding:8px 10px;border-top:1px solid var(--border);flex-shrink:0;display:none" id="code-deploy-cf-wrap">
-          <button onclick="codeDeployToCloudflare()" id="btn-code-deploy-cf"
-            style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px;border-radius:9px;background:linear-gradient(135deg,#f6821f,#e55b00);border:none;color:#fff;font-size:12px;font-weight:700;cursor:pointer">
-            <i class="fas fa-rocket"></i> Deploy to Cloudflare
-          </button>
-          <!-- Live URL shown after deploy -->
-          <div id="code-deploy-result" style="display:none;margin-top:7px;padding:8px 10px;background:rgba(246,130,31,.08);border:1px solid rgba(246,130,31,.25);border-radius:8px">
-            <div style="font-size:10px;font-weight:700;color:#f6821f;margin-bottom:4px"><i class="fas fa-circle" style="font-size:7px;margin-right:4px"></i>LIVE</div>
-            <a id="code-deploy-url" href="#" target="_blank" style="font-size:11px;color:#f6821f;word-break:break-all;text-decoration:none;font-weight:600"></a>
-            <div style="display:flex;gap:6px;margin-top:6px">
-              <button onclick="codeDeployCopyUrl()" style="flex:1;padding:5px;border-radius:6px;border:1px solid rgba(246,130,31,.4);background:transparent;color:#f6821f;font-size:10px;font-weight:700;cursor:pointer"><i class="fas fa-copy"></i> Copy URL</button>
-              <a id="code-deploy-open-btn" href="#" target="_blank" style="flex:1;padding:5px;border-radius:6px;border:1px solid rgba(246,130,31,.4);background:transparent;color:#f6821f;font-size:10px;font-weight:700;cursor:pointer;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:4px"><i class="fas fa-external-link-alt"></i> Open</a>
+        <!-- Bottom actions -->
+        <div style="padding:8px 10px;border-top:1px solid var(--border);flex-shrink:0;display:flex;flex-direction:column;gap:6px">
+          <!-- Publish (Live Preview URL) button — always shown after first build -->
+          <div id="code-publish-wrap" style="display:none">
+            <button onclick="codePublishPreview()" id="btn-code-publish"
+              style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px;border-radius:9px;background:linear-gradient(135deg,#00d4ff,#a855f7);border:none;color:#fff;font-size:12px;font-weight:700;cursor:pointer">
+              <i class="fas fa-globe"></i> Publish Live URL
+            </button>
+            <!-- Live preview URL shown after publish -->
+            <div id="code-preview-result" style="display:none;margin-top:7px;padding:8px 10px;background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.25);border-radius:8px">
+              <div style="font-size:10px;font-weight:700;color:#00d4ff;margin-bottom:4px"><i class="fas fa-circle" style="font-size:7px;margin-right:4px;color:#00ffa3"></i>LIVE PREVIEW</div>
+              <a id="code-preview-live-url" href="#" target="_blank" style="font-size:10px;color:#00d4ff;word-break:break-all;text-decoration:none;font-weight:600;display:block;margin-bottom:6px"></a>
+              <div style="display:flex;gap:6px">
+                <button onclick="codePreviewCopyUrl()" style="flex:1;padding:5px;border-radius:6px;border:1px solid rgba(0,212,255,.4);background:transparent;color:#00d4ff;font-size:10px;font-weight:700;cursor:pointer"><i class="fas fa-copy"></i> Copy</button>
+                <a id="code-preview-open-btn" href="#" target="_blank" style="flex:1;padding:5px;border-radius:6px;border:1px solid rgba(0,212,255,.4);background:transparent;color:#00d4ff;font-size:10px;font-weight:700;cursor:pointer;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:4px"><i class="fas fa-external-link-alt"></i> Open</a>
+              </div>
+            </div>
+          </div>
+
+          <!-- Push all button -->
+          <div id="code-push-all-wrap" style="display:none">
+            <button onclick="codePushAllToGitHub()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:8px;border-radius:9px;background:linear-gradient(135deg,#10b981,#059669);border:none;color:#fff;font-size:12px;font-weight:700;cursor:pointer" id="btn-code-push-all">
+              <i class="fab fa-github"></i> Push All to GitHub
+            </button>
+          </div>
+
+          <!-- Deploy to Cloudflare (legacy — user's own CF token) -->
+          <div id="code-deploy-cf-wrap" style="display:none">
+            <button onclick="codeDeployToCloudflare()" id="btn-code-deploy-cf"
+              style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:8px;border-radius:9px;background:linear-gradient(135deg,#f6821f,#e55b00);border:none;color:#fff;font-size:11px;font-weight:700;cursor:pointer">
+              <i class="fas fa-rocket"></i> Deploy (my Cloudflare)
+            </button>
+            <div id="code-deploy-result" style="display:none;margin-top:7px;padding:8px 10px;background:rgba(246,130,31,.08);border:1px solid rgba(246,130,31,.25);border-radius:8px">
+              <div style="font-size:10px;font-weight:700;color:#f6821f;margin-bottom:4px"><i class="fas fa-circle" style="font-size:7px;margin-right:4px"></i>DEPLOYED</div>
+              <a id="code-deploy-url" href="#" target="_blank" style="font-size:11px;color:#f6821f;word-break:break-all;text-decoration:none;font-weight:600"></a>
+              <div style="display:flex;gap:6px;margin-top:6px">
+                <button onclick="codeDeployCopyUrl()" style="flex:1;padding:5px;border-radius:6px;border:1px solid rgba(246,130,31,.4);background:transparent;color:#f6821f;font-size:10px;font-weight:700;cursor:pointer"><i class="fas fa-copy"></i> Copy URL</button>
+                <a id="code-deploy-open-btn" href="#" target="_blank" style="flex:1;padding:5px;border-radius:6px;border:1px solid rgba(246,130,31,.4);background:transparent;color:#f6821f;font-size:10px;font-weight:700;cursor:pointer;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:4px"><i class="fas fa-external-link-alt"></i> Open</a>
+              </div>
             </div>
           </div>
         </div>
@@ -8845,6 +9199,16 @@ em{color:var(--accent);font-style:italic}
               <button class="code-view-btn active" id="btn-view-code" onclick="codeSetView('code')"><i class="fas fa-code"></i> Code</button>
               <button class="code-view-btn" id="btn-view-preview" onclick="codeSetView('preview')"><i class="fas fa-eye"></i> Preview</button>
             </div>
+            <!-- Viewport size controls (visible in preview mode) -->
+            <div id="code-viewport-controls" style="display:none;align-items:center;gap:2px">
+              <button class="code-icon-btn code-viewport-btn active" id="vp-desktop" onclick="codeSetViewport('desktop')" title="Desktop (100%)"><i class="fas fa-desktop"></i></button>
+              <button class="code-icon-btn code-viewport-btn" id="vp-tablet" onclick="codeSetViewport('tablet')" title="Tablet (768px)"><i class="fas fa-tablet-alt"></i></button>
+              <button class="code-icon-btn code-viewport-btn" id="vp-mobile" onclick="codeSetViewport('mobile')" title="Mobile (375px)"><i class="fas fa-mobile-alt"></i></button>
+            </div>
+            <!-- Open in browser button (shown after publish) -->
+            <a class="code-icon-btn" id="btn-code-open-browser" href="#" target="_blank" title="Open in new tab — full browser preview" style="display:none;text-decoration:none"><i class="fas fa-external-link-alt"></i></a>
+            <!-- Download ZIP -->
+            <button class="code-icon-btn" onclick="codeDownloadZip()" title="Download as ZIP" id="btn-code-zip" style="display:none"><i class="fas fa-download"></i></button>
             <button class="code-icon-btn" onclick="codeCopyContent()" title="Copy current file" id="btn-code-copy" style="display:none"><i class="fas fa-copy"></i></button>
             <button class="code-icon-btn" onclick="codePushToGitHub()" title="Push active file to GitHub" id="btn-code-push" style="display:none"><i class="fab fa-github"></i> Push</button>
           </div>
@@ -8865,9 +9229,11 @@ em{color:var(--accent);font-style:italic}
         </div>
 
         <!-- Live preview iframe (hidden until preview mode) -->
-        <div id="code-preview-wrap" style="display:none;flex:1;overflow:hidden;background:#fff">
-          <iframe id="code-preview-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
-            style="width:100%;height:100%;border:none;background:#fff"></iframe>
+        <div id="code-preview-wrap" style="display:none;flex:1;overflow:auto;background:#1a1a2e;align-items:flex-start;justify-content:center;padding:0">
+          <div id="code-preview-viewport" style="width:100%;height:100%;transition:width 0.2s ease;background:#fff;margin:0 auto">
+            <iframe id="code-preview-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+              style="width:100%;height:100%;border:none;background:#fff"></iframe>
+          </div>
         </div>
 
         <!-- AI Prompt Bar -->
@@ -8882,8 +9248,9 @@ em{color:var(--accent);font-style:italic}
               onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();codeGenerate();}"></textarea>
             <div class="code-prompt-actions">
               <select class="code-lang-select" id="code-style-preset" title="Visual style preset — controls the design system injected into every generated app">
+                <option value="ai-decides" selected>✨ AI Decides</option>
                 <optgroup label="── Dark Themes">
-                  <option value="flowstate-dark" selected>⚡ FlowState Dark</option>
+                  <option value="flowstate-dark">⚡ FlowState Dark</option>
                   <option value="glassmorphism">🔮 Glassmorphism</option>
                   <option value="cyberpunk">🌆 Cyberpunk</option>
                   <option value="terminal">💻 Terminal</option>
@@ -8898,7 +9265,7 @@ em{color:var(--accent);font-style:italic}
                   <option value="react-dashboard">📊 React Dashboard</option>
                 </optgroup>
                 <optgroup label="── Other">
-                  <option value="plain">📝 Plain (AI decides)</option>
+                  <option value="plain">📝 Plain</option>
                 </optgroup>
               </select>
               <span style="font-size:10px;color:var(--text-m);flex:1;text-align:right;padding-right:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px" id="code-preset-label" title="Active style preset">⌘↵ to send</span>
