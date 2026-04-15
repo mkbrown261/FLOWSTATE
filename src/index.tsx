@@ -675,7 +675,7 @@ app.post('/api/code/project/save', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
 
-  const { projectId, name, files, previewId } = await c.req.json()
+  const { projectId, name, files, previewId, history } = await c.req.json()
   if (!files || typeof files !== 'object') return c.json({ error: 'no_files' }, 400)
 
   const db = c.env.DB
@@ -685,7 +685,7 @@ app.post('/api/code/project/save', async (c) => {
   const now = new Date().toISOString()
 
   try {
-    // Ensure table exists
+    // Ensure table exists (with history column)
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS code_projects (
         id TEXT PRIMARY KEY,
@@ -693,21 +693,30 @@ app.post('/api/code/project/save', async (c) => {
         name TEXT,
         files TEXT NOT NULL,
         preview_id TEXT,
+        history TEXT,
         created_at TEXT,
         updated_at TEXT
       )
     `).run()
 
-    const filesJson = JSON.stringify(files)
+    // Add history column if it doesn't exist (migration for existing tables)
+    try {
+      await db.prepare(`ALTER TABLE code_projects ADD COLUMN history TEXT`).run()
+    } catch { /* column already exists — safe to ignore */ }
+
+    const filesJson   = JSON.stringify(files)
+    const historyJson = JSON.stringify(Array.isArray(history) ? history.slice(-20) : [])
+
     await db.prepare(`
-      INSERT INTO code_projects (id, email, name, files, preview_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO code_projects (id, email, name, files, preview_id, history, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         files = excluded.files,
         preview_id = excluded.preview_id,
+        history = excluded.history,
         updated_at = excluded.updated_at
-    `).bind(id, session.email, name || 'Untitled Project', filesJson, previewId || null, now, now).run()
+    `).bind(id, session.email, name || 'Untitled Project', filesJson, previewId || null, historyJson, now, now).run()
 
     return c.json({ ok: true, projectId: id })
   } catch (e: any) {
@@ -727,9 +736,10 @@ app.get('/api/code/projects', async (c) => {
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS code_projects (
         id TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT,
-        files TEXT NOT NULL, preview_id TEXT, created_at TEXT, updated_at TEXT
+        files TEXT NOT NULL, preview_id TEXT, history TEXT, created_at TEXT, updated_at TEXT
       )
     `).run()
+    try { await db.prepare(`ALTER TABLE code_projects ADD COLUMN history TEXT`).run() } catch { /* exists */ }
 
     const rows = await db.prepare(
       `SELECT id, name, preview_id, created_at, updated_at FROM code_projects WHERE email = ? ORDER BY updated_at DESC LIMIT 20`
@@ -756,7 +766,11 @@ app.get('/api/code/project/:id', async (c) => {
     ).bind(id, session.email).first()
 
     if (!row) return c.json({ error: 'not_found' }, 404)
-    return c.json({ ok: true, project: { ...row, files: JSON.parse(row.files || '{}') } })
+    return c.json({ ok: true, project: {
+      ...row,
+      files: JSON.parse(row.files || '{}'),
+      history: JSON.parse((row as any).history || '[]'),
+    } })
   } catch (e: any) {
     return c.json({ error: 'load_failed', message: e.message }, 500)
   }
@@ -1506,6 +1520,10 @@ DESIGN RULES — STRICTLY ENFORCED:
 ✅ DO: Use gradient text (var(--grad-brand)) on hero headings and logo
 ✅ DO: Make it feel alive — subtle animations, micro-interactions, smooth transitions
 ✅ DO: Use Lucide icons via CDN: <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script> + lucide.createIcons()
+✅ DO: Use real images via Picsum — https://picsum.photos/{width}/{height}?random={n} for generic photos
+   For topic-specific images use Unsplash Source: https://source.unsplash.com/{width}x{height}/?{keyword}
+   Examples: https://source.unsplash.com/800x500/?dashboard  https://source.unsplash.com/400x400/?portrait
+   Use these for hero images, avatars, product cards, blog thumbnails — anything that needs a real photo
 
 ❌ NEVER: White (#ffffff / #fff) as the default page background in dark presets
 ❌ NEVER: Hardcode hex colors outside the token set — always var(--something)
@@ -7631,7 +7649,28 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .code-viewport-btn.active{border-color:var(--accent);color:var(--accent);background:rgba(168,85,247,.1)}
 .code-example-prompt{padding:8px 14px;background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:8px;font-size:12px;color:var(--text-s);cursor:pointer;transition:.15s;text-align:left}
 .code-example-prompt:hover{background:rgba(168,85,247,.14);color:var(--text-p);border-color:rgba(168,85,247,.4)}
-.code-log-panel{width:200px;flex-shrink:0;background:rgba(8,8,18,.7);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;padding-top:4px}
+.code-log-panel{width:260px;flex-shrink:0;background:rgba(8,8,18,.85);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+/* Chat interface */
+.code-chat-messages{flex:1;overflow-y:auto;padding:12px 10px;display:flex;flex-direction:column;gap:10px;min-height:0;scroll-behavior:smooth}
+.code-chat-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:8px;padding:16px;text-align:center}
+.code-chat-bubble{padding:9px 12px;border-radius:10px;font-size:12px;line-height:1.55;max-width:100%;word-break:break-word;animation:fadeUp .2s ease}
+.code-chat-user{background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.25);color:var(--text-p);align-self:flex-end;border-bottom-right-radius:3px}
+.code-chat-ai{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);color:#10b981;align-self:flex-start;border-bottom-left-radius:3px}
+.code-chat-log{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);color:var(--text-m);font-size:10px;border-radius:7px;padding:5px 8px}
+.code-chat-input-wrap{border-top:1px solid var(--border);padding:8px 10px;display:flex;gap:6px;align-items:flex-end;flex-shrink:0}
+.code-chat-input{flex:1;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:12px;color:var(--text-p);outline:none;resize:none;font-family:inherit;line-height:1.5;min-height:36px;max-height:100px}
+.code-chat-input:focus{border-color:var(--accent)}
+.code-chat-send{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#10b981,#a855f7);border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:.15s}
+.code-chat-send:hover{opacity:.85;transform:scale(1.05)}
+.code-chat-send:disabled{opacity:.4;cursor:not-allowed;transform:none}
+/* Template cards */
+.code-template-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;max-width:480px}
+.code-template-card{padding:10px 12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:10px;cursor:pointer;transition:.18s;text-align:left}
+.code-template-card:hover{background:rgba(168,85,247,.1);border-color:rgba(168,85,247,.35);transform:translateY(-1px)}
+.code-template-card-icon{font-size:18px;margin-bottom:5px}
+.code-template-card-title{font-size:11px;font-weight:700;color:var(--text-p);margin-bottom:2px}
+.code-template-card-desc{font-size:10px;color:var(--text-m);line-height:1.4}
+/* Log entries (kept for the log tab) */
 .code-activity-log{flex:1;overflow-y:auto;padding:4px 8px;display:flex;flex-direction:column;gap:5px;min-height:0}
 .code-log-empty{font-size:11px;color:var(--text-m);padding:12px 4px;text-align:center;line-height:1.6}
 .code-log-entry{padding:6px 9px;border-radius:7px;font-size:11px;line-height:1.5;animation:fadeUp .2s ease}
@@ -9216,14 +9255,51 @@ em{color:var(--accent);font-style:italic}
 
         <!-- Code display -->
         <div class="code-editor-wrap" id="code-editor-wrap">
-          <div class="code-welcome">
-            <div style="font-size:36px;margin-bottom:14px">⚡</div>
-            <div style="font-size:16px;font-weight:800;color:var(--text-p);margin-bottom:8px">AI Code Builder</div>
-            <div style="font-size:13px;color:var(--text-s);line-height:1.7;max-width:340px;margin-bottom:16px">Describe what you want to build. The AI writes real files, remembers your project, and shows a live preview.</div>
-            <div style="display:flex;flex-direction:column;gap:7px;width:100%;max-width:300px">
-              <div class="code-example-prompt" onclick="codeUseExample(this)">Build a todo app with HTML, CSS and JS</div>
-              <div class="code-example-prompt" onclick="codeUseExample(this)">Create a landing page with a hero section and navbar</div>
-              <div class="code-example-prompt" onclick="codeUseExample(this)">Make a React counter component with hooks</div>
+          <div class="code-welcome" id="code-welcome-screen">
+            <div style="font-size:28px;margin-bottom:8px">⚡</div>
+            <div style="font-size:15px;font-weight:800;color:var(--text-p);margin-bottom:4px">AI Code Builder</div>
+            <div style="font-size:12px;color:var(--text-s);line-height:1.6;max-width:340px;margin-bottom:16px">Pick a template or describe what to build. Live preview + real URL every time.</div>
+            <div class="code-template-grid">
+              <div class="code-template-card" onclick="codeUseTemplate('dashboard')">
+                <div class="code-template-card-icon">📊</div>
+                <div class="code-template-card-title">Dashboard</div>
+                <div class="code-template-card-desc">Analytics, charts, data tables, KPI cards</div>
+              </div>
+              <div class="code-template-card" onclick="codeUseTemplate('landing')">
+                <div class="code-template-card-icon">🚀</div>
+                <div class="code-template-card-title">Landing Page</div>
+                <div class="code-template-card-desc">Hero, features, pricing, CTA sections</div>
+              </div>
+              <div class="code-template-card" onclick="codeUseTemplate('saas')">
+                <div class="code-template-card-icon">🧊</div>
+                <div class="code-template-card-title">SaaS App</div>
+                <div class="code-template-card-desc">Sidebar nav, settings, user management</div>
+              </div>
+              <div class="code-template-card" onclick="codeUseTemplate('ecommerce')">
+                <div class="code-template-card-icon">🛒</div>
+                <div class="code-template-card-title">E-Commerce</div>
+                <div class="code-template-card-desc">Product grid, cart, checkout flow</div>
+              </div>
+              <div class="code-template-card" onclick="codeUseTemplate('portfolio')">
+                <div class="code-template-card-icon">🎨</div>
+                <div class="code-template-card-title">Portfolio</div>
+                <div class="code-template-card-desc">Personal brand, work gallery, contact</div>
+              </div>
+              <div class="code-template-card" onclick="codeUseTemplate('mobile')">
+                <div class="code-template-card-icon">📱</div>
+                <div class="code-template-card-title">Mobile UI</div>
+                <div class="code-template-card-desc">App screen, bottom nav, mobile-first</div>
+              </div>
+              <div class="code-template-card" onclick="codeUseTemplate('chat')">
+                <div class="code-template-card-icon">💬</div>
+                <div class="code-template-card-title">Chat App</div>
+                <div class="code-template-card-desc">Messenger UI, conversations, bubbles</div>
+              </div>
+              <div class="code-template-card" onclick="codeUseTemplate('react-dash')">
+                <div class="code-template-card-icon">⚛️</div>
+                <div class="code-template-card-title">React Dashboard</div>
+                <div class="code-template-card-desc">React 18, Chart.js, component files</div>
+              </div>
             </div>
           </div>
         </div>
@@ -9236,27 +9312,23 @@ em{color:var(--accent);font-style:italic}
           </div>
         </div>
 
-        <!-- AI Prompt Bar -->
+        <!-- Prompt bar — compact, at the bottom of center panel -->
         <div class="code-prompt-bar">
-          <!-- AI message (shown after each generation) -->
-          <div id="code-ai-message" style="display:none;padding:8px 12px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);border-radius:8px;font-size:12px;color:#10b981;margin-bottom:8px;line-height:1.5">
-            <i class="fas fa-robot" style="margin-right:6px;opacity:.7"></i><span id="code-ai-message-text"></span>
-          </div>
           <div class="code-prompt-wrap">
             <textarea class="code-prompt-input" id="code-prompt-input" rows="2"
-              placeholder="Describe what to build or change… e.g. 'Add a dark mode toggle' or 'Create a login form'"
+              placeholder="Describe what to build or change… (⌘↵ to send)"
               onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();codeGenerate();}"></textarea>
             <div class="code-prompt-actions">
-              <select class="code-lang-select" id="code-style-preset" title="Visual style preset — controls the design system injected into every generated app">
+              <select class="code-lang-select" id="code-style-preset" title="Visual style preset">
                 <option value="ai-decides" selected>✨ AI Decides</option>
-                <optgroup label="── Dark Themes">
+                <optgroup label="── Dark">
                   <option value="flowstate-dark">⚡ FlowState Dark</option>
                   <option value="glassmorphism">🔮 Glassmorphism</option>
                   <option value="cyberpunk">🌆 Cyberpunk</option>
                   <option value="terminal">💻 Terminal</option>
                 </optgroup>
-                <optgroup label="── Light Themes">
-                  <option value="flowstate-light">☀️ FlowState Light</option>
+                <optgroup label="── Light">
+                  <option value="flowstate-light">☀️ Light</option>
                   <option value="minimal-saas">🧊 Minimal SaaS</option>
                   <option value="brutalist">🔲 Brutalist</option>
                 </optgroup>
@@ -9268,9 +9340,8 @@ em{color:var(--accent);font-style:italic}
                   <option value="plain">📝 Plain</option>
                 </optgroup>
               </select>
-              <span style="font-size:10px;color:var(--text-m);flex:1;text-align:right;padding-right:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px" id="code-preset-label" title="Active style preset">⌘↵ to send</span>
-              <button class="code-btn-clawflow" id="btn-code-clawflow" onclick="openClawflowPage()" title="Open ClawFlow Developer — persistent AI with memory">
-                <i class="fas fa-bolt"></i> ClawFlow
+              <button class="code-btn-clawflow" id="btn-code-clawflow" onclick="openClawflowPage()" title="ClawFlow Developer">
+                <i class="fas fa-bolt"></i>
               </button>
               <button class="code-btn-generate" id="btn-code-generate" onclick="codeGenerate()">
                 <i class="fas fa-wand-magic-sparkles"></i> Build
@@ -9280,21 +9351,51 @@ em{color:var(--accent);font-style:italic}
         </div>
       </div>
 
-      <!-- RIGHT: Live Status / Activity Log -->
-      <div class="code-log-panel">
-        <div class="code-panel-label"><i class="fas fa-bolt"></i> Build Log</div>
-        <div id="code-activity-log" class="code-activity-log">
-          <div class="code-log-empty">Build activity appears here…</div>
+      <!-- RIGHT: Chat Interface -->
+      <div class="code-log-panel" id="code-chat-panel">
+        <!-- Chat tab bar -->
+        <div style="display:flex;border-bottom:1px solid var(--border);flex-shrink:0">
+          <button class="code-chat-tab active" id="chat-tab-convo" onclick="codeChatTab('convo')" style="flex:1;padding:8px 6px;background:transparent;border:none;font-size:10px;font-weight:700;color:var(--accent);cursor:pointer;border-bottom:2px solid var(--accent);letter-spacing:.5px">💬 CHAT</button>
+          <button class="code-chat-tab" id="chat-tab-log" onclick="codeChatTab('log')" style="flex:1;padding:8px 6px;background:transparent;border:none;font-size:10px;font-weight:700;color:var(--text-m);cursor:pointer;border-bottom:2px solid transparent;letter-spacing:.5px">⚡ LOG</button>
+          <button class="code-chat-tab" id="chat-tab-git" onclick="codeChatTab('git')" style="flex:1;padding:8px 6px;background:transparent;border:none;font-size:10px;font-weight:700;color:var(--text-m);cursor:pointer;border-bottom:2px solid transparent;letter-spacing:.5px">⑂ GIT</button>
         </div>
-        <!-- GitHub Status -->
-        <div class="code-panel-label" style="margin-top:12px"><i class="fab fa-github"></i> GitHub</div>
-        <div id="code-gh-status-panel" class="code-gh-status">
-          <div style="font-size:11px;color:var(--text-m)">Not connected</div>
+
+        <!-- Conversation tab -->
+        <div id="code-chat-convo" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0">
+          <div class="code-chat-messages" id="code-chat-messages">
+            <div class="code-chat-empty">
+              <div style="font-size:24px;margin-bottom:6px">💬</div>
+              <div style="font-size:12px;font-weight:700;color:var(--text-p);margin-bottom:4px">Chat with your AI</div>
+              <div style="font-size:11px;color:var(--text-m);line-height:1.6">Your conversation history appears here. Ask questions, request changes, or describe new features.</div>
+            </div>
+          </div>
+          <div class="code-chat-input-wrap">
+            <textarea class="code-chat-input" id="code-chat-input" rows="1" placeholder="Ask the AI…"
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();codeChatSend();}"
+              oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,100)+'px'"></textarea>
+            <button class="code-chat-send" id="btn-chat-send" onclick="codeChatSend()" title="Send (Enter)">
+              <i class="fas fa-paper-plane" style="font-size:11px"></i>
+            </button>
+          </div>
         </div>
-        <!-- Commit Log -->
-        <div id="code-commit-log-wrap" style="display:none">
-          <div class="code-panel-label" style="margin-top:12px"><i class="fas fa-code-commit"></i> Recent Pushes</div>
-          <div id="code-commit-log" class="code-commit-log"></div>
+
+        <!-- Log tab -->
+        <div id="code-chat-log" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0">
+          <div id="code-activity-log" class="code-activity-log">
+            <div class="code-log-empty">Build activity appears here…</div>
+          </div>
+        </div>
+
+        <!-- Git tab -->
+        <div id="code-chat-git" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;padding:8px">
+          <div class="code-panel-label" style="margin-bottom:6px"><i class="fab fa-github"></i> GitHub</div>
+          <div id="code-gh-status-panel" class="code-gh-status">
+            <div style="font-size:11px;color:var(--text-m)">Not connected</div>
+          </div>
+          <div id="code-commit-log-wrap" style="display:none;margin-top:8px">
+            <div class="code-panel-label" style="margin-bottom:6px"><i class="fas fa-code-commit"></i> Recent Pushes</div>
+            <div id="code-commit-log" class="code-commit-log"></div>
+          </div>
         </div>
       </div>
 

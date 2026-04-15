@@ -10552,7 +10552,12 @@ async function codeGenerate() {
     if (editor) editor.innerHTML = `<div class="code-generating"><div class="code-gen-pulse"></div><span>AI is building your project…</span></div>`;
   }
 
-  // Hide previous AI message
+  // Add user message to chat panel
+  _codeChatAddMessage('user', prompt);
+  // Switch chat to convo tab
+  codeChatTab('convo');
+
+  // Hide previous AI message banner (now in chat)
   const msgEl = document.getElementById('code-ai-message');
   if (msgEl) msgEl.style.display = 'none';
 
@@ -10644,11 +10649,10 @@ async function codeGenerate() {
       _codeState.conversationHistory = _codeState.conversationHistory.slice(-20);
     }
 
-    // ── Show AI message ───────────────────────────────────────────────────────
+    // ── Show AI message in chat panel ─────────────────────────────────────────
     if (data.message) {
-      const msgText = document.getElementById('code-ai-message-text');
-      if (msgText) msgText.textContent = data.message;
-      if (msgEl) msgEl.style.display = 'block';
+      const aiMsg = `${data.message} (${files.length} file${files.length>1?'s':''} written)`;
+      _codeChatAddMessage('ai', aiMsg);
     }
 
     // ── Auto-preview if there's an HTML file ─────────────────────────────────
@@ -10735,16 +10739,53 @@ function codeNewSession() {
   _codeState.previewId = null;
   _codeState.previewUrl = null;
 
-  // Reset editor
+  // Reset editor — show full template grid welcome screen
   const editor = document.getElementById('code-editor-wrap');
-  if (editor) editor.innerHTML = `<div class="code-welcome">
-    <div style="font-size:36px;margin-bottom:14px">⚡</div>
-    <div style="font-size:16px;font-weight:800;color:var(--text-p);margin-bottom:8px">AI Code Builder</div>
-    <div style="font-size:13px;color:var(--text-s);line-height:1.7;max-width:340px;margin-bottom:16px">Describe what you want to build. The AI writes real files, remembers your project, and shows a live preview.</div>
-    <div style="display:flex;flex-direction:column;gap:7px;width:100%;max-width:300px">
-      <div class="code-example-prompt" onclick="codeUseExample(this)">Build a todo app with HTML, CSS and JS</div>
-      <div class="code-example-prompt" onclick="codeUseExample(this)">Create a landing page with a hero section and navbar</div>
-      <div class="code-example-prompt" onclick="codeUseExample(this)">Make a React counter component with hooks</div>
+  if (editor) editor.innerHTML = `<div class="code-welcome" id="code-welcome-screen">
+    <div style="font-size:28px;margin-bottom:8px">⚡</div>
+    <div style="font-size:15px;font-weight:800;color:var(--text-p);margin-bottom:4px">AI Code Builder</div>
+    <div style="font-size:12px;color:var(--text-s);line-height:1.6;max-width:340px;margin-bottom:16px">Pick a template or describe what to build. Live preview + real URL every time.</div>
+    <div class="code-template-grid">
+      <div class="code-template-card" onclick="codeUseTemplate('dashboard')">
+        <div class="code-template-card-icon">📊</div>
+        <div class="code-template-card-title">Dashboard</div>
+        <div class="code-template-card-desc">Analytics, charts, data tables, KPI cards</div>
+      </div>
+      <div class="code-template-card" onclick="codeUseTemplate('landing')">
+        <div class="code-template-card-icon">🚀</div>
+        <div class="code-template-card-title">Landing Page</div>
+        <div class="code-template-card-desc">Hero, features, pricing, CTA sections</div>
+      </div>
+      <div class="code-template-card" onclick="codeUseTemplate('saas')">
+        <div class="code-template-card-icon">🧊</div>
+        <div class="code-template-card-title">SaaS App</div>
+        <div class="code-template-card-desc">Sidebar nav, settings, user management</div>
+      </div>
+      <div class="code-template-card" onclick="codeUseTemplate('ecommerce')">
+        <div class="code-template-card-icon">🛒</div>
+        <div class="code-template-card-title">E-Commerce</div>
+        <div class="code-template-card-desc">Product grid, cart, checkout flow</div>
+      </div>
+      <div class="code-template-card" onclick="codeUseTemplate('portfolio')">
+        <div class="code-template-card-icon">🎨</div>
+        <div class="code-template-card-title">Portfolio</div>
+        <div class="code-template-card-desc">Personal brand, work gallery, contact</div>
+      </div>
+      <div class="code-template-card" onclick="codeUseTemplate('mobile')">
+        <div class="code-template-card-icon">📱</div>
+        <div class="code-template-card-title">Mobile UI</div>
+        <div class="code-template-card-desc">App screen, bottom nav, mobile-first</div>
+      </div>
+      <div class="code-template-card" onclick="codeUseTemplate('chat')">
+        <div class="code-template-card-icon">💬</div>
+        <div class="code-template-card-title">Chat App</div>
+        <div class="code-template-card-desc">Messenger UI, conversations, bubbles</div>
+      </div>
+      <div class="code-template-card" onclick="codeUseTemplate('react-dash')">
+        <div class="code-template-card-icon">⚛️</div>
+        <div class="code-template-card-title">React Dashboard</div>
+        <div class="code-template-card-desc">React 18, Chart.js, component files</div>
+      </div>
     </div>
   </div>`;
 
@@ -10777,6 +10818,15 @@ function codeNewSession() {
   const vpControls = document.getElementById('code-viewport-controls');
   if (vpControls) vpControls.style.display = 'none';
 
+  // Reset chat panel
+  const chatMessages = document.getElementById('code-chat-messages');
+  if (chatMessages) chatMessages.innerHTML = `<div class="code-chat-empty">
+    <div style="font-size:24px;margin-bottom:6px">💬</div>
+    <div style="font-size:12px;font-weight:700;color:var(--text-p);margin-bottom:4px">Chat with your AI</div>
+    <div style="font-size:11px;color:var(--text-m);line-height:1.6">Your conversation history appears here.</div>
+  </div>`;
+  codeChatTab('convo');
+
   _codeUpdateSessionBadge();
   codeLog('🔄 New session started', 'info');
 }
@@ -10796,6 +10846,182 @@ function _codeUpdateSessionBadge() {
 function codeUseExample(el) {
   const inp = document.getElementById('code-prompt-input');
   if (inp) { inp.value = el.textContent; inp.focus(); }
+}
+
+// ── Template starter library ──────────────────────────────────────────────────
+const CODE_TEMPLATES = {
+  'dashboard': {
+    preset: 'ai-decides',
+    prompt: `Build a beautiful analytics dashboard with:
+- Top navbar with logo, nav links, and a user avatar
+- Sidebar with icons for: Overview, Analytics, Reports, Users, Settings
+- Hero row: 4 KPI metric cards (Revenue, Users, Conversion, Growth) with trend arrows
+- Line chart (Chart.js from CDN) showing monthly revenue for the past 12 months
+- Bar chart showing weekly active users
+- Recent activity table with avatar, name, action, date, status badge columns
+- Quick actions panel
+Use realistic data. Make it feel like a real SaaS product.`
+  },
+  'landing': {
+    preset: 'ai-decides',
+    prompt: `Build a premium SaaS landing page with:
+- Sticky navbar: logo, nav links (Features, Pricing, About), CTA button
+- Hero section: bold headline with gradient text, subheadline, two CTA buttons, hero image/mockup
+- Social proof: logos of 5 well-known companies
+- Features section: 3-column grid with icons, titles, descriptions
+- How it works: 3-step process with numbered steps
+- Testimonials: 3 cards with avatar, name, role, quote
+- Pricing: 3 tiers (Free, Pro, Enterprise) with feature lists and CTA
+- FAQ accordion section
+- Footer with links and social icons
+Use a Picsum or Unsplash hero image. Make it feel worth $100/month.`
+  },
+  'saas': {
+    preset: 'ai-decides',
+    prompt: `Build a full SaaS application shell with:
+- Collapsible sidebar: logo, navigation (Dashboard, Projects, Team, Billing, Settings), user profile at bottom
+- Top header: page title, search bar, notifications bell, user menu
+- Main content area with: welcome card, recent projects grid (6 cards with status badges), quick stats row
+- Team members section with avatars, names, roles, online status
+- Settings modal that opens on click: profile, billing, API keys tabs
+Multi-page feel with sidebar active states. Use real avatars from Picsum.`
+  },
+  'ecommerce': {
+    preset: 'ai-decides',
+    prompt: `Build a premium e-commerce store UI with:
+- Navbar: logo, category links, search bar, cart icon with badge, user icon
+- Hero banner: full-width with product showcase and CTA
+- Featured categories: horizontal scroll of category cards with Unsplash images
+- Product grid: 8 product cards each with image, name, price, rating stars, add-to-cart button
+- Cart sidebar: slides in from right, shows items, quantity controls, subtotal, checkout button
+- Quick-view modal on product hover
+- Footer with newsletter signup
+Use realistic product names and prices. Make it feel like a real store.`
+  },
+  'portfolio': {
+    preset: 'ai-decides',
+    prompt: `Build a stunning personal portfolio site for a UI/UX designer with:
+- Minimal navbar: name/logo, nav links, hire me button
+- Hero: large name, title, tagline, profile photo (Picsum), social links
+- About section: bio, skills as styled tags, experience timeline
+- Work/Projects section: 6 project cards with Unsplash cover images, title, category, view button
+- Skills section: visual skill bars or icon grid
+- Testimonials: 3 client testimonials
+- Contact section: email form, social links
+Clean, modern, impressive. Make it look like a $5000 portfolio site.`
+  },
+  'mobile': {
+    preset: 'minimal-saas',
+    prompt: `Build a mobile app UI (375px wide) for a fitness tracking app with:
+- Status bar at top
+- Bottom tab navigation: Home, Workout, Progress, Profile
+- Home screen: greeting, today's stats (steps, calories, water), activity ring, quick workout cards
+- Workout screen: exercise list with sets/reps, timer, progress bar
+- Progress screen: weekly chart, personal records, streak counter
+- Profile screen: avatar, stats, achievements badges, settings
+Use mobile-first design. Everything should look native. Use smooth cards and bottom sheets.`
+  },
+  'chat': {
+    preset: 'ai-decides',
+    prompt: `Build a modern chat application UI with:
+- Left sidebar: search bar, conversation list with avatars, last message preview, unread badges, online indicators
+- Chat main area: contact header with online status, message bubbles (sent/received with different styles), timestamps, typing indicator
+- Message input: emoji button, attachment button, text input, send button
+- Right panel: contact info, shared media grid, quick actions
+- At least 10 realistic messages in the conversation
+Use real-looking avatars from Picsum. Make it feel like iMessage or WhatsApp Web.`
+  },
+  'react-dash': {
+    preset: 'react-dashboard',
+    prompt: `Build a React 18 analytics dashboard as separate component files:
+- index.html: mounts App.jsx, includes Chart.js CDN
+- App.jsx: layout wrapper, imports Sidebar + Dashboard
+- components/Sidebar.jsx: navigation with active states
+- components/Header.jsx: search, notifications, user menu
+- components/Dashboard.jsx: main content area
+- components/MetricCard.jsx: reusable KPI card with value, label, trend
+- components/RevenueChart.jsx: Chart.js line chart with realistic monthly data
+- components/RecentOrders.jsx: styled table with order data
+Use useState, useEffect hooks. Realistic data throughout.`
+  },
+};
+
+function codeUseTemplate(key) {
+  const tpl = CODE_TEMPLATES[key];
+  if (!tpl) return;
+
+  // Set the style preset
+  const presetSel = document.getElementById('code-style-preset');
+  if (presetSel) presetSel.value = tpl.preset;
+
+  // Set the prompt
+  const inp = document.getElementById('code-prompt-input');
+  if (inp) {
+    inp.value = tpl.prompt;
+    inp.focus();
+  }
+
+  // Fire the build immediately
+  setTimeout(codeGenerate, 100);
+}
+
+// ── Chat panel tabs ───────────────────────────────────────────────────────────
+function codeChatTab(tab) {
+  const tabs = ['convo', 'log', 'git'];
+  tabs.forEach(t => {
+    const panel = document.getElementById(`code-chat-${t}`);
+    const btn   = document.getElementById(`chat-tab-${t}`);
+    if (panel) panel.style.display = t === tab ? 'flex' : 'none';
+    if (btn) {
+      btn.style.color = t === tab ? 'var(--accent)' : 'var(--text-m)';
+      btn.style.borderBottomColor = t === tab ? 'var(--accent)' : 'transparent';
+    }
+  });
+}
+
+// ── Chat send (mirrors the build button but in chat style) ────────────────────
+function codeChatSend() {
+  const inp = document.getElementById('code-chat-input');
+  const msg = inp?.value?.trim();
+  if (!msg) return;
+
+  // Show user message in chat
+  _codeChatAddMessage('user', msg);
+  inp.value = '';
+  inp.style.height = 'auto';
+
+  // Copy to main prompt and fire build
+  const mainInp = document.getElementById('code-prompt-input');
+  if (mainInp) mainInp.value = msg;
+
+  codeGenerate();
+}
+
+function _codeChatAddMessage(role, content) {
+  const container = document.getElementById('code-chat-messages');
+  if (!container) return;
+
+  // Remove empty state
+  const empty = container.querySelector('.code-chat-empty');
+  if (empty) empty.remove();
+
+  const el = document.createElement('div');
+  el.className = `code-chat-bubble code-chat-${role}`;
+  el.textContent = content;
+  container.appendChild(el);
+
+  // Scroll to bottom
+  container.scrollTop = container.scrollHeight;
+}
+
+function _codeChatAddLog(msg) {
+  const container = document.getElementById('code-chat-messages');
+  if (!container) return;
+  const el = document.createElement('div');
+  el.className = 'code-chat-log';
+  el.textContent = msg;
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
 }
 
 // ── View toggle: Code ↔ Preview ───────────────────────────────────────────────
@@ -10898,6 +11124,9 @@ async function codePublishPreview() {
       codeLog(`✅ Live at: ${absUrl}`, 'success');
       notify('Live preview ready! 🌐', 'success');
 
+      // Switch iframe to live URL immediately if in preview mode
+      if (_codeState.currentView === 'preview') _codeUpdatePreview();
+
       // Show result panel
       const resultEl   = document.getElementById('code-preview-result');
       const liveUrlEl  = document.getElementById('code-preview-live-url');
@@ -10989,6 +11218,7 @@ async function _codeSaveProject() {
         name,
         files,
         previewId: _codeState.previewId || null,
+        history: _codeState.conversationHistory.slice(-20),
       })
     });
     const d = await r.json();
@@ -11048,6 +11278,17 @@ async function codeLoadProject(id) {
     _codeState.projectId = proj.id;
     _codeState.previewId = proj.preview_id || null;
 
+    // Restore conversation history if saved
+    if (proj.history && Array.isArray(proj.history)) {
+      _codeState.conversationHistory = proj.history;
+      // Repopulate chat panel
+      const chatEl = document.getElementById('code-chat-messages');
+      if (chatEl) {
+        chatEl.innerHTML = '';
+        proj.history.forEach(m => _codeChatAddMessage(m.role === 'user' ? 'user' : 'ai', m.content?.slice(0, 200) || ''));
+      }
+    }
+
     // Restore live URL if preview exists
     if (proj.preview_id) {
       _codeState.previewUrl = window.location.origin + `/preview/${proj.preview_id}/index.html`;
@@ -11094,15 +11335,26 @@ async function codeLoadProject(id) {
 }
 
 // ── Live Preview ──────────────────────────────────────────────────────────────
-// Builds a self-contained srcdoc combining all project files
+// Priority: if we have a live R2 URL, point the iframe at it directly.
+// This gives real multi-page navigation, correct relative paths, and CDN fonts.
+// Falls back to srcdoc for the instant first-render before publish completes.
 function _codeUpdatePreview() {
   const frame = document.getElementById('code-preview-frame');
   if (!frame) return;
 
+  // ── Strategy 0: Use live R2 URL if available (best quality) ──────────────
+  if (_codeState.previewUrl) {
+    // Add cache-bust so updates always show after republish
+    const bust = `?v=${Date.now()}`;
+    const url  = _codeState.previewUrl.split('?')[0] + bust;
+    if (frame.src !== url) frame.src = url;
+    return;
+  }
+
+  // ── Fallback: srcdoc for instant preview before publish completes ─────────
   const files = _codeState.generatedFiles;
   const paths = Object.keys(files);
 
-  // Collect file types
   const htmlFiles = paths.filter(p => p.endsWith('.html'));
   const cssFiles  = paths.filter(p => p.endsWith('.css'));
   const jsFiles   = paths.filter(p => p.endsWith('.js') || p.endsWith('.jsx'));
@@ -11111,21 +11363,17 @@ function _codeUpdatePreview() {
   let srcdoc = '';
 
   if (htmlFiles.length > 0) {
-    // Strategy A: HTML-first — inject CSS and JS inline into the HTML
     let html = files[htmlFiles[0]].content;
 
-    // Inline external CSS references
     cssFiles.forEach(cssPath => {
       const fname = cssPath.split('/').pop();
       const cssContent = files[cssPath]?.content || '';
-      // Replace <link href="...cssPath..."> or <link href="...fname...">
       html = html.replace(
         new RegExp(`<link[^>]*href=["'][^"']*${fname.replace('.','\\.')}["'][^>]*>`, 'gi'),
         `<style>${cssContent}</style>`
       );
     });
 
-    // Inline external JS references
     jsFiles.forEach(jsPath => {
       const fname = jsPath.split('/').pop();
       const jsContent = files[jsPath]?.content || '';
@@ -11135,14 +11383,12 @@ function _codeUpdatePreview() {
       );
     });
 
-    // If CSS still has links not replaced, append them inline
     const hasUnlinkedCss = cssFiles.some(p => !html.includes(files[p]?.content?.slice(0,30) || '~~'));
     if (hasUnlinkedCss) {
       const allCss = cssFiles.map(p => files[p]?.content || '').join('\n');
       html = html.replace('</head>', `<style>${allCss}</style>\n</head>`);
     }
 
-    // If JS still has scripts not replaced, append them inline
     const hasUnlinkedJs = jsFiles.some(p => !html.includes(files[p]?.content?.slice(0,30) || '~~'));
     if (hasUnlinkedJs) {
       const allJs = jsFiles.map(p => files[p]?.content || '').join('\n');
@@ -11152,18 +11398,15 @@ function _codeUpdatePreview() {
     srcdoc = html;
 
   } else if (tsFiles.length > 0 || jsFiles.some(p => files[p].content.includes('import React') || files[p].content.includes('from "react"') || files[p].content.includes("from 'react'"))) {
-    // Strategy B: React/TSX — use esm.sh to import React without a build step
     const mainFile = tsFiles[0] || jsFiles[0];
     let componentCode = files[mainFile]?.content || '';
 
-    // Rewrite local imports to esm.sh
     componentCode = componentCode
       .replace(/import\s+React.*from\s+['"]react['"]/g, "import React from 'https://esm.sh/react@18'")
       .replace(/import\s+\{([^}]+)\}\s+from\s+['"]react['"]/g, "import {$1} from 'https://esm.sh/react@18'")
       .replace(/from\s+['"]react-dom['"]/g, "from 'https://esm.sh/react-dom@18'")
       .replace(/from\s+['"]react-dom\/client['"]/g, "from 'https://esm.sh/react-dom@18/client'");
 
-    // Strip TypeScript annotations for browser ESM (basic stripping)
     componentCode = componentCode
       .replace(/:\s*(string|number|boolean|any|void|never|unknown|React\.\w+|FC|ReactNode|MouseEvent)[^,;)\n]*/g, '')
       .replace(/<[A-Z]\w*>/g, '')
@@ -11172,49 +11415,22 @@ function _codeUpdatePreview() {
 
     const cssContent = cssFiles.map(p => files[p]?.content || '').join('\n');
 
-    srcdoc = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif}
-${cssContent}
-</style>
-</head>
-<body>
-<div id="root"></div>
-<script type="module">
-${componentCode}
-// Auto-mount if a default export exists
-if (typeof App !== 'undefined') {
-  import { createRoot } from 'https://esm.sh/react-dom@18/client';
-  import React from 'https://esm.sh/react@18';
-  createRoot(document.getElementById('root')).render(React.createElement(App));
-}
-</script>
-</body>
-</html>`;
+    srcdoc = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif}${cssContent}</style>
+</head><body><div id="root"></div>
+<script type="module">${componentCode}
+if(typeof App!=='undefined'){import{createRoot}from'https://esm.sh/react-dom@18/client';import React from'https://esm.sh/react@18';createRoot(document.getElementById('root')).render(React.createElement(App));}
+</script></body></html>`;
 
   } else if (cssFiles.length > 0 || jsFiles.length > 0) {
-    // Strategy C: CSS + JS only — wrap in minimal HTML shell
     const allCss = cssFiles.map(p => files[p]?.content || '').join('\n');
     const allJs  = jsFiles.map(p => files[p]?.content || '').join('\n');
-    srcdoc = `<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>*{box-sizing:border-box}body{font-family:system-ui,sans-serif;padding:20px}
-${allCss}</style>
-</head>
-<body>
-<div id="app"></div>
-<script>${allJs}</script>
-</body>
-</html>`;
+    srcdoc = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>*{box-sizing:border-box}body{font-family:system-ui,sans-serif;padding:20px}${allCss}</style>
+</head><body><div id="app"></div><script>${allJs}</script></body></html>`;
   }
 
-  if (srcdoc) {
-    frame.srcdoc = srcdoc;
-  }
+  if (srcdoc) frame.srcdoc = srcdoc;
 }
 
 // ── File panel ─────────────────────────────────────────────────────────────────
@@ -11400,15 +11616,21 @@ function _codeAddCommitEntry(path, url) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function codeLog(msg, type='info') {
+  // Write to activity log tab
   const log = document.getElementById('code-activity-log');
-  if (!log) return;
-  const empty = log.querySelector('.code-log-empty');
-  if (empty) empty.remove();
-  const el = document.createElement('div');
-  el.className = `code-log-entry code-log-${type}`;
-  el.textContent = msg;
-  log.insertBefore(el, log.firstChild);
-  while (log.children.length > 50) log.removeChild(log.lastChild);
+  if (log) {
+    const empty = log.querySelector('.code-log-empty');
+    if (empty) empty.remove();
+    const el = document.createElement('div');
+    el.className = `code-log-entry code-log-${type}`;
+    el.textContent = msg;
+    log.insertBefore(el, log.firstChild);
+    while (log.children.length > 50) log.removeChild(log.lastChild);
+  }
+  // Also mirror key events to chat panel as small log pills
+  if (type === 'success' || type === 'error' || type === 'ai') {
+    _codeChatAddLog(msg);
+  }
 }
 
 function codeCopyContent() {
