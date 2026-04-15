@@ -8998,16 +8998,17 @@ em{color:var(--accent);font-style:italic}
     </div>
 
     <!-- ═══════════════════════ TEXT TO SPEECH ═══════════════════════ -->
-    <div class="gen-sub-pane" id="gen-pane-tts">
-      <div class="gen-main-area" style="flex-direction:column;overflow-y:auto">
+    <div class="gen-sub-pane" id="gen-pane-tts" style="flex-direction:column">
 
-        <!-- ── Voice Studio inner sub-tabs ── -->
-        <div style="display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid rgba(255,255,255,.07);padding-bottom:10px">
-          <button id="vstab-tts" onclick="switchVoiceTab('tts')" class="gen-subtab-btn gen-subtab-btn--inner active-voice-tab" style="font-size:11px;padding:5px 12px"><i class="fas fa-keyboard" style="margin-right:5px"></i>Text to Speech</button>
-          <button id="vstab-sts" onclick="switchVoiceTab('sts')" class="gen-subtab-btn gen-subtab-btn--inner" style="font-size:11px;padding:5px 12px"><i class="fas fa-microphone-alt" style="margin-right:5px"></i>Speech to Speech</button>
-          <button id="vstab-clone" onclick="switchVoiceTab('clone')" class="gen-subtab-btn gen-subtab-btn--inner" style="font-size:11px;padding:5px 12px"><i class="fas fa-dna" style="margin-right:5px"></i>Voice Cloning</button>
-          <span style="margin-left:auto;font-size:11px;font-weight:600;color:#10b981;display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:50%;background:#10b981;display:inline-block"></span>ElevenLabs Live</span>
-        </div>
+      <!-- ── Voice Studio inner sub-tabs — fixed bar, never scrolls away ── -->
+      <div style="display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.07);flex-shrink:0;background:var(--bg-panel);flex-wrap:wrap;align-items:center">
+        <button id="vstab-tts" onclick="switchVoiceTab('tts')" class="gen-subtab-btn gen-subtab-btn--inner active-voice-tab" style="font-size:11px;padding:5px 12px"><i class="fas fa-keyboard" style="margin-right:5px"></i>Text to Speech</button>
+        <button id="vstab-sts" onclick="switchVoiceTab('sts')" class="gen-subtab-btn gen-subtab-btn--inner" style="font-size:11px;padding:5px 12px"><i class="fas fa-microphone-alt" style="margin-right:5px"></i>Speech to Speech</button>
+        <button id="vstab-clone" onclick="switchVoiceTab('clone')" class="gen-subtab-btn gen-subtab-btn--inner" style="font-size:11px;padding:5px 12px"><i class="fas fa-dna" style="margin-right:5px"></i>Voice Cloning</button>
+        <span style="margin-left:auto;font-size:11px;font-weight:600;color:#10b981;display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:50%;background:#10b981;display:inline-block"></span>ElevenLabs Live</span>
+      </div>
+
+      <div class="gen-main-area" style="flex-direction:column;overflow-y:auto;flex:1">
 
         <!-- ══════════════════════ TEXT TO SPEECH PANEL ══════════════════════ -->
         <div id="vs-panel-tts" class="vs-panel" style="display:flex;gap:14px;flex-wrap:wrap">
