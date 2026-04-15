@@ -625,14 +625,13 @@ async function loadD1History() {
     const todayStr = new Date().toISOString().slice(0, 10);
     const todaySessions = d.perDay?.[todayStr] || 0;
 
-    // Only update totals if D1 has MORE data than what we have locally
-    // (local data from current browser session is valid for today)
-    if (d.totalMins > 0) {
-      // Set streak from D1 (authoritative)
-      state.timer.streak = Math.max(state.timer.streak, d.streak || 0);
+    // D1 is authoritative — always trust server data over localStorage
+    // This ensures streaks and session counts persist across devices/browsers
+    if (d.streak !== undefined) {
+      state.timer.streak = d.streak || 0;
     }
 
-    // Today's session count: max of D1 + local (handles offline sessions)
+    // Today's session count: max of D1 + local (handles sessions in current browser)
     state.timer.sessions = Math.max(state.timer.sessions, todaySessions);
     state.timer._todaySessions = todaySessions;
 
@@ -1764,6 +1763,28 @@ function completePhase(skipped=false) {
       state.timer._lastSessionDate = todayStr;
     }
     saveLocalState();
+
+    // ── AUTO-SAVE to D1 immediately — don't wait for user to hit Save ────────
+    // This guarantees sessions and streaks persist across devices/browsers.
+    // Store the returned sessionId so saveFocusSession() can UPDATE it (not duplicate it).
+    state.timer._pendingSessionId = null;
+    if (FS_USER) {
+      fetch('/api/session/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          durationMins: state.timer.focusMin,
+          focusScore: state.timer._lastFlowScore || null,
+          outputType: null,
+          outputNote: null,
+          appContext: 'hub',
+        })
+      }).then(r => r.json()).then(d => {
+        if (d.sessionId) state.timer._pendingSessionId = d.sessionId;
+      }).catch(() => {});
+    }
+
     triggerCelebration('Focus Session Complete! 🎉', `${state.timer.sessions} sessions today — ${Math.round(state.timer.totalFocusSec/60)}m total`);
     updateFlowScore();
     maybeShowTip();
@@ -2935,6 +2956,9 @@ function saveFocusSession() {
   // Save to D1 if signed in
   if (FS_USER) {
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    // If session was auto-saved on completion, UPDATE it — don't insert a duplicate
+    const pendingId = state.timer._pendingSessionId || null;
+    state.timer._pendingSessionId = null;
     fetch('/api/session/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2944,6 +2968,7 @@ function saveFocusSession() {
         focusScore: state.timer._lastFlowScore || null,
         outputType: outputType || null,
         outputNote: note,
+        updateSessionId: pendingId,
       })
     }).then(r => r.json()).then(d => {
       if (d.ok) {

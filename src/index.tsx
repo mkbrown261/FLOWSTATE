@@ -1060,6 +1060,10 @@ app.post('/api/code/intent', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
 
+  // Token budget check — intent classifier costs 100 tokens (cheap Haiku call)
+  const abuseCheck = await checkAntiAbuse(c, session.email, 100)
+  if (abuseCheck) return abuseCheck
+
   const { prompt = '', hasFiles = false, conversationHistory = [], activeFile = '', agent = 'claude-sonnet-4' } = await c.req.json()
   if (!prompt.trim()) return c.json({ type: 'clarify', question: 'What would you like to build?' })
 
@@ -1176,6 +1180,10 @@ app.post('/api/code/chat', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
 
+  // Token budget check — conversational reply costs 300 tokens
+  const abuseCheck = await checkAntiAbuse(c, session.email, 300)
+  if (abuseCheck) return abuseCheck
+
   const { prompt = '', conversationHistory = [], generatedFiles = {}, agent = 'claude-sonnet-4' } = await c.req.json()
 
   // Build a summary of what exists in the project
@@ -1261,6 +1269,10 @@ Do NOT generate any code files. Just have a conversation.`
 app.post('/api/github/ai-code', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+
+  // Token budget check — code generation costs 2,000 tokens (large context + output)
+  const abuseCheck = await checkAntiAbuse(c, session.email, 2000)
+  if (abuseCheck) return abuseCheck
 
   const {
     prompt,
@@ -2523,7 +2535,7 @@ async function redisPipeline(url: string, token: string, commands: any[][]): Pro
   } catch { return [] }
 }
 
-async function checkAntiAbuse(c: any, userId: string): Promise<Response | null> {
+async function checkAntiAbuse(c: any, userId: string, cost: number = 500): Promise<Response | null> {
   const url   = c.env?.UPSTASH_REDIS_URL
   const token = c.env?.UPSTASH_REDIS_TOKEN
   if (!url || !token) return null // Redis not configured — allow through
@@ -2543,7 +2555,7 @@ async function checkAntiAbuse(c: any, userId: string): Promise<Response | null> 
     ['GET', velKey],
     ['INCR', velKey],
     ['EXPIRE', velKey, 90],
-    ['INCRBY', dayKey, 500],
+    ['INCRBY', dayKey, cost],
     ['EXPIRE', dayKey, 86400],
   ])
 
@@ -2981,7 +2993,7 @@ app.post('/api/session/complete', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ ok: false, error: 'not_authenticated' }, 401)
   const db = c.env?.DB
-  const { durationMins, focusScore, outputType, outputNote, appContext = 'hub' } = await c.req.json()
+  const { durationMins, focusScore, outputType, outputNote, appContext = 'hub', updateSessionId } = await c.req.json()
   if (!durationMins || durationMins < 1) return c.json({ ok: false, error: 'invalid_duration' }, 400)
 
   try {
@@ -2991,19 +3003,37 @@ app.post('/api/session/complete', async (c) => {
       const user = await (await import('./db-helpers')).getUserByEmail(db, session.email)
       if (user) {
         const sessionDate = new Date().toISOString().slice(0, 10)
-        // Insert into sessions
-        const result = await db.prepare(`
-          INSERT INTO sessions (user_id, email, phase, duration_mins, completed, focus_score, output_type, output_note, app_context, session_date)
-          VALUES (?, ?, 'focus', ?, 1, ?, ?, ?, ?, ?)
-        `).bind(user.id, session.email, durationMins, focusScore ?? null, outputType ?? null, outputNote ?? null, appContext, sessionDate).run()
+        let sessionRowId: number | null = null
 
-        // Also log to creator_outputs if they tracked something
-        if (outputType) {
+        if (updateSessionId) {
+          // UPDATE existing auto-saved session with output type/note instead of inserting duplicate
           await db.prepare(`
-            INSERT INTO creator_outputs (user_id, email, session_id, output_type, output_note, duration_mins, app_context)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).bind(user.id, session.email, result.meta?.last_row_id ?? null, outputType, outputNote ?? null, durationMins, appContext).run()
+            UPDATE sessions SET output_type=?, output_note=?, focus_score=COALESCE(?,focus_score)
+            WHERE id=? AND email=?
+          `).bind(outputType ?? null, outputNote ?? null, focusScore ?? null, updateSessionId, session.email).run()
+          sessionRowId = updateSessionId
+        } else {
+          // INSERT new session row (auto-save path — no output type yet)
+          const result = await db.prepare(`
+            INSERT INTO sessions (user_id, email, phase, duration_mins, completed, focus_score, output_type, output_note, app_context, session_date)
+            VALUES (?, ?, 'focus', ?, 1, ?, ?, ?, ?, ?)
+          `).bind(user.id, session.email, durationMins, focusScore ?? null, outputType ?? null, outputNote ?? null, appContext, sessionDate).run()
+          sessionRowId = result.meta?.last_row_id ?? null
         }
+
+        // Log to creator_outputs if output type provided
+        if (outputType && sessionRowId) {
+          // Avoid duplicate creator_outputs entry if one already exists for this session
+          const existing = await db.prepare(`SELECT id FROM creator_outputs WHERE session_id=?`).bind(sessionRowId).first()
+          if (!existing) {
+            await db.prepare(`
+              INSERT INTO creator_outputs (user_id, email, session_id, output_type, output_note, duration_mins, app_context)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).bind(user.id, session.email, sessionRowId, outputType, outputNote ?? null, durationMins, appContext).run()
+          }
+        }
+
+        return c.json({ ok: true, sessionId: sessionRowId })
       }
     }
     return c.json({ ok: true })
