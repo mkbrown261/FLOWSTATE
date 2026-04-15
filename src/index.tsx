@@ -767,16 +767,36 @@ app.post('/api/github/ai-code', async (c) => {
 
   if (!prompt) return c.json({ error: 'missing_prompt' }, 400)
 
+  // ── Detect whether this is a "new page/view" request ─────────────────────
+  // If the user is asking for a fresh page/screen/view, we suppress HTML context
+  // entirely so the AI builds from a clean canvas instead of copying old layouts.
+  const lowerPrompt = prompt.toLowerCase()
+  const isNewPageRequest = /\b(new page|new view|new screen|new section|new tab|separate page|separate view|inventory page|inventory view|dashboard page|settings page|profile page|modal|popup|landing page|add a page|create a page|build a page|make a page|build a view|add (?:an? )?(?:inventory|settings|profile|auth|login|signup|onboarding|checkout|detail|about|contact|pricing|faq|help|analytics|reports?|users?|products?|orders?|admin) (?:page|view|screen|tab|section))\b/i.test(lowerPrompt)
+
   // ── Build full project context for the AI ──────────────────────────────────
   const fileList = fileTree.length
     ? fileTree.filter((f: any) => f.type === 'blob').map((f: any) => f.path).slice(0, 150).join('\n')
     : Object.keys(generatedFiles).join('\n')
 
+  // Only send file structure context — NOT full content of HTML files.
+  // Sending full HTML causes the AI to pattern-match and reproduce the old layout.
+  // For new-page requests, we send ZERO HTML context (clean canvas).
+  // CSS and JS are still sent in full (structurally useful, smaller).
   const generatedContext = Object.keys(generatedFiles).length
     ? Object.entries(generatedFiles)
-        .slice(-8) // last 8 files to keep context size reasonable
-        .map(([path, content]: [string, any]) =>
-          `\n### FILE: ${path}\n\`\`\`\n${String(content).slice(0, 2000)}\n\`\`\``)
+        .slice(-6)
+        .map(([path, content]: [string, any]) => {
+          const isHtml = path.endsWith('.html') || path.endsWith('.htm')
+          if (isHtml && isNewPageRequest) {
+            // New page request: skip HTML entirely — AI builds fresh
+            return `\n### FILE: ${path}\n[HTML omitted — you are building a NEW page, start from scratch with a fresh layout]`
+          }
+          // For HTML on follow-up edits: send a short structure hint only
+          const preview = isHtml
+            ? String(content).slice(0, 500) + '\n... [remaining HTML omitted — modify only what the user asked, do not reproduce the full structure]'
+            : String(content).slice(0, 2500)
+          return `\n### FILE: ${path}\n\`\`\`\n${preview}\n\`\`\``
+        })
         .join('')
     : ''
 
@@ -1208,17 +1228,38 @@ OUTPUT RULES:
    }
 3. ALWAYS write COMPLETE file contents — never truncate, never use "// ... rest unchanged".
 4. In index.html: the FSDS <style> block will be auto-injected — do NOT re-import the Google Fonts or redefine :root variables. Just use the classes and CSS variables.
-5. Build on existing files — read the context above and MODIFY what exists, don't restart from scratch.
+5. When MODIFYING existing content: edit the file directly, preserve its overall structure, change only what was asked.
+   When creating a NEW page/view/section: create a NEW file (e.g. inventory.html + inventory.js). Start the HTML from a completely blank canvas — NO copying, NO importing, NO referencing of any existing HTML file structure. Fresh <html> → <head> → <body> only.
 6. Create multiple files when the project warrants it (index.html + styles.css + app.js, or React component files).
 7. File paths should be relative (e.g. "index.html", "src/App.jsx", "styles/main.css").
-8. Aim for completeness — a fully functional, visually polished app, not a skeleton.`
+8. Aim for completeness — a fully functional, visually polished app, not a skeleton.
+9. ISOLATION RULE: Each HTML file is its own independent document. Never copy layout sections, nav structures, hero patterns, or component markup from one HTML file into another. Every new HTML file gets a purpose-built layout designed specifically for what was requested.`
 
   // ── Build messages array with full conversation history ───────────────────
-  // History gives the AI memory of everything built so far
-  const historyMessages = conversationHistory.slice(-10) // last 10 exchanges max
-    .map((m: any) => ({ role: m.role, content: m.content }))
+  // History gives the AI memory of everything built so far.
+  // For new-page requests, reduce history to last 2 exchanges only (just enough
+  // for context) and aggressively strip assistant content to prevent layout bleed.
+  const historySlice = isNewPageRequest
+    ? conversationHistory.slice(-4)   // 2 exchanges for new pages
+    : conversationHistory.slice(-6)   // 3 exchanges for follow-up edits
 
-  const currentUserMsg = `Task: ${prompt}`
+  const historyMessages = historySlice
+    .map((m: any) => {
+      if (m.role === 'assistant') {
+        // Always truncate assistant messages — they contain file paths/summaries only
+        // (the frontend stores them as "Done. Files written: index.html (250 lines)")
+        // but if anything longer sneaked in, cap it hard
+        const cap = isNewPageRequest ? 200 : 400
+        if (m.content && m.content.length > cap) {
+          return { role: m.role, content: m.content.slice(0, cap) + ' [truncated]' }
+        }
+      }
+      return { role: m.role, content: m.content }
+    })
+
+  const currentUserMsg = isNewPageRequest
+    ? `Task: ${prompt}\n\n[IMPORTANT: This is a NEW page/view — build it with a completely fresh layout. Do NOT copy or reference any structure from existing HTML files. Start with a blank canvas.]`
+    : `Task: ${prompt}`
 
   let rawResponse = ''
 
