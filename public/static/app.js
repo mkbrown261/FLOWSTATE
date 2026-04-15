@@ -10554,14 +10554,9 @@ async function _codeHandleMessage(prompt, fromBuildButton = false) {
   _codeChatAddMessage('user', prompt);
   codeChatTab('convo');
 
-  // If called from build button, also copy to main prompt for legacy compatibility
-  if (fromBuildButton) {
-    // prompt already in the input; we'll clear it after
-  } else {
-    // Sync to main prompt (for context display)
-    const mainInp = document.getElementById('code-prompt-input');
-    if (mainInp) mainInp.value = prompt;
-  }
+  // Always clear the prompt input right away — don't make user do it
+  const mainInp = document.getElementById('code-prompt-input');
+  if (mainInp) mainInp.value = '';
 
   // Show typing indicator while we classify
   const typingId = _codeShowTyping();
@@ -10712,6 +10707,10 @@ async function _codeRunBuild(prompt) {
     if (editor) editor.innerHTML = `<div class="code-generating"><div class="code-gen-pulse"></div><span>AI is building your project…</span></div>`;
   }
 
+  // Clear the prompt input immediately — user shouldn't have to do it manually
+  const promptInp = document.getElementById('code-prompt-input');
+  if (promptInp) promptInp.value = '';
+
   // (User message already shown by _codeHandleMessage before this is called)
   // Hide previous AI message banner (now in chat)
   const msgEl = document.getElementById('code-ai-message');
@@ -10797,18 +10796,21 @@ async function _codeRunBuild(prompt) {
     // Parse the collected JSON response
     let data;
     try { data = JSON.parse(rawText); }
-    catch { data = { error: 'parse_error', message: 'AI response could not be parsed — please retry' }; }
+    catch { data = { error: 'parse_error', message: "Hmm, I had trouble formatting that response. I'm trying again..." }; }
 
     if (!res.ok || data.error) {
       const errMsg = data.message || data.error || 'Generation failed';
       codeLog('❌ ' + errMsg, 'error');
-      notify(errMsg, 'warning');
+      // Show the error as a chat bubble, not just a toast
+      _codeChatAddMessage('ai', '⚠️ ' + errMsg);
       return;
     }
 
     const files = data.files || [];
     if (!files.length) {
+      const noFilesMsg = "I didn't get any files back from the model. This sometimes happens — want to try again with a bit more detail in your prompt?";
       codeLog('⚠️ AI returned no files', 'error');
+      _codeChatAddMessage('ai', noFilesMsg);
       return;
     }
 
@@ -10918,13 +10920,12 @@ async function _codeRunBuild(prompt) {
     // Auto-log project to CLAW memory
     _clawLogProject({ deployUrl: '' });
 
-    // Clear prompt
-    const inp = document.getElementById('code-prompt-input');
-    if (inp) inp.value = '';
+    // (prompt already cleared at start of _codeRunBuild)
 
   } catch(e) {
+    const netMsg = 'Connection error — ' + (e.message || 'check your network and try again');
     codeLog('Network error: ' + e.message, 'error');
-    notify('Build failed — check your connection', 'warning');
+    _codeChatAddMessage('ai', '⚠️ ' + netMsg);
   } finally {
     _codeState.generating = false;
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Build'; }

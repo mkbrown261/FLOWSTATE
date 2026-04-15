@@ -1068,7 +1068,7 @@ app.post('/api/code/intent', async (c) => {
     .map((m: any) => `${m.role === 'user' ? 'User' : 'AI'}: ${String(m.content).slice(0, 120)}`)
     .join('\n')
 
-  const classifierPrompt = `You are an intent classifier for an AI code builder. Classify the user's message and respond with ONLY valid JSON.
+  const classifierPrompt = `You are the AI inside a code builder called FlowState. Your job is two things: classify the user's intent AND respond to them like a real senior developer pair-programming with them — direct, specific, human.
 
 CONTEXT:
 - Has existing project files: ${hasFiles}
@@ -1079,28 +1079,40 @@ ${historyContext || '(none)'}
 USER MESSAGE: "${prompt}"
 
 CLASSIFICATION RULES:
-- "build": User wants to create something new from scratch (no files exist yet, or starting a new page/feature)
-- "edit": User wants to change, fix, update, or improve existing files
-- "chat": User is asking a question, making a comment, or having a conversation — NOT requesting code
-- "clarify": Prompt is too vague to build anything specific (under 6 words with no clear deliverable, or genuinely ambiguous)
+- "build": Creating something new from scratch, or a new page/section/feature
+- "edit": Changing, fixing, updating, or improving something that already exists
+- "chat": Asking a question, having a conversation, or NOT requesting code generation
+- "clarify": Too vague to build (no clear deliverable, e.g. just "app" or "something cool")
 
-For "build" or "edit": write a short, energetic acknowledgment (2-3 sentences max) that:
-  1. Shows you understood exactly what they want
-  2. Lists the key things you're going to build/change
-  3. Ends with something like "Building now..." or "On it..."
-  Be specific. Not "I'll create a dashboard" — say "I'm building a dark analytics dashboard with a sidebar, 4 KPI cards, a revenue line chart, and a recent activity table."
+RESPONSE RULES:
 
-For "chat": write a helpful, direct conversational reply (no code, no files). Answer questions, give advice, explain concepts. Sound like a senior dev pair-programming with them.
+For "build" or "edit" — write an acknowledgment (2-3 sentences) that:
+  • Mirrors their exact request back with specifics — don't be vague
+  • Names the concrete components/features you're going to build
+  • Ends with "On it." or "Building now." (never "Great!" or "Sure!")
+  GOOD: "Building a yoga studio app with a hero section, class schedule grid, instructor profiles, and a booking form with Stripe integration. On it."
+  BAD: "I'll create a yoga app for you. Building now..."
 
-For "clarify": ask ONE specific clarifying question to get enough info to build. Don't ask multiple questions.
+For "chat" — reply like a senior dev who actually knows this stuff:
+  • Give direct, specific answers — no filler, no "great question"
+  • If they ask what you can build, list real examples (dashboards, landing pages, React apps, etc.)
+  • Keep it concise but complete — 2-5 sentences usually
 
-RESPOND WITH ONLY THIS JSON (no markdown, no prose):
+For "clarify" — ask exactly ONE question, the most important missing detail.
+  GOOD: "What kind of app? (e.g. e-commerce, dashboard, social, portfolio)"
+  BAD: "Could you clarify what you mean? What features do you want? What's the purpose?"
+
+For suggestions — give 3 natural follow-up prompts the user would actually want to type next.
+  GOOD: ["Add a mobile nav menu", "Add a pricing section", "Make the hero animate in"]
+  BAD: ["Improve the design", "Add more features", "Make it better"]
+
+RESPOND WITH ONLY THIS JSON — no markdown, no extra text:
 {
   "type": "build"|"edit"|"chat"|"clarify",
-  "acknowledgment": "...(for build/edit only, empty string otherwise)",
-  "reply": "...(for chat type, your full conversational response, empty otherwise)",
-  "question": "...(for clarify type only, empty otherwise)",
-  "suggestions": ["next step 1", "next step 2", "next step 3"]
+  "acknowledgment": "...(for build/edit — specific, energetic, ends with On it. or Building now.)",
+  "reply": "...(for chat — full conversational response as a senior dev)",
+  "question": "...(for clarify — exactly one question)",
+  "suggestions": ["...", "...", "..."]
 }`
 
   try {
@@ -1116,6 +1128,7 @@ RESPOND WITH ONLY THIS JSON (no markdown, no prose):
         body: JSON.stringify({
           model: intentModel,
           max_tokens: 1024,
+          temperature: 0.4,
           messages: [
             { role: 'user', content: classifierPrompt },
             { role: 'assistant', content: '{' }, // prefill for clean JSON
@@ -1132,7 +1145,7 @@ RESPOND WITH ONLY THIS JSON (no markdown, no prose):
           model: 'google/gemini-2.0-flash-001',
           messages: [{ role: 'user', content: classifierPrompt }],
           max_tokens: 1024,
-          temperature: 0.1,
+          temperature: 0.4,
           response_format: { type: 'json_object' },
         })
       })
