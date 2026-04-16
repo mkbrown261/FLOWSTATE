@@ -7035,11 +7035,30 @@ function higgsUpdateImageMode() {
 }
 
 function initHiggsfield() {
-  // Check if user is Pro — show gate if not
-  const tier = FS_USER?.tier || 'free';
+  // Check if user is Pro — show gate + update button if not
+  const tier  = FS_USER?.tier || 'free';
   const isPro = ['personal_pro','team_starter','team_growth','enterprise','clawflow'].includes(tier);
+
   const gate = document.getElementById('higgs-gate-banner');
   if (gate) gate.style.display = isPro ? 'none' : 'block';
+
+  // Update generate button to reflect tier
+  const btn = document.getElementById('btn-higgs-gen');
+  if (btn) {
+    if (isPro) {
+      btn.innerHTML  = '<i class="fas fa-film"></i>&nbsp; Generate with Higgsfield';
+      btn.style.background = 'linear-gradient(135deg,#00d4ff,#00ffa3)';
+      btn.style.color = '#000';
+      btn.style.opacity = '1';
+    } else {
+      btn.innerHTML  = '✦&nbsp; Upgrade to Pro to Generate';
+      btn.style.background = 'linear-gradient(135deg,rgba(0,212,255,.15),rgba(168,85,247,.15))';
+      btn.style.color = '#00d4ff';
+      btn.style.border = '1px solid rgba(0,212,255,.35)';
+      btn.style.opacity = '1';
+    }
+  }
+
   // Set default model
   selectHiggsModel('seedance-v2.0-t2v', 'Seedance 2.0', 't2v', 15);
 }
@@ -7084,7 +7103,7 @@ async function runHiggsfield() {
   const tier  = FS_USER?.tier || 'free';
   const isPro = ['personal_pro','team_starter','team_growth','enterprise','clawflow'].includes(tier);
   if (!isPro) {
-    alert('Higgsfield AI requires a Pro subscription. Upgrade at flowst8.cc to unlock.');
+    openPricingModal();
     return;
   }
 

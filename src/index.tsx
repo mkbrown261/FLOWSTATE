@@ -9523,7 +9523,7 @@ em{color:var(--accent);font-style:italic}
           <div style="font-size:28px;margin-bottom:8px">✦</div>
           <div style="font-size:16px;font-weight:900;color:#00d4ff;margin-bottom:6px">Higgsfield AI — Pro Members Only</div>
           <div style="font-size:13px;color:rgba(255,255,255,.6);margin-bottom:16px;line-height:1.6">Higgsfield gives you access to 100+ cinematic AI video models including Seedance 2.0 — with native audio, multi-shot storytelling, and frame-level control. Upgrade to Pro to unlock.</div>
-          <button onclick="document.getElementById('tab-pricing')?.click()" style="background:linear-gradient(135deg,#00d4ff,#00ffa3);color:#000;border:none;border-radius:10px;padding:10px 22px;font-size:13px;font-weight:800;cursor:pointer">Upgrade to Pro →</button>
+          <button onclick="openPricingModal()" style="background:linear-gradient(135deg,#00d4ff,#00ffa3);color:#000;border:none;border-radius:10px;padding:10px 22px;font-size:13px;font-weight:800;cursor:pointer">Upgrade to Pro →</button>
         </div>
 
         <!-- Hero header -->
