@@ -32,36 +32,48 @@ export interface AIToolConfig {
 /**
  * Central tool registry — add any new tool here, orchestration is automatic.
  *
- * costUnits scale:
- *   text chat          ≈  1   unit
- *   image gen (fast)   ≈  10  units
- *   image gen (pro)    ≈  25  units
- *   video gen (short)  ≈  50  units
- *   video gen (long)   ≈  150 units
- *   audio gen          ≈  5   units
+ * costUnits = credits consumed per request (1 credit = $0.001 API cost, markup included)
+ *
+ * Credit scale (aligned with real API pricing):
+ *   text chat (Gemini Flash)     ≈   1  credit  ($0.001)
+ *   text chat (Claude Haiku)     ≈   2  credits  ($0.002)
+ *   text chat (Claude Sonnet)    ≈  15  credits  ($0.015)
+ *   text chat (Claude Opus)      ≈  45  credits  ($0.045)
+ *   image gen (z-image/schnell)  ≈   8  credits  ($0.008)
+ *   image gen (flux_dev)         ≈  25  credits  ($0.025)
+ *   image gen (flux_pro/imagen)  ≈  55  credits  ($0.055)
+ *   video gen (Wan 5s)           ≈ 400  credits  ($0.40)
+ *   video gen (Kling 5s)         ≈ 700  credits  ($0.70)
+ *   video gen (Seedance 5s)      ≈ 250  credits  ($0.25)
+ *   video gen (Higgsfield 15s)   ≈ 550  credits  ($0.55)
+ *   TTS per request              ≈  75  credits  ($0.075)
+ *   music track                  ≈  15  credits  ($0.015)
  */
 export const AI_TOOL_CONFIG: Record<string, AIToolConfig> = {
   // ── Text / Chat ────────────────────────────────────────────────────────────
   chat: {
     sensitive: true,   // model is user-selected or intent-routed — never swap
     taskType: 'text',
-    costUnits: 1,
+    costUnits: 1,      // minimum; real cost depends on model — see route-level deduction
   },
 
   // ── Image generation ───────────────────────────────────────────────────────
   // Sensitive models (user explicitly chose them)
-  flux_pro:    { sensitive: true,  taskType: 'image', costUnits: 25 },
-  imagen3:     { sensitive: true,  taskType: 'image', costUnits: 25 },
-  imagen4:     { sensitive: true,  taskType: 'image', costUnits: 30 },
-  ideogram2:   { sensitive: true,  taskType: 'image', costUnits: 25 },
-  recraft:     { sensitive: true,  taskType: 'image', costUnits: 25 },
-  runway_img:  { sensitive: true,  taskType: 'image', costUnits: 30 },
+  flux_pro:    { sensitive: true,  taskType: 'image', costUnits: 55 },
+  imagen3:     { sensitive: true,  taskType: 'image', costUnits: 55 },
+  imagen4:     { sensitive: true,  taskType: 'image', costUnits: 55 },
+  ideogram2:   { sensitive: true,  taskType: 'image', costUnits: 80 },
+  recraft:     { sensitive: true,  taskType: 'image', costUnits: 55 },
+  runway_img:  { sensitive: true,  taskType: 'image', costUnits: 60 },
+  'gpt-image': { sensitive: true,  taskType: 'image', costUnits: 60 },
+  dalle3:      { sensitive: true,  taskType: 'image', costUnits: 55 },
+  dalle4:      { sensitive: true,  taskType: 'image', costUnits: 60 },
 
   // Non-sensitive — can fall back (flux_dev → flux_schnell → sd35_medium)
   flux_dev:    {
     sensitive: false,
     taskType: 'image',
-    costUnits: 15,
+    costUnits: 25,
     fallbackChain: ['flux_schnell', 'sd35_medium'],
     qualityLevels: {
       full:   { num_inference_steps: 28, output_quality: 90 },
@@ -72,7 +84,7 @@ export const AI_TOOL_CONFIG: Record<string, AIToolConfig> = {
   flux_schnell: {
     sensitive: false,
     taskType: 'image',
-    costUnits: 5,
+    costUnits: 8,
     fallbackChain: ['sd35_medium'],
     qualityLevels: {
       full:   { num_inference_steps: 4, output_quality: 90 },
@@ -80,16 +92,16 @@ export const AI_TOOL_CONFIG: Record<string, AIToolConfig> = {
       draft:  { num_inference_steps: 4, output_quality: 65 },
     },
   },
-  sd35:        { sensitive: false, taskType: 'image', costUnits: 15, fallbackChain: ['sd35_medium', 'flux_schnell'] },
+  sd35:        { sensitive: false, taskType: 'image', costUnits: 25, fallbackChain: ['sd35_medium', 'flux_schnell'] },
   sd35_medium: { sensitive: false, taskType: 'image', costUnits: 8,  fallbackChain: ['flux_schnell'] },
-  seedream:    { sensitive: false, taskType: 'image', costUnits: 10, fallbackChain: ['flux_schnell'] },
+  seedream:    { sensitive: false, taskType: 'image', costUnits: 8,  fallbackChain: ['flux_schnell'] },
 
-  // NanoBanana — the primary reference case
+  // NanoBanana
   nano_banana_2k: {
     sensitive: false,
     taskType: 'image',
     costUnits: 20,
-    fallbackChain: ['flux_schnell', 'sd35_medium'],   // invisible to user
+    fallbackChain: ['flux_schnell', 'sd35_medium'],
     qualityLevels: {
       full:   { image_size: '1024x1024', num_inference_steps: 28 },
       medium: { image_size: '1024x1024', num_inference_steps: 20 },
@@ -99,48 +111,58 @@ export const AI_TOOL_CONFIG: Record<string, AIToolConfig> = {
   nano_banana_4k: {
     sensitive: true,   // user explicitly requested 4K — never downscale
     taskType: 'image',
-    costUnits: 50,
+    costUnits: 55,
   },
 
   // ── Video generation — ALL sensitive (user selects resolution/model) ────────
-  seedance_t2v:   { sensitive: true, taskType: 'video', costUnits: 80 },
-  seedance_i2v:   { sensitive: true, taskType: 'video', costUnits: 80 },
-  higgsfield_t2v: { sensitive: true, taskType: 'video', costUnits: 100 },
-  higgsfield_i2v: { sensitive: true, taskType: 'video', costUnits: 100 },
-  wan_t2v:        { sensitive: true, taskType: 'video', costUnits: 60 },
-  wan_i2v:        { sensitive: true, taskType: 'video', costUnits: 60 },
-  veo2:           { sensitive: true, taskType: 'video', costUnits: 120 },
-  veo3:           { sensitive: true, taskType: 'video', costUnits: 150 },
-  kling26:        { sensitive: true, taskType: 'video', costUnits: 90 },
-  kling16:        { sensitive: true, taskType: 'video', costUnits: 70 },
-  minimax:        { sensitive: true, taskType: 'video', costUnits: 60 },
-  minimax_live:   { sensitive: true, taskType: 'video', costUnits: 60 },
-  hunyuan:        { sensitive: true, taskType: 'video', costUnits: 80 },
-  ltx:            { sensitive: true, taskType: 'video', costUnits: 50 },
+  // Per-5s cost; route multiplies by duration factor
+  seedance_t2v:   { sensitive: true, taskType: 'video', costUnits: 250 },
+  seedance_i2v:   { sensitive: true, taskType: 'video', costUnits: 250 },
+  higgsfield_t2v: { sensitive: true, taskType: 'video', costUnits: 550 },
+  higgsfield_i2v: { sensitive: true, taskType: 'video', costUnits: 550 },
+  wan_t2v:        { sensitive: true, taskType: 'video', costUnits: 400 },
+  wan_i2v:        { sensitive: true, taskType: 'video', costUnits: 400 },
+  veo2:           { sensitive: true, taskType: 'video', costUnits: 2500 },
+  veo3:           { sensitive: true, taskType: 'video', costUnits: 2000 },
+  kling26:        { sensitive: true, taskType: 'video', costUnits: 700 },
+  kling16:        { sensitive: true, taskType: 'video', costUnits: 350 },
+  kling21:        { sensitive: true, taskType: 'video', costUnits: 700 },
+  minimax:        { sensitive: true, taskType: 'video', costUnits: 250 },
+  minimax_live:   { sensitive: true, taskType: 'video', costUnits: 250 },
+  hailuo:         { sensitive: true, taskType: 'video', costUnits: 250 },
+  hunyuan:        { sensitive: true, taskType: 'video', costUnits: 300 },
+  ltx:            { sensitive: true, taskType: 'video', costUnits: 200 },
+  runway_gen4:    { sensitive: true, taskType: 'video', costUnits: 350 },
+  runway_gen4t:   { sensitive: true, taskType: 'video', costUnits: 350 },
+  pika20:         { sensitive: true, taskType: 'video', costUnits: 250 },
+  sora:           { sensitive: true, taskType: 'video', costUnits: 500 },
+  luma:           { sensitive: true, taskType: 'video', costUnits: 300 },
 
   // ── Audio generation ───────────────────────────────────────────────────────
-  generate_track:  { sensitive: false, taskType: 'audio', costUnits: 5, fallbackChain: ['generate_melody'] },
-  generate_melody: { sensitive: false, taskType: 'audio', costUnits: 4 },
-  generate_beat:   { sensitive: false, taskType: 'audio', costUnits: 3 },
-  separate_stems:  { sensitive: true,  taskType: 'audio', costUnits: 10 },
-  tts:             { sensitive: true,  taskType: 'audio', costUnits: 2 },
-  ai_master:       { sensitive: false, taskType: 'audio', costUnits: 8 },
-  denoise:         { sensitive: false, taskType: 'audio', costUnits: 6 },
+  generate_track:  { sensitive: false, taskType: 'audio', costUnits: 15, fallbackChain: ['generate_melody'] },
+  generate_melody: { sensitive: false, taskType: 'audio', costUnits: 10 },
+  generate_beat:   { sensitive: false, taskType: 'audio', costUnits: 10 },
+  separate_stems:  { sensitive: true,  taskType: 'audio', costUnits: 15 },
+  tts:             { sensitive: true,  taskType: 'audio', costUnits: 75 },
+  sts:             { sensitive: true,  taskType: 'audio', costUnits: 150 },
+  ai_master:       { sensitive: false, taskType: 'audio', costUnits: 15 },
+  denoise:         { sensitive: false, taskType: 'audio', costUnits: 10 },
 }
 
 // ─── Thresholds ───────────────────────────────────────────────────────────────
 
-// Free tier: compute units per day before degradation kicks in
-const FREE_FULL_QUALITY_THRESHOLD  = 100   // below → full quality
-const FREE_MEDIUM_QUALITY_THRESHOLD = 200  // below → medium quality, above → draft + fallback
+// Free tier: compute units before quality degradation kicks in
+// Free monthly cap = 3,000 credits; orchestrator degrades at lower threshold
+const FREE_FULL_QUALITY_THRESHOLD  = 200   // below → full quality
+const FREE_MEDIUM_QUALITY_THRESHOLD = 400  // below → medium quality, above → draft + fallback
 
 // Free tier: velocity (requests per minute) before queuing
 const FREE_VELOCITY_LIMIT  = 6
 // Pro tier: velocity before queuing (quality preserved, speed slows)
 const PRO_VELOCITY_LIMIT   = 20
 
-// Pro daily compute budget (extremely high — effectively unlimited for real usage)
-// This only kicks in for genuine bad actors (bots), not real creative sessions
+// Pro/Team monthly credit budgets enforced in checkCredits() in index.tsx
+// The orchestrator hard-stop is only for genuine bot abuse (50k credits/day ≈ $50 API cost)
 const PRO_DAILY_COMPUTE_HARD_STOP = 50_000
 
 // ─── Execution plan ───────────────────────────────────────────────────────────

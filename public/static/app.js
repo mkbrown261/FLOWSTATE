@@ -678,14 +678,14 @@ function checkBillingReturn() {
     window.history.replaceState({}, '', window.location.pathname);
 
   } else if (topup === 'success') {
-    const tokens = parseInt(params.get('tokens') || '0');
-    const label  = tokens >= 1_000_000
-      ? (tokens / 1_000_000).toFixed(1) + 'M'
-      : tokens >= 1_000
-      ? Math.round(tokens / 1_000) + 'k'
-      : String(tokens);
+    const credits = parseInt(params.get('credits') || params.get('tokens') || '0');
+    const label   = credits >= 1_000_000
+      ? (credits / 1_000_000).toFixed(1) + 'M'
+      : credits >= 1_000
+      ? Math.round(credits / 1_000) + 'k'
+      : String(credits);
     setTimeout(() => {
-      notify(`✅ ${label} tokens added to your account! They never expire.`, 'success');
+      notify(`✅ ${label} credits added to your account! They never expire.`, 'success');
       // Refresh balance display if visible
       if (typeof loadTokenBalance === 'function') loadTokenBalance();
     }, 800);
@@ -3328,16 +3328,16 @@ function checkTokenUpgradeTrigger(used, limit) {
           <div style="font-size:42px;margin-bottom:10px">🔥</div>
           <h2 style="margin:0 0 6px;font-size:18px">You're on a roll!</h2>
           <p style="color:var(--text-s);font-size:13px;margin-bottom:16px">
-            You've used <strong style="color:#f59e0b">${used.toLocaleString()} / ${limit.toLocaleString()} tokens</strong> today.<br>
+            You've used <strong style="color:#f59e0b">${used.toLocaleString()} / ${limit.toLocaleString()} credits</strong> this month.<br>
             Only <strong style="color:#ef4444">${left.toLocaleString()} left</strong> — don't let momentum stop.
           </p>
           <div style="background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:12px;padding:14px;margin-bottom:16px;text-align:left">
             <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">PRO unlocks</div>
             <div style="display:flex;flex-direction:column;gap:7px;font-size:13px">
-              <div>⚡ <strong>100,000 tokens/day</strong> — 66× more</div>
+              <div>⚡ <strong>10,000 credits/month</strong> — 3× more + all media types</div>
               <div>🤖 <strong>All AI models</strong> — GPT-4o, Claude, Gemini</div>
-              <div>📊 <strong>Full FlowScore history</strong> — unlimited sessions</div>
-              <div>🎵 <strong>AI Music + Video generation</strong> — unlimited</div>
+              <div>📊 <strong>Full FlowScore history</strong> — all sessions</div>
+              <div>🎵 <strong>Image, Video &amp; Music generation</strong> — included</div>
               <div>🎁 <strong>Priority support</strong> + early features</div>
             </div>
           </div>
@@ -3740,24 +3740,24 @@ function _exportSessionJournal() {
   notify('✅ Journal exported as CSV', 'success');
 }
 
-// ── Token wall, upgrade moment, model downgrade badge ─────────────────────
+// ── Credit wall, upgrade moment, model downgrade badge ────────────────────
 function showTokenWall(isPro) {
-  const used = _tokenBalance?.dailyUsed || 0;
-  const limit = _tokenBalance?.dailyLimit || (isPro ? 100000 : 1500);
-  const tier = _tokenBalance?.tier || 'free';
+  const used  = _tokenBalance?.monthlyUsed || _tokenBalance?.dailyUsed || 0;
+  const limit = _tokenBalance?.monthlyLimit || (isPro ? 10000 : 3000);
+  const tier  = _tokenBalance?.tier || 'free';
 
   if (isPro) {
     openModal(`
       <div style="text-align:center;padding:8px 0">
         <div style="font-size:40px;margin-bottom:12px">📊</div>
-        <h2 style="margin:0 0 8px">Daily Pro Limit Reached</h2>
-        <p style="color:var(--text-s);font-size:13px;margin-bottom:20px">You've used your 100,000 daily tokens. Your quota resets at midnight UTC.</p>
+        <h2 style="margin:0 0 8px">Monthly Credit Allocation Used</h2>
+        <p style="color:var(--text-s);font-size:13px;margin-bottom:20px">You've used your ${limit.toLocaleString()} monthly credits. Buy a credit pack to keep going or wait for next month's reset.</p>
         <div style="background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.2);border-radius:12px;padding:14px;margin-bottom:16px;font-size:13px">
-          <div style="color:#888;margin-bottom:4px">Used today</div>
-          <div style="font-size:22px;font-weight:800;color:var(--accent)">${used.toLocaleString()} <span style="font-size:13px;color:#888">/ ${limit.toLocaleString()}</span></div>
+          <div style="color:#888;margin-bottom:4px">Used this month</div>
+          <div style="font-size:22px;font-weight:800;color:var(--accent)">${used.toLocaleString()} <span style="font-size:13px;color:#888">/ ${limit.toLocaleString()} credits</span></div>
         </div>
-        <button class="btn-primary" onclick="openTopupModal();closeModal()" style="width:100%;margin-bottom:8px">💰 Buy Token Pack — Never Expire</button>
-        <button onclick="closeModal()" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;font-size:13px">Wait until midnight reset</button>
+        <button class="btn-primary" onclick="openTopupModal();closeModal()" style="width:100%;margin-bottom:8px">💰 Buy Credit Pack — Never Expire</button>
+        <button onclick="closeModal()" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;font-size:13px">Wait for next month</button>
       </div>
     `);
     return;
@@ -3768,21 +3768,21 @@ function showTokenWall(isPro) {
     <div style="text-align:center;padding:8px 0">
       <div style="font-size:40px;margin-bottom:12px">⚡</div>
       <h2 style="margin:0 0 6px">You've hit the free limit</h2>
-      <p style="color:var(--text-s);font-size:13px;margin-bottom:18px">You used all <strong style="color:var(--accent)">1,500 free tokens</strong> today. Here's what you're missing:</p>
+      <p style="color:var(--text-s);font-size:13px;margin-bottom:18px">You used all <strong style="color:var(--accent)">3,000 free credits</strong> this month. Here's what you're missing:</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px;text-align:left">
         <div style="background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:12px;padding:14px">
           <div style="font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Free</div>
-          <div style="font-size:12px;color:var(--text-s);line-height:2">1,500 tokens/day<br>GPT-4o mini only<br>No calendar sync<br>No image gen<br>Basic metrics</div>
+          <div style="font-size:12px;color:var(--text-s);line-height:2">3,000 credits/month<br>GPT-4o mini only<br>No calendar sync<br>No image gen<br>Basic metrics</div>
         </div>
         <div style="background:linear-gradient(135deg,rgba(168,85,247,.12),rgba(236,72,153,.08));border:1px solid rgba(168,85,247,.35);border-radius:12px;padding:14px;position:relative">
           <div style="position:absolute;top:-8px;right:10px;background:var(--grad);color:#fff;font-size:9px;font-weight:800;padding:2px 8px;border-radius:99px;letter-spacing:.5px">PRO</div>
           <div style="font-size:11px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Pro — $18/mo</div>
-          <div style="font-size:12px;color:var(--text-p);line-height:2"><strong>100,000</strong> tokens/day<br>GPT-5, Claude, Gemini, Grok<br>Google Calendar sync<br>Image + video gen<br>Advanced insights</div>
+          <div style="font-size:12px;color:var(--text-p);line-height:2"><strong>10,000</strong> credits/month<br>All AI models + Image &amp; Video gen<br>Google Calendar sync<br>Advanced insights<br>Priority support</div>
         </div>
       </div>
       <button class="btn-primary" onclick="closeModal();openPricingModal()" style="width:100%;margin-bottom:8px;padding:12px;font-size:14px">🚀 Upgrade to Pro — $18/mo</button>
-      <button onclick="openTopupModal();closeModal()" style="width:100%;padding:9px;border-radius:8px;border:1px solid rgba(16,185,129,.4);background:rgba(16,185,129,.08);color:#10b981;cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px">💰 Buy Tokens (no subscription)</button>
-      <button onclick="closeModal()" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;font-size:12px">Wait until tomorrow (resets midnight UTC)</button>
+      <button onclick="openTopupModal();closeModal()" style="width:100%;padding:9px;border-radius:8px;border:1px solid rgba(16,185,129,.4);background:rgba(16,185,129,.08);color:#10b981;cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px">💰 Buy Credits (no subscription)</button>
+      <button onclick="closeModal()" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;font-size:12px">Wait for next month's reset</button>
     </div>
   `);
 }
@@ -3798,8 +3798,8 @@ function showTokenWarningBar(msg) {
     const chatPane = document.getElementById('tab-pane-chat');
     if (chatPane) chatPane.insertBefore(bar, chatPane.firstChild);
   }
-  const left = msg.match(/(\d[\d,]+) tokens/)?.[1] || '?';
-  bar.innerHTML = `<span>⚡ <strong>${left} tokens left today</strong> — ${msg} · <a href="#" onclick="event.stopPropagation();openPricingModal();return false" style="color:var(--accent);text-decoration:none;font-weight:700">Upgrade to Pro</a> for 100k/day</span><span style="opacity:.5;font-size:14px">✕</span>`;
+  const left = msg.match(/(\d[\d,]+) credits/)?.[1] || msg.match(/(\d[\d,]+)/)?.[1] || '?';
+  bar.innerHTML = `<span>⚡ <strong>${left} credits left this month</strong> · <a href="#" onclick="event.stopPropagation();openPricingModal();return false" style="color:var(--accent);text-decoration:none;font-weight:700">Upgrade to Pro</a> for 10,000/month</span><span style="opacity:.5;font-size:14px">✕</span>`;
   bar.style.display = 'flex';
 }
 
@@ -5131,7 +5131,7 @@ function _renderPricingModal() {
       badge: '',
       color: 'var(--text-s)',
       feats: [
-        '7 AI models (1,500 tokens/day)',
+        '7 AI models (3,000 credits/month)',
         '25-min Pomodoro timer',
         'Basic Kanban board',
         'Focus metrics',
@@ -5150,7 +5150,7 @@ function _renderPricingModal() {
       hi: true,
       feats: [
         'All AI models (GPT-5, Claude, Gemini, Grok)',
-        'Unlimited tokens (smart routing)',
+        '10,000 credits/month (all media types)',
         'Google Calendar sync',
         'Notion + Slack integration',
         'Advanced metrics & insights',
@@ -5167,7 +5167,7 @@ function _renderPricingModal() {
       badge: '',
       color: 'var(--blue)',
       feats: [
-        'Everything in Pro (unlimited tokens)',
+        'Everything in Pro (7,500 credits/seat/month)',
         'Sprint Health & velocity',
         'Burnout Monitor',
         'Team Pulse & standups',
@@ -5183,7 +5183,7 @@ function _renderPricingModal() {
       badge: '',
       color: 'var(--warn)',
       feats: [
-        'Unlimited tokens (custom limits)',
+        'Custom credit volume (contact sales)',
         'SSO / SAML',
         'Audit logs',
         'Custom AI models',
@@ -5483,7 +5483,7 @@ async function openInviteModal() {
       <div style="text-align:center;padding:8px 0">
         <div style="font-size:40px;margin-bottom:12px">🎁</div>
         <h2 style="margin:0 0 8px">Invite Friends, Earn Tokens</h2>
-        <p style="color:var(--text-s);font-size:13px;margin-bottom:18px">Sign in to generate your unique referral link.<br>You earn <strong style="color:#10b981">5,000 tokens</strong> per friend who joins — they get <strong style="color:#a855f7">10,000 bonus tokens</strong>.</p>
+        <p style="color:var(--text-s);font-size:13px;margin-bottom:18px">Sign in to generate your unique referral link.<br>You earn <strong style="color:#10b981">500 credits</strong> per friend who joins — they get <strong style="color:#a855f7">1,000 bonus credits</strong>.</p>
         <button class="btn-primary" onclick="closeModal();openAuthPopup('/api/auth/google')" style="width:100%"><i class="fab fa-google"></i> Sign in to get your link</button>
       </div>`);
     return;
@@ -5504,7 +5504,7 @@ async function openInviteModal() {
     const refUrl  = gen.url;
     const code    = gen.code;
     const claimed = stats.claimed || 0;
-    const earned  = claimed * 5000;
+    const earned  = claimed * 500;
 
     const shareActions = [
       { icon: 'fa-copy',     label: 'Copy Link',    fn: `navigator.clipboard.writeText('${refUrl}').then(()=>notify('🔗 Copied!','success'))` },
@@ -5517,12 +5517,12 @@ async function openInviteModal() {
         <div style="text-align:center;margin-bottom:18px">
           <div style="font-size:36px;margin-bottom:8px">🎁</div>
           <h2 style="margin:0 0 6px">Invite Friends</h2>
-          <p style="color:var(--text-s);font-size:12px">You earn <strong style="color:#10b981">5,000 tokens</strong> per friend · They get <strong style="color:#a855f7">10,000 bonus tokens</strong></p>
+          <p style="color:var(--text-s);font-size:12px">You earn <strong style="color:#10b981">500 credits</strong> per friend · They get <strong style="color:#a855f7">1,000 bonus credits</strong></p>
         </div>
         ${claimed > 0 ? `
         <div style="background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(16,185,129,.05));border:1px solid rgba(16,185,129,.25);border-radius:12px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between">
           <span style="font-size:13px;color:var(--text-s)">🏆 ${claimed} friend${claimed!==1?'s':''} joined</span>
-          <span style="font-size:14px;font-weight:800;color:#10b981">+${earned.toLocaleString()} tokens earned</span>
+          <span style="font-size:14px;font-weight:800;color:#10b981">+${earned.toLocaleString()} credits earned</span>
         </div>` : ''}
         <div style="background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:10px 12px;margin-bottom:12px">
           <div style="font-size:10px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Your Referral Code</div>
@@ -5630,7 +5630,7 @@ async function checkReferralClaim() {
     const r = await fetch(`/api/referral/claim?ref=${encodeURIComponent(ref)}`, { credentials: 'include' });
     const d = await r.json();
     if (d.ok) {
-      notify(`🎁 Welcome! ${d.referrerName} referred you — +${(d.bonusTokens||0).toLocaleString()} bonus tokens added to your account!`, 'success');
+      notify(`🎁 Welcome! ${d.referrerName} referred you — +${(d.bonusTokens||0).toLocaleString()} bonus credits added to your account!`, 'success');
     }
     // Silently ignore code_already_used, self_referral, invalid_code etc.
   } catch(_) {}
@@ -6100,18 +6100,18 @@ async function loadTokenBalance() {
     elInitial.textContent = FS_USER ? '…' : '1.5k';
   }
   if (!FS_USER) {
-    // Guest: show 1,500 daily limit as a hint
-    _tokenBalance = { dailyUsed: 0, dailyLimit: 1500, purchased: 0, tier: 'free', remaining: 1500 };
+    // Guest: show 3,000 monthly credit limit as a hint
+    _tokenBalance = { monthlyUsed: 0, monthlyLimit: 3000, dailyUsed: 0, dailyLimit: 3000, purchased: 0, tier: 'free', remaining: 3000 };
     const el = document.getElementById('token-balance-display');
-    if (el) el.textContent = '1.5k';
+    if (el) el.textContent = '3k';
     const btn = document.getElementById('btn-topup');
-    if (btn) btn.title = '1,500 free tokens/day — Sign in to track usage';
+    if (btn) btn.title = '3,000 free credits/month — Sign in to track usage';
     return;
   }
 
-  // If the cached balance is from a previous UTC day, force a fresh fetch
-  const todayUTC = new Date().toISOString().slice(0, 10);
-  if (_tokenBalanceDate && _tokenBalanceDate !== todayUTC) {
+  // If the cached balance is from a previous UTC month, force a fresh fetch
+  const thisMonthUTC = new Date().toISOString().slice(0, 7);
+  if (_tokenBalanceDate && _tokenBalanceDate.slice(0,7) !== thisMonthUTC) {
     _tokenBalance = null; // bust the cache
   }
   try {
@@ -6120,24 +6120,22 @@ async function loadTokenBalance() {
     const data = await r.json();
     if (data.error) return;
     _tokenBalance = data;
-    _tokenBalanceDate = new Date().toISOString().slice(0, 10); // stamp the UTC date of this fetch
+    _tokenBalanceDate = new Date().toISOString().slice(0, 10); // stamp the fetch date
     const fmt = n => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+'M'
                    : n >= 10_000   ? Math.round(n/1_000)+'k'
                    : n >= 1_000    ? (n/1_000).toFixed(1)+'k'
                    : String(n);
     const el = document.getElementById('token-balance-display');
     if (el) {
-      const purchased = _tokenBalance.purchased || 0;
-      const dailyLeft = Math.max(0, (_tokenBalance.dailyLimit || 1500) - (_tokenBalance.dailyUsed || 0));
+      const purchased  = _tokenBalance.purchased || 0;
+      const monthlyLeft = Math.max(0, (_tokenBalance.monthlyLimit || 3000) - (_tokenBalance.monthlyUsed || 0));
       const isPro = _tokenBalance.tier === 'pro' || _tokenBalance.tier === 'team';
-      // Show: daily remaining (not combined with purchased to avoid confusion)
-      el.textContent = fmt(dailyLeft);
+      el.textContent = fmt(monthlyLeft + purchased);
       const btn = document.getElementById('btn-topup');
       if (btn) {
-        const purchasedNote = purchased > 0 ? ` · ${purchased.toLocaleString()} purchased tokens` : '';
-        const tierNote = isPro ? ' · Pro plan' : ' · Free plan (1,500/day)';
-        btn.title = `${dailyLeft.toLocaleString()} daily tokens remaining${purchasedNote}${tierNote} — click to buy more`;
-        // Show coin icon different color when purchased tokens exist
+        const purchasedNote = purchased > 0 ? ` · ${purchased.toLocaleString()} purchased credits` : '';
+        const tierNote = isPro ? ' · Pro plan' : ' · Free plan (3,000/mo)';
+        btn.title = `${monthlyLeft.toLocaleString()} credits left this month${purchasedNote}${tierNote} — click to buy more`;
         const icon = btn.querySelector('i');
         if (icon) icon.style.color = purchased > 0 ? '#f59e0b' : '#10b981';
       }
@@ -6145,17 +6143,17 @@ async function loadTokenBalance() {
     const isPro = _tokenBalance?.tier === 'pro' || _tokenBalance?.tier === 'team';
     const meter = document.getElementById('chat-token-meter');
     if (meter && !isPro) {
-      const used  = _tokenBalance.dailyUsed  || 0;
-      const limit = _tokenBalance.dailyLimit || 1500;
+      const used  = _tokenBalance.monthlyUsed  || 0;
+      const limit = _tokenBalance.monthlyLimit || 3000;
       const pct   = Math.min(100, Math.round((used / limit) * 100));
       const left  = Math.max(0, limit - used);
       meter.style.display = 'block';
       const label = document.getElementById('chat-token-label');
       const bar   = document.getElementById('chat-token-bar');
       const sub   = document.getElementById('chat-token-sub');
-      if (label) label.textContent = `${used.toLocaleString()} / ${limit.toLocaleString()} tokens used today`;
+      if (label) label.textContent = `${used.toLocaleString()} / ${limit.toLocaleString()} credits used this month`;
       if (bar)   { bar.style.width = pct + '%'; bar.style.background = pct > 80 ? 'linear-gradient(90deg,#f59e0b,#ef4444)' : 'linear-gradient(90deg,#a855f7,#ec4899)'; }
-      if (sub)   sub.textContent = left > 0 ? `${left.toLocaleString()} tokens left today` : '⚠️ Daily limit reached — buy more or wait until midnight';
+      if (sub)   sub.textContent = left > 0 ? `${left.toLocaleString()} credits left this month` : '⚠️ Monthly limit reached — buy a credit pack or upgrade';
       if (!isPro) checkTokenUpgradeTrigger(used, limit);
     } else if (meter && isPro) {
       meter.style.display = 'none';
@@ -6165,21 +6163,24 @@ async function loadTokenBalance() {
 
 function openTopupModal() {
   if (!FS_USER && !state.settings.isDemo) {
-    notify('Sign in to purchase tokens', 'info');
+    notify('Sign in to purchase credits', 'info');
     return;
   }
+  // Credit packs — 1 credit = $0.001 API cost
   const packs = [
-    { id: 'pack_50k',  tokens: 50000,  price: 5,  label: '50k Tokens',  badge: '' },
-    { id: 'pack_200k', tokens: 200000, price: 15, label: '200k Tokens', badge: 'BEST VALUE' },
-    { id: 'pack_500k', tokens: 500000, price: 30, label: '500k Tokens', badge: 'POWER USER' },
+    { id: 'pack_starter', tokens: 5000,  price: 5,  label: '5k Credits',  badge: '' },
+    { id: 'pack_pro',     tokens: 15000, price: 15, label: '15k Credits', badge: 'BEST VALUE' },
+    { id: 'pack_power',   tokens: 40000, price: 30, label: '40k Credits', badge: 'POWER USER' },
   ];
 
+  const monthlyLeft = _tokenBalance ? Math.max(0, (_tokenBalance.monthlyLimit||3000) - (_tokenBalance.monthlyUsed||0)) : 0;
+  const purchased   = _tokenBalance?.purchased || 0;
   const balHtml = _tokenBalance
     ? `<div style="background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.25);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:13px">
         <span style="color:var(--text-s)">Current balance: </span>
-        <span style="color:var(--accent);font-weight:700">${(_tokenBalance.purchased||0).toLocaleString()} purchased</span>
+        <span style="color:var(--accent);font-weight:700">${purchased.toLocaleString()} purchased credits</span>
         <span style="color:var(--text-s)"> · </span>
-        <span style="color:var(--text)">${Math.max(0,_tokenBalance.dailyLimit-_tokenBalance.dailyUsed).toLocaleString()} daily remaining</span>
+        <span style="color:var(--text)">${monthlyLeft.toLocaleString()} monthly remaining</span>
       </div>`
     : '';
 
@@ -6190,9 +6191,9 @@ function openTopupModal() {
       <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;text-align:center;cursor:pointer;transition:border-color .2s" onclick="startTopup('${p.id}')" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
         ${badge}
         <div style="font-size:22px;font-weight:800;color:var(--text);margin:4px 0">${(p.tokens/1000).toFixed(0)}k</div>
-        <div style="font-size:11px;color:var(--text-s);margin-bottom:10px">tokens</div>
+        <div style="font-size:11px;color:var(--text-s);margin-bottom:10px">credits</div>
         <div style="font-size:20px;font-weight:700;color:var(--accent)">$${p.price}</div>
-        <div style="font-size:10px;color:var(--text-s);margin-bottom:12px">$${perK}/1k tokens</div>
+        <div style="font-size:10px;color:var(--text-s);margin-bottom:12px">$${perK}/1k credits</div>
         <button style="width:100%;padding:8px;border-radius:8px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:13px;font-weight:600">Buy Now</button>
       </div>`;
   }).join('');

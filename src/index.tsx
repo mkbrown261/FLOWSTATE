@@ -1060,8 +1060,8 @@ app.post('/api/code/intent', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
 
-  // Token budget check — intent classifier costs 100 tokens (cheap Haiku call)
-  const abuseCheck = await checkAntiAbuse(c, session.email, 100)
+  // Credit cost — intent classifier (Claude Haiku) ≈ 2 credits
+  const abuseCheck = await checkAntiAbuse(c, session.email, 2)
   if (abuseCheck) return abuseCheck
 
   const { prompt = '', hasFiles = false, conversationHistory = [], activeFile = '', agent = 'claude-sonnet-4' } = await c.req.json()
@@ -1180,8 +1180,8 @@ app.post('/api/code/chat', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
 
-  // Token budget check — conversational reply costs 300 tokens
-  const abuseCheck = await checkAntiAbuse(c, session.email, 300)
+  // Credit cost — conversational reply (Claude Sonnet) ≈ 15 credits
+  const abuseCheck = await checkAntiAbuse(c, session.email, 15)
   if (abuseCheck) return abuseCheck
 
   const { prompt = '', conversationHistory = [], generatedFiles = {}, agent = 'claude-sonnet-4' } = await c.req.json()
@@ -1270,8 +1270,8 @@ app.post('/api/github/ai-code', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
 
-  // Token budget check — code generation costs 2,000 tokens (large context + output)
-  const abuseCheck = await checkAntiAbuse(c, session.email, 2000)
+  // Credit cost — full AI code build (Claude Sonnet 32k output) ≈ 480 credits
+  const abuseCheck = await checkAntiAbuse(c, session.email, 480)
   if (abuseCheck) return abuseCheck
 
   const {
@@ -2579,78 +2579,130 @@ async function redisPipeline(url: string, token: string, commands: any[][]): Pro
   } catch { return [] }
 }
 
-async function checkAntiAbuse(c: any, userId: string, cost: number = 500): Promise<Response | null> {
+// ─── Unified Credit System ────────────────────────────────────────────────────
+// 1 credit = $0.001 API cost (with markup applied in costUnits)
+// Free tier:       3,000 credits/month — hard stop
+// Pro tier:        10,000 credits/month — no hard stop (purchased credits cover overflow)
+// Team tier:       7,500 credits/seat/month — no hard stop
+// Enterprise:      no cap
+//
+// Credits track ALL media types: text, image, video, voice, music.
+// The ai-orchestrator.ts costUnits map to credits directly.
+async function checkCredits(c: any, userId: string, cost: number = 1): Promise<Response | null> {
   const url   = c.env?.UPSTASH_REDIS_URL
   const token = c.env?.UPSTASH_REDIS_TOKEN
   if (!url || !token) return null // Redis not configured — allow through
 
-  const date    = new Date().toISOString().slice(0, 10)
+  const month   = new Date().toISOString().slice(0, 7) // YYYY-MM
   const minute  = Math.floor(Date.now() / 60000)
   const tierKey      = `tier:${userId}`
-  const tierEmailKey = `tier_email:${userId}` // set by Stripe webhook (keyed by email)
-  const dayKey  = `daily_tokens_used:${userId}:${date}`
-  const velKey  = `velocity:${userId}:${minute}`
+  const tierEmailKey = `tier_email:${userId}`
+  const monthKey     = `monthly_credits_used:${userId}:${month}`
+  const velKey       = `velocity:${userId}:${minute}`
 
-  // Read tier from both sources + velocity/usage in one pipeline
+  // Compute seconds until end of current month UTC for EXPIREAT
+  const now = new Date()
+  const endOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0))
+  const monthExpireAt = Math.floor(endOfMonth.getTime() / 1000)
+
+  // Read tier + velocity/usage in one pipeline
   const results = await redisPipeline(url, token, [
-    ['GET', tierKey],
-    ['GET', tierEmailKey],
-    ['GET', dayKey],
-    ['GET', velKey],
-    ['INCR', velKey],
-    ['EXPIRE', velKey, 90],
-    ['INCRBY', dayKey, cost],
-    ['EXPIREAT', dayKey, Math.floor(new Date(new Date().toISOString().slice(0,10) + 'T23:59:59Z').getTime() / 1000) + 1],
+    ['GET',     tierEmailKey],
+    ['GET',     tierKey],
+    ['GET',     monthKey],
+    ['GET',     velKey],
+    ['INCR',    velKey],
+    ['EXPIRE',  velKey, 90],
+    ['INCRBY',  monthKey, cost],
+    ['EXPIREAT', monthKey, monthExpireAt],
   ])
 
-  // Prefer webhook-set tier (tier_email) over session tier
-  const tierSession = results[0] as string | null
-  const tierEmail   = results[1] as string | null
-  const tier        = tierEmail || tierSession
-  const dayUsed     = results[2] as string | null
+  const tierEmail   = results[0] as string | null
+  const tierSession = results[1] as string | null
+  const tier        = tierEmail || tierSession || 'free'
+  const monthUsed   = results[2] as string | null  // value BEFORE this increment
   const velCount    = results[3] as string | null
 
-  const isPaid   = tier === 'pro' || tier === 'team'
-  const isTeam   = tier === 'team'
-  const limit    = isPaid ? 100_000 : 1_500
-  const used     = parseInt(dayUsed || '0')
-  const velocity = parseInt(velCount || '0')
+  const isPaid       = tier === 'pro' || tier === 'team' || tier === 'enterprise' ||
+    ['personal_pro', 'team_starter', 'team_growth'].includes(tier)
+  const isEnterprise = tier === 'enterprise'
+  const isTeam       = tier === 'team' || tier === 'team_starter' || tier === 'team_growth'
 
-  // Velocity check: >10 requests in 60s
+  // Monthly credit budgets
+  // Enterprise: no cap
+  // Pro/Team: 10,000 / 7,500 — paid users use purchased credits as overflow, never hard-blocked
+  // Free: 3,000 — hard stop (free users can buy credit packs to continue)
+  const FREE_MONTHLY_LIMIT = 3_000
+
+  const used     = parseInt(monthUsed || '0')
+  const velocity = parseInt(velCount  || '0')
+
+  // Velocity check: >10 requests per 60 seconds (bot protection only)
   if (velocity >= 10) {
     return c.json({ error: 'Too many requests — slow down for 60 seconds.', code: 'VELOCITY_EXCEEDED' }, 429)
   }
 
-  // Daily token budget check — also check purchased token balance as overflow
-  if (used >= limit) {
-    // Check purchased token balance
-    const balKey = `token_balance:${encodeURIComponent(userId)}`
-    const balRes = await fetch(`${url}/getdel/${balKey}`, { headers: { Authorization: `Bearer ${token}` } })
+  // Enterprise: never block
+  if (isEnterprise) return null
+
+  // Pro/Team: never hard-block — check purchased credit overflow
+  if (isPaid) {
+    // Set a soft header when monthly allocation is exceeded but don't block
+    const monthlyAlloc = isTeam ? 7_500 : 10_000
+    if (used >= monthlyAlloc) {
+      // Draw from purchased credit balance
+      const balKey = `credit_balance:${encodeURIComponent(userId)}`
+      const balRes = await fetch(`${url}/get/${balKey}`, { headers: { Authorization: `Bearer ${token}` } })
+      const balData: any = await balRes.json().catch(() => ({}))
+      const balance = parseInt(balData?.result || '0')
+      if (balance > 0) {
+        const deduct = Math.min(cost, balance)
+        await fetch(`${url}/decrby/${balKey}/${deduct}`, { headers: { Authorization: `Bearer ${token}` } })
+        c.header('X-Credit-Source', 'purchased')
+      }
+      // Pro/Team always allowed through — purchased balance is informational
+    }
+    return null
+  }
+
+  // Free tier: hard stop at 3,000 credits/month
+  if (used >= FREE_MONTHLY_LIMIT) {
+    // Check purchased credit balance as overflow
+    const balKey = `credit_balance:${encodeURIComponent(userId)}`
+    const balRes = await fetch(`${url}/get/${balKey}`, { headers: { Authorization: `Bearer ${token}` } })
     const balData: any = await balRes.json().catch(() => ({}))
     const balance = parseInt(balData?.result || '0')
 
-    if (balance >= 500) {
-      // Deduct from purchased balance and allow through
-      const newBal = balance - 500
-      await fetch(`${url}/set/${balKey}/${newBal}`, { headers: { Authorization: `Bearer ${token}` } })
-      c.header('X-Token-Source', 'purchased')
-      c.header('X-Purchased-Balance', String(newBal))
-      return null // allow through using purchased tokens
+    if (balance >= cost) {
+      const deduct = Math.min(cost, balance)
+      await fetch(`${url}/decrby/${balKey}/${deduct}`, { headers: { Authorization: `Bearer ${token}` } })
+      c.header('X-Credit-Source', 'purchased')
+      return null // allow through using purchased credits
     }
 
-    const msg = isPaid
-      ? `Daily ${isTeam ? 'Team' : 'Pro'} limit reached (100k tokens). Buy a token pack or wait for reset at midnight UTC.`
-      : 'Free daily limit reached (1,500 tokens). Upgrade to Pro or buy a token pack.'
-    return c.json({ error: msg, code: 'DAILY_LIMIT', used, limit, isPaid, canTopUp: true }, 429)
+    return c.json({
+      error: 'Monthly credit limit reached (3,000 credits). Upgrade to Pro for 10,000 credits/month or buy a credit pack.',
+      code: 'MONTHLY_LIMIT',
+      used,
+      limit: FREE_MONTHLY_LIMIT,
+      isPaid: false,
+      canTopUp: true,
+    }, 429)
   }
 
   // Soft warning at 80% budget for free users
-  const newUsed = used + 500
-  if (!isPaid && newUsed >= limit * 0.8) {
-    c.header('X-Budget-Warning', `${Math.max(0, limit - newUsed)} tokens left today — upgrade to Pro for unlimited tokens`)
+  if (used + cost >= FREE_MONTHLY_LIMIT * 0.8) {
+    const remaining = Math.max(0, FREE_MONTHLY_LIMIT - used - cost)
+    c.header('X-Budget-Warning', `${remaining} credits left this month — upgrade to Pro for 10,000 credits/month`)
   }
 
   return null // allow through
+}
+
+// Backward-compat shim — old call sites pass a token cost, we map to credit cost
+// The orchestrator handles the real per-model deduction; this covers non-orchestrated routes
+async function checkAntiAbuse(c: any, userId: string, cost: number = 1): Promise<Response | null> {
+  return checkCredits(c, userId, cost)
 }
 
 // ─── AI Chat — multi-model streaming ─────────────────────────────────────────
@@ -2833,8 +2885,22 @@ app.post('/api/generate/image', async (c) => {
   let resolvedModelId = modelId
   let extraQualityParams: Record<string, any> = {}
 
+  const userId = session?.email || session?.id || c.req.header('CF-Connecting-IP') || 'anon'
+
+  // Credit costs per image model (1 credit = $0.001):
+  // z-image/schnell ≈ 8cr, flux_dev ≈ 25cr, flux_pro/imagen/ideogram ≈ 55cr
+  const IMAGE_CREDIT_COSTS: Record<string, number> = {
+    flux_schnell: 8, sd35_medium: 8, seedream: 8,
+    flux_dev: 25, sd35: 25, sd3: 25,
+    flux_pro: 55, imagen3: 55, imagen4: 55, ideogram2: 80, recraft: 55,
+    'gpt-image': 60, dalle3: 55, dalle4: 60, runway_img: 60,
+    nano_banana_2k: 20, nano_banana_4k: 55,
+  }
+  const imgCreditCost = IMAGE_CREDIT_COSTS[modelId] ?? 55
+  const imgCreditCheck = await checkCredits(c, userId, imgCreditCost)
+  if (imgCreditCheck) return imgCreditCheck
+
   if (imgRedisUrl && imgRedisTok) {
-    const userId = session?.email || session?.id || c.req.header('CF-Connecting-IP') || 'anon'
     const plan = await resolveAIExecution({
       userId,
       tool:           modelId,
@@ -2912,11 +2978,36 @@ app.post('/api/generate/image', async (c) => {
 
 // ─── Video Generation ─────────────────────────────────────────────────────────
 app.post('/api/generate/video', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
   const { prompt, model: modelId = 'kling16', duration = 5, imageUrl } = await c.req.json()
   const spec = VIDEO_MODEL_REGISTRY[modelId as keyof typeof VIDEO_MODEL_REGISTRY]
   if (!spec) return c.json({ error: 'Unknown video model' }, 400)
   const apiKey = (c.env as any)?.[spec.envKey]
   const isImg2Vid = !!imageUrl
+
+  // Block free users from video generation entirely
+  const vidUserId = session?.email || session?.id || c.req.header('CF-Connecting-IP') || 'anon'
+  const vidTierKey = session?.email ? `tier_email:${session.email}` : null
+  // Quick tier check — video is Pro+ only
+  if (!session || !isTierPro(session.tier)) {
+    return c.json({ error: 'Video generation requires a Pro plan. Upgrade at flowst8.cc/pricing', code: 'PRO_REQUIRED', upgradeUrl: 'https://flowst8.cc/pricing' }, 403)
+  }
+
+  // Credit costs per video model (1 credit = $0.001):
+  // Wan 5s ≈ 400cr, Kling 5s ≈ 700cr, Seedance 5s ≈ 250cr (fal.ai), Higgsfield 15s ≈ 550cr
+  const VIDEO_CREDIT_COSTS: Record<string, number> = {
+    wan_t2v: 400, wan_i2v: 400,
+    kling16: 350, kling21: 700,
+    seedance_t2v: 250, seedance_i2v: 250,
+    higgsfield_t2v: 550, higgsfield_i2v: 550,
+    minimax: 250, minimax_live: 250, hailuo: 250,
+    veo2: 2500, veo3: 2000,
+    runway_gen4: 350, runway_gen4t: 350,
+    pika20: 250, sora: 500, luma: 300, hunyuan: 300, ltx: 200,
+  }
+  const vidCreditCost = (VIDEO_CREDIT_COSTS[modelId] ?? 400) * Math.max(1, Math.floor(duration / 5))
+  const vidCreditCheck = await checkCredits(c, vidUserId, vidCreditCost)
+  if (vidCreditCheck) return vidCreditCheck
 
   if (!apiKey) return c.json({ error: spec.name + ' requires ' + spec.envKey, demo: true, queued: false,
     message: `Demo: Would generate ${duration}s video with ${spec.name}: "${prompt.slice(0, 60)}"` })
@@ -3415,9 +3506,9 @@ app.post('/api/billing/webhook', async (c) => {
       await fetch(`${url}/expire/${txKey}/7776000`, { headers: { Authorization: `Bearer ${token}` } }) // 90 day log retention
 
       if (meta.type === 'token_pack' && meta.tokens) {
-        // ── Token pack purchase — add tokens to user's balance ──────────────
+        // ── Credit pack purchase — add credits to user's balance ────────────
         const addTokens = parseInt(meta.tokens)
-        const balKey = `token_balance:${encodeURIComponent(email)}`
+        const balKey = `credit_balance:${encodeURIComponent(email)}`
         await fetch(`${url}/incrby/${balKey}/${addTokens}`, { headers: { Authorization: `Bearer ${token}` } })
         await fetch(`${url}/expire/${balKey}/315360000`,    { headers: { Authorization: `Bearer ${token}` } }) // 10yr TTL
 
@@ -3538,10 +3629,12 @@ app.post('/api/billing/webhook', async (c) => {
 
 // ─── Token Top-Up ─────────────────────────────────────────────────────────────
 // One-time purchase packs: tokens credited to user's Redis balance
+// Credit packs — 1 credit = $0.001 API cost (markup included)
+// Prices stay the same ($5/$15/$30), amounts adjusted to reflect real costs
 const TOKEN_PACKS: Record<string, { tokens: number; price: number; priceId: string }> = {
-  pack_50k:  { tokens:  50_000, price:  5, priceId: 'price_1TIvjTLsf0qSbSh0ruQlu4tk' },
-  pack_200k: { tokens: 200_000, price: 15, priceId: 'price_1TIvjULsf0qSbSh0wpzT2ODJ' },
-  pack_500k: { tokens: 500_000, price: 30, priceId: 'price_1TIvjULsf0qSbSh0wjbz2RX0' },
+  pack_starter: { tokens:  5_000, price:  5, priceId: 'price_1TIvjTLsf0qSbSh0ruQlu4tk' },
+  pack_pro:     { tokens: 15_000, price: 15, priceId: 'price_1TIvjULsf0qSbSh0wpzT2ODJ' },
+  pack_power:   { tokens: 40_000, price: 30, priceId: 'price_1TIvjULsf0qSbSh0wjbz2RX0' },
 }
 
 app.get('/api/billing/token-packs', (c) => {
@@ -3555,7 +3648,7 @@ app.post('/api/billing/topup', async (c) => {
   const pack = TOKEN_PACKS[pack_id]
   if (!pack) return c.json({ error: 'invalid_pack', available: Object.keys(TOKEN_PACKS) }, 400)
   if (!c.env?.STRIPE_SECRET_KEY) {
-    return c.json({ demo: true, message: `Demo: Would add ${pack.tokens.toLocaleString()} tokens for $${pack.price}` })
+    return c.json({ demo: true, message: `Demo: Would add ${pack.tokens.toLocaleString()} credits for $${pack.price}` })
   }
   const origin = new URL(c.req.url).origin
   const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
@@ -3571,7 +3664,7 @@ app.post('/api/billing/topup', async (c) => {
       'metadata[pack_id]': pack_id,
       'metadata[tokens]': String(pack.tokens),
       'metadata[email]': session.email,
-      'success_url': `${origin}/?topup=success&pack=${pack_id}&tokens=${pack.tokens}`,
+      'success_url': `${origin}/?topup=success&pack=${pack_id}&credits=${pack.tokens}`,
       'cancel_url':  `${origin}/?topup=cancelled`,
     }),
   })
@@ -3644,6 +3737,9 @@ app.get('/api/billing/revenue', async (c) => {
 app.post('/api/audio/tts', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  // Credit cost — TTS $0.05/1k chars, avg request ~500 chars = ~75 credits (with markup)
+  const creditCheck = await checkCredits(c, session.email || session.id || 'anon', 75)
+  if (creditCheck) return creditCheck
   const {
     text,
     voice_id        = 'pNInz6obpgDQGcFmaJgB',
@@ -3702,6 +3798,9 @@ app.get('/api/audio/tts/voices', async (c) => {
 app.post('/api/audio/sts', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
+  // Credit cost — STS $0.10/1k chars ≈ 150 credits per request (with markup)
+  const creditCheck = await checkCredits(c, session.email, 150)
+  if (creditCheck) return creditCheck
 
   const elKey = c.env?.ELEVENLABS_API_KEY
   if (!elKey) return c.json({ error: 'ElevenLabs API key not configured' }, 503)
@@ -6799,6 +6898,18 @@ app.post('/api/264pro/video-gen', async (c) => {
   if (!model) return c.json({ error: 'model is required' }, 400)
   if (!prompt) return c.json({ error: 'prompt is required' }, 400)
 
+  // ── Credit deduction for 264pro video gen ────────────────────────────────
+  const VIDEO_264_CREDITS: Record<string, number> = {
+    seedance_t2v: 250, seedance_i2v: 250,
+    higgsfield_t2v: 550, higgsfield_i2v: 550,
+    nano_banana_2k: 20, nano_banana_4k: 55,
+    wan_t2v: 400, wan_i2v: 400,
+  }
+  const vid264Cost = (VIDEO_264_CREDITS[model] ?? 400) * Math.max(1, Math.floor((duration || 5) / 5))
+  const vid264Auth = desktopToken ? (await verify264Token(c, desktopToken)).email : session?.email
+  const vid264Check = await checkCredits(c, vid264Auth || 'anon', vid264Cost)
+  if (vid264Check) return vid264Check
+
   // ── AI Orchestration — Pro users: full quality always, speed may queue ─────
   const redisUrl264 = c.env?.UPSTASH_REDIS_URL
   const redisTok264 = c.env?.UPSTASH_REDIS_TOKEN
@@ -7359,28 +7470,43 @@ app.get('/api/key-status', (c) => {
   })
 })
 
-// Token balance endpoint — returns daily usage + purchased balance
+// Credit balance endpoint — returns monthly usage + purchased credit balance
 app.get('/api/billing/balance', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
   const url   = c.env?.UPSTASH_REDIS_URL
   const token = c.env?.UPSTASH_REDIS_TOKEN
-  if (!url || !token) return c.json({ dailyUsed: 0, dailyLimit: 1500, purchased: 0, tier: 'free' })
+  if (!url || !token) return c.json({ monthlyUsed: 0, monthlyLimit: 3000, purchased: 0, tier: 'free', remaining: 3000 })
 
   const email = session.email
-  const date  = new Date().toISOString().slice(0, 10)
+  const month = new Date().toISOString().slice(0, 7) // YYYY-MM
   const results = await redisPipeline(url, token, [
     ['GET', `tier_email:${email}`],
     ['GET', `tier:${email}`],
-    ['GET', `daily_tokens_used:${email}:${date}`],
-    ['GET', `token_balance:${encodeURIComponent(email)}`],
+    ['GET', `monthly_credits_used:${email}:${month}`],
+    ['GET', `credit_balance:${encodeURIComponent(email)}`],
   ])
-  const tier      = (results[0] || results[1] || 'free') as string
-  const isPaid    = tier === 'pro' || tier === 'team'
-  const dailyUsed = parseInt(results[2] as string || '0')
-  const purchased = parseInt(results[3] as string || '0')
-  const dailyLimit = isPaid ? 100_000 : 1_500
-  return c.json({ dailyUsed, dailyLimit, purchased, tier, remaining: Math.max(0, dailyLimit - dailyUsed) })
+  const tier         = (results[0] || results[1] || 'free') as string
+  const isEnterprise = tier === 'enterprise'
+  const isPaid       = tier === 'pro' || tier === 'team' || isEnterprise ||
+    ['personal_pro', 'team_starter', 'team_growth'].includes(tier)
+  const isTeam       = tier === 'team' || tier === 'team_starter' || tier === 'team_growth'
+
+  const monthlyUsed = parseInt(results[2] as string || '0')
+  const purchased   = parseInt(results[3] as string || '0')
+
+  // Monthly credit allocations
+  let monthlyLimit: number
+  if (isEnterprise) monthlyLimit = 999_999_999 // effectively unlimited
+  else if (isTeam)  monthlyLimit = 7_500
+  else if (isPaid)  monthlyLimit = 10_000
+  else              monthlyLimit = 3_000
+
+  const remaining = isEnterprise ? 999_999_999 : Math.max(0, monthlyLimit - monthlyUsed) + purchased
+
+  return c.json({ monthlyUsed, monthlyLimit, purchased, tier, remaining,
+    // legacy fields for backward compat with old frontend code
+    dailyUsed: 0, dailyLimit: monthlyLimit, isPaid })
 })
 
 // ─── Auth pages ───────────────────────────────────────────────────────────────
@@ -10747,7 +10873,7 @@ app.get('/api/referral/stats', async (c) => {
 })
 
 // GET /api/referral/claim?ref=FS-XXXXX — called on first sign-in when ?ref= param is present
-// Marks the code as used and grants bonus tokens to both parties
+// Marks the code as used and grants bonus credits to both parties
 app.get('/api/referral/claim', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
@@ -10771,20 +10897,20 @@ app.get('/api/referral/claim', async (c) => {
       `UPDATE referrals SET used_by_email=?, used_at=datetime('now') WHERE code=?`
     ).bind(session.email, code).run()
 
-    // Grant 10,000 bonus tokens to new user via Redis
+    // Grant 1,000 bonus credits to new user + 500 credits to referrer via Redis
     if (url && token) {
-      const newUserKey = `token_balance:${encodeURIComponent(session.email)}`
-      const referrerKey = `token_balance:${encodeURIComponent(ref.referrer_email)}`
+      const newUserKey = `credit_balance:${encodeURIComponent(session.email)}`
+      const referrerKey = `credit_balance:${encodeURIComponent(ref.referrer_email)}`
       await redisPipeline(url, token, [
-        ['INCRBY', newUserKey, '10000'],
-        ['INCRBY', referrerKey, '5000'],
+        ['INCRBY', newUserKey, '1000'],
+        ['INCRBY', referrerKey, '500'],
       ])
       // Mark bonus granted in D1
       await db.prepare(
         `UPDATE referrals SET bonus_granted=1 WHERE code=?`
       ).bind(code).run()
     }
-    return c.json({ ok: true, bonusTokens: 10000, referrerBonus: 5000, referrerName: ref.referrer_name || 'your friend' })
+    return c.json({ ok: true, bonusTokens: 1000, referrerBonus: 500, referrerName: ref.referrer_name || 'your friend' })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
