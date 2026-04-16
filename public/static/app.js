@@ -586,6 +586,7 @@ function showMainApp(isDemo=false) {
   _volInit();
   maybeShowTip();
   loadTokenBalance();
+  _scheduleTokenRefresh();
   initKeyboardShortcuts();
   requestNotificationPermission();
   const _startTab = checkBillingReturn();
@@ -6068,6 +6069,29 @@ function startClawFlowCheckout(cycle) {
 
 // ── Token Top-Up Modal ────────────────────────────────────────────────────────
 let _tokenBalance = null;
+let _tokenBalanceDate = null; // UTC date string (YYYY-MM-DD) when balance was last fetched
+
+// ── Auto-refresh: re-fetch balance every 5 minutes AND right after midnight UTC
+function _scheduleTokenRefresh() {
+  // Refresh every 5 minutes while the tab is open
+  setInterval(() => {
+    if (FS_USER) loadTokenBalance();
+  }, 5 * 60 * 1000);
+
+  // Schedule an extra refresh right after the next UTC midnight
+  function scheduleAtMidnight() {
+    const now = new Date();
+    const msUntilMidnight =
+      (24 * 60 * 60 * 1000) -
+      ((now.getUTCHours() * 60 * 60 + now.getUTCMinutes() * 60 + now.getUTCSeconds()) * 1000 + now.getUTCMilliseconds());
+    // Fire 1 second after midnight so the new Redis key is definitely fresh
+    setTimeout(() => {
+      if (FS_USER) loadTokenBalance();
+      scheduleAtMidnight(); // reschedule for the next midnight
+    }, msUntilMidnight + 1000);
+  }
+  scheduleAtMidnight();
+}
 
 async function loadTokenBalance() {
   // T5: Show guest fallback immediately so button never shows blank
@@ -6084,12 +6108,19 @@ async function loadTokenBalance() {
     if (btn) btn.title = '1,500 free tokens/day — Sign in to track usage';
     return;
   }
+
+  // If the cached balance is from a previous UTC day, force a fresh fetch
+  const todayUTC = new Date().toISOString().slice(0, 10);
+  if (_tokenBalanceDate && _tokenBalanceDate !== todayUTC) {
+    _tokenBalance = null; // bust the cache
+  }
   try {
     const r = await fetch('/api/billing/balance', { credentials: 'include' });
     if (!r.ok) return;
     const data = await r.json();
     if (data.error) return;
     _tokenBalance = data;
+    _tokenBalanceDate = new Date().toISOString().slice(0, 10); // stamp the UTC date of this fetch
     const fmt = n => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+'M'
                    : n >= 10_000   ? Math.round(n/1_000)+'k'
                    : n >= 1_000    ? (n/1_000).toFixed(1)+'k'

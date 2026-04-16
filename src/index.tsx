@@ -2600,7 +2600,7 @@ async function checkAntiAbuse(c: any, userId: string, cost: number = 500): Promi
     ['INCR', velKey],
     ['EXPIRE', velKey, 90],
     ['INCRBY', dayKey, cost],
-    ['EXPIRE', dayKey, 86400],
+    ['EXPIREAT', dayKey, Math.floor(new Date(new Date().toISOString().slice(0,10) + 'T23:59:59Z').getTime() / 1000) + 1],
   ])
 
   // Prefer webhook-set tier (tier_email) over session tier
