@@ -1830,8 +1830,24 @@ OUTPUT RULES — STRICTLY ENFORCED:
 
   const orKey = c.env?.OPENROUTER_API_KEY || ''
 
-  // ── Helper: collect streaming SSE into full text ───────────────────────────
-  async function collectStream(response: Response, extractDelta: (parsed: any) => string): Promise<string> {
+  // ── SSE helpers ───────────────────────────────────────────────────────────
+  const enc = new TextEncoder()
+  // sseWrite: send a named SSE event to the client
+  const sseWrite = (controller: ReadableStreamDefaultController, event: string, data: string) => {
+    controller.enqueue(enc.encode(`event: ${event}\ndata: ${data}\n\n`))
+  }
+  // tokenWrite: send a raw token chunk as a 'token' SSE event
+  const tokenWrite = (controller: ReadableStreamDefaultController, token: string) => {
+    if (!token) return
+    controller.enqueue(enc.encode(`event: token\ndata: ${JSON.stringify(token)}\n\n`))
+  }
+
+  // ── Helper: collect streaming SSE into full text AND forward tokens live ──
+  async function collectStream(
+    response: Response,
+    extractDelta: (parsed: any) => string,
+    controller?: ReadableStreamDefaultController
+  ): Promise<string> {
     const reader = response.body?.getReader()
     if (!reader) return ''
     const decoder = new TextDecoder()
@@ -1845,7 +1861,13 @@ OUTPUT RULES — STRICTLY ENFORCED:
         if (!trimmed.startsWith('data:')) continue
         const data = trimmed.slice(5).trim()
         if (data === '[DONE]') continue
-        try { full += extractDelta(JSON.parse(data)) } catch { /* skip */ }
+        try {
+          const token = extractDelta(JSON.parse(data))
+          if (token) {
+            full += token
+            if (controller) tokenWrite(controller, token)
+          }
+        } catch { /* skip */ }
       }
     }
     return full
@@ -1882,146 +1904,168 @@ OUTPUT RULES — STRICTLY ENFORCED:
     return null
   }
 
-  // ── Actual model call (with streaming collection) ─────────────────────────
-  let rawResponse = ''
-  let attemptCount = 0
-
-  const callModel = async (): Promise<string> => {
-    attemptCount++
-
-    // ── Gemini direct API ──────────────────────────────────────────────────
-    if ((agent === 'gemini' || agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash') && (c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY)) {
-      const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
-      const geminiModelMap: Record<string,string> = {
-        'gemini':           'gemini-2.0-flash',
-        'gemini-2-5-pro':   'gemini-2.5-pro-preview-05-06',
-        'gemini-2-5-flash': 'gemini-2.5-flash-preview-04-17',
-      }
-      const geminiModel = geminiModelMap[agent] || 'gemini-2.0-flash'
-      const flatHistory = historyMessages.map((m: any) => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')
-      const fullPrompt = `${systemPrompt}\n\n${flatHistory ? flatHistory + '\n\n' : ''}[USER]: ${currentUserMsg}`
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: fullPrompt }] }],
-          generationConfig: { temperature: 0.15, maxOutputTokens: maxTokens, responseMimeType: 'application/json' }
-        })
-      })
-      const d: any = await r.json()
-      return d?.candidates?.[0]?.content?.parts?.[0]?.text || ''
-    }
-
-    // ── Claude direct Anthropic API (FIX 1 + FIX 7) ───────────────────────
-    if (isClaudeAgent && c.env?.ANTHROPIC_API_KEY) {
-      const claudeKey = c.env?.ANTHROPIC_API_KEY || ''
-      const claudeModelMap: Record<string,string> = {
-        'claude':           'claude-3-5-sonnet-20241022',
-        'claude-opus-4':    'claude-opus-4-5-20251101',
-        'claude-sonnet-4':  'claude-sonnet-4-5-20251101',
-        'claude-haiku-4':   'claude-haiku-4-5-20251101',
-      }
-      const claudeModel = claudeModelMap[agent] || 'claude-sonnet-4-5-20251101'
-      // FIX 7: prefill with '{"' to force JSON-first output
-      const messagesWithPrefill = [
-        ...historyMessages,
-        { role: 'user', content: currentUserMsg },
-        { role: 'assistant', content: '{"' },  // JSON prefill trick
-      ]
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: claudeModel,
-          max_tokens: maxTokens, // FIX 1: 32K
-          system: systemPrompt,
-          messages: messagesWithPrefill,
-          stream: true,
-        })
-      })
-      // Collect streaming response
-      const text = await collectStream(r, (parsed) => {
-        if (parsed.type === 'content_block_delta') return parsed.delta?.text || ''
-        return ''
-      })
-      // Claude stopped after '{"' prefill — prepend it back
-      return '{"' + text
-    }
-
-    // ── OpenRouter (all other models, with streaming) ──────────────────────
-    if (!orKey) return ''
-    const orModelId = OR_MODEL_MAP[agent] || 'google/gemini-2.0-flash-001'
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${orKey}`,
-        'HTTP-Referer': 'https://flowst8.cc',
-        'X-Title': 'FlowState AI Code',
-      },
-      body: JSON.stringify({
-        model: orModelId,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...historyMessages,
-          { role: 'user', content: currentUserMsg }
-        ],
-        temperature: 0.15,
-        max_tokens: maxTokens,
-        stream: true,
-        response_format: isClaudeAgent ? undefined : { type: 'json_object' },
-      })
-    })
-    return await collectStream(r, (parsed) => parsed.choices?.[0]?.delta?.content || '')
-  }
-
-  // ── FIX 5: call model, auto-retry once on empty/bad response ──────────────
-  rawResponse = await callModel()
-  let parsed = extractJSON(rawResponse)
-
-  if (!parsed || !parsed.files?.length) {
-    // Silent retry with a simplified prompt nudge
-    if (attemptCount < 2) {
-      rawResponse = await callModel()
-      parsed = extractJSON(rawResponse)
-    }
-  }
-
-  // ── Final fallback: wrap raw text as a file so user gets something ─────────
-  if (!parsed || !parsed.files?.length) {
-    const fallbackContent = rawResponse.trim() || '// AI did not return valid code — please try again'
-    const ext = language ? ({ javascript:'js', typescript:'ts', python:'py', html:'html', css:'css', go:'go', rust:'rs', sql:'sql' } as any)[language] || 'js' : 'html'
-    parsed = {
-      message: 'Build complete (raw output — retry if formatting looks off)',
-      files: [{ path: `generated.${ext}`, content: fallbackContent }]
-    }
-  }
-
   // ── Inject FSDS scaffold into every HTML file ────────────────────────────
-  // Insert the CSS right after <head> (or before </head> as fallback)
-  // This guarantees fonts, tokens, and component classes are available
-  // even if the AI forgets to include them
   const injectFSDS = (html: string): string => {
     if (isPlain || !FSDS_BASE_CSS) return html
-    if (html.includes('FlowState Design System (FSDS)')) return html // already injected
-    // Try inserting after <head> tag
+    if (html.includes('FlowState Design System (FSDS)')) return html
     if (html.includes('<head>')) return html.replace('<head>', `<head>\n${FSDS_BASE_CSS}`)
-    // Try inserting before </head>
     if (html.includes('</head>')) return html.replace('</head>', `${FSDS_BASE_CSS}\n</head>`)
-    // Fallback: prepend to file
     return FSDS_BASE_CSS + '\n' + html
   }
 
-  return c.json({
-    ok: true,
-    message: parsed.message || 'Done.',
-    files: (parsed.files || []).map(f => {
-      const path = (f.path || 'generated.js').replace(/^\/+/, '')
-      const isHtml = path.endsWith('.html') || path.endsWith('.htm')
-      const content = isHtml ? injectFSDS(f.content || '') : (f.content || '')
-      return { path, content }
-    }),
-    preset: stylePreset, // send back to frontend so it knows what was used
+  // ── Stream the entire response as SSE ─────────────────────────────────────
+  // Tokens are forwarded live so the frontend can render them word-by-word.
+  // After all tokens, a final 'done' event carries the complete file payload.
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        // ── Signal start ──
+        sseWrite(controller, 'start', JSON.stringify({ agent, stylePreset }))
+
+        let rawResponse = ''
+        let attemptCount = 0
+
+        const callModel = async (ctrl?: ReadableStreamDefaultController): Promise<string> => {
+          attemptCount++
+
+          // ── Gemini direct API ──────────────────────────────────────────
+          if ((agent === 'gemini' || agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash') && (c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY)) {
+            const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
+            const geminiModelMap: Record<string,string> = {
+              'gemini':           'gemini-2.0-flash',
+              'gemini-2-5-pro':   'gemini-2.5-pro-preview-05-06',
+              'gemini-2-5-flash': 'gemini-2.5-flash-preview-04-17',
+            }
+            const geminiModel = geminiModelMap[agent] || 'gemini-2.0-flash'
+            const flatHistory = historyMessages.map((m: any) => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')
+            const fullPrompt = `${systemPrompt}\n\n${flatHistory ? flatHistory + '\n\n' : ''}[USER]: ${currentUserMsg}`
+            const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: fullPrompt }] }],
+                generationConfig: { temperature: 0.15, maxOutputTokens: maxTokens, responseMimeType: 'application/json' }
+              })
+            })
+            const d: any = await r.json()
+            const text = d?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+            // Gemini returns all at once — emit as single token burst
+            if (ctrl) tokenWrite(ctrl, text)
+            return text
+          }
+
+          // ── Claude direct Anthropic API ────────────────────────────────
+          if (isClaudeAgent && c.env?.ANTHROPIC_API_KEY) {
+            const claudeKey = c.env?.ANTHROPIC_API_KEY || ''
+            const claudeModelMap: Record<string,string> = {
+              'claude':           'claude-3-5-sonnet-20241022',
+              'claude-opus-4':    'claude-opus-4-5-20251101',
+              'claude-sonnet-4':  'claude-sonnet-4-5-20251101',
+              'claude-haiku-4':   'claude-haiku-4-5-20251101',
+            }
+            const claudeModel = claudeModelMap[agent] || 'claude-sonnet-4-5-20251101'
+            const messagesWithPrefill = [
+              ...historyMessages,
+              { role: 'user', content: currentUserMsg },
+              { role: 'assistant', content: '{"' },
+            ]
+            const r = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
+              body: JSON.stringify({
+                model: claudeModel,
+                max_tokens: maxTokens,
+                system: systemPrompt,
+                messages: messagesWithPrefill,
+                stream: true,
+              })
+            })
+            const text = await collectStream(r, (parsed) => {
+              if (parsed.type === 'content_block_delta') return parsed.delta?.text || ''
+              return ''
+            }, ctrl)
+            return '{"' + text
+          }
+
+          // ── OpenRouter (all other models) ──────────────────────────────
+          if (!orKey) return ''
+          const orModelId = OR_MODEL_MAP[agent] || 'google/gemini-2.0-flash-001'
+          const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${orKey}`,
+              'HTTP-Referer': 'https://flowst8.cc',
+              'X-Title': 'FlowState AI Code',
+            },
+            body: JSON.stringify({
+              model: orModelId,
+              messages: [
+                { role: 'system', content: systemPrompt },
+                ...historyMessages,
+                { role: 'user', content: currentUserMsg }
+              ],
+              temperature: 0.15,
+              max_tokens: maxTokens,
+              stream: true,
+              response_format: isClaudeAgent ? undefined : { type: 'json_object' },
+            })
+          })
+          return await collectStream(r, (parsed) => parsed.choices?.[0]?.delta?.content || '', ctrl)
+        }
+
+        // First attempt — stream tokens live
+        rawResponse = await callModel(controller)
+        let parsed = extractJSON(rawResponse)
+
+        // Retry (no live stream on retry — just collect)
+        if (!parsed || !parsed.files?.length) {
+          if (attemptCount < 2) {
+            sseWrite(controller, 'status', JSON.stringify({ msg: 'Retrying…' }))
+            rawResponse = await callModel()
+            parsed = extractJSON(rawResponse)
+          }
+        }
+
+        // Final fallback
+        if (!parsed || !parsed.files?.length) {
+          const fallbackContent = rawResponse.trim() || '// AI did not return valid code — please try again'
+          const ext = language ? ({ javascript:'js', typescript:'ts', python:'py', html:'html', css:'css', go:'go', rust:'rs', sql:'sql' } as any)[language] || 'js' : 'html'
+          parsed = {
+            message: 'Build complete (raw output — retry if formatting looks off)',
+            files: [{ path: `generated.${ext}`, content: fallbackContent }]
+          }
+        }
+
+        // Build final payload with FSDS injection
+        const finalPayload = {
+          ok: true,
+          message: parsed.message || 'Done.',
+          files: (parsed.files || []).map((f: any) => {
+            const path = (f.path || 'generated.js').replace(/^\/+/, '')
+            const isHtml = path.endsWith('.html') || path.endsWith('.htm')
+            const content = isHtml ? injectFSDS(f.content || '') : (f.content || '')
+            return { path, content }
+          }),
+          preset: stylePreset,
+        }
+
+        // Send final files payload as a 'done' event
+        sseWrite(controller, 'done', JSON.stringify(finalPayload))
+      } catch (err: any) {
+        sseWrite(controller, 'error', JSON.stringify({ error: err.message || 'Unknown error' }))
+      } finally {
+        controller.close()
+      }
+    }
+  })
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no',
+    }
   })
 })
 
@@ -8088,6 +8132,8 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .code-chat-suggest-wrap{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px;align-self:flex-start;max-width:100%}
 .code-chat-suggest-chip{padding:4px 9px;border-radius:12px;border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.06);color:#10b981;font-size:10px;cursor:pointer;transition:.15s;white-space:nowrap}
 .code-chat-suggest-chip:hover{background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.5)}
+.code-chat-cursor{display:inline-block;width:7px;height:13px;background:#10b981;vertical-align:text-bottom;border-radius:1px;animation:cursorBlink .7s step-end infinite}
+@keyframes cursorBlink{0%,100%{opacity:1}50%{opacity:0}}
 .code-chat-input-wrap{border-top:1px solid var(--border);padding:8px 10px;display:flex;gap:6px;align-items:flex-end;flex-shrink:0}
 .code-chat-input{flex:1;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:12px;color:var(--text-p);outline:none;resize:none;font-family:inherit;line-height:1.5;min-height:36px;max-height:100px}
 .code-chat-input:focus{border-color:var(--accent)}

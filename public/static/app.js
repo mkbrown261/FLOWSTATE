@@ -11119,29 +11119,20 @@ function _codeChatAddSuggestions(suggestions) {
 // ── The actual build (previously the body of codeGenerate) ───────────────────
 async function _codeRunBuild(prompt) {
   if (_codeState.generating) return;
-  const lang = '';  // deprecated — style preset replaces language selector
+  const lang = '';
   const stylePreset = document.getElementById('code-style-preset')?.value || 'flowstate-dark';
 
   _codeState.generating = true;
   const btn = document.getElementById('btn-code-generate');
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Building…'; }
 
-  // Show building state in editor only if nothing is open yet
-  if (!_codeState.activeFile) {
-    const editor = document.getElementById('code-editor-wrap');
-    if (editor) editor.innerHTML = `<div class="code-generating"><div class="code-gen-pulse"></div><span>AI is building your project…</span></div>`;
-  }
-
-  // Clear the prompt input immediately — user shouldn't have to do it manually
+  // Clear prompt input immediately
   const promptInp = document.getElementById('code-prompt-input');
   if (promptInp) promptInp.value = '';
 
-  // (User message already shown by _codeHandleMessage before this is called)
-  // Hide previous AI message banner (now in chat)
   const msgEl = document.getElementById('code-ai-message');
   if (msgEl) msgEl.style.display = 'none';
 
-  // Show preset badge in log
   const PRESET_LABELS = {
     'ai-decides': '✨ AI Decides',
     'flowstate-dark': '⚡ FlowState Dark', 'flowstate-light': '☀️ FlowState Light',
@@ -11154,22 +11145,32 @@ async function _codeRunBuild(prompt) {
   codeLog(`🎨 Style: ${presetLabel}`, 'info');
   codeLog('🤖 ' + prompt.slice(0,70) + (prompt.length > 70 ? '…' : ''), 'ai');
 
-  // Build context snapshot of all current file contents for the AI
+  // Snapshot current files for context
   const generatedContents = {};
   Object.entries(_codeState.generatedFiles).forEach(([path, fd]) => {
     generatedContents[path] = fd.content;
   });
 
-  // ── Streaming live token display ──────────────────────────────────────────
-  // Show a streaming text area in the editor while the AI writes,
-  // so the user sees output appear in real time instead of a blank spinner.
-  let streamBuffer = '';
-  const streamEl = document.getElementById('code-editor-wrap');
-  if (streamEl && !_codeState.activeFile) {
-    streamEl.innerHTML = `<div class="code-generating" id="code-stream-view" style="font-family:var(--font-mono,monospace);font-size:11px;color:#10b981;padding:16px 20px;overflow:auto;height:100%;white-space:pre-wrap;word-break:break-all;line-height:1.55;background:transparent">
-      <span style="opacity:.5">// AI is writing your code…\n\n</span></div>`;
+  // ── Create a live-streaming AI chat bubble ────────────────────────────────
+  // Insert a placeholder AI message bubble that we'll fill token-by-token
+  const chatList = document.getElementById('code-chat-messages');
+  // Remove the empty-state placeholder if present
+  chatList?.querySelector('.code-chat-empty')?.remove();
+  let streamBubble = null;
+  let streamBubbleText = '';
+  if (chatList) {
+    streamBubble = document.createElement('div');
+    streamBubble.className = 'code-chat-bubble code-chat-ai';
+    streamBubble.innerHTML = '<span class="code-chat-cursor">▍</span>';
+    chatList.appendChild(streamBubble);
+    chatList.scrollTop = chatList.scrollHeight;
   }
-  const streamView = document.getElementById('code-stream-view');
+
+  // Also show a minimal spinner in the editor if nothing is open yet
+  if (!_codeState.activeFile) {
+    const editor = document.getElementById('code-editor-wrap');
+    if (editor) editor.innerHTML = `<div class="code-generating"><div class="code-gen-pulse"></div><span>AI is writing your code…</span></div>`;
+  }
 
   try {
     const res = await fetch('/api/github/ai-code', {
@@ -11185,49 +11186,81 @@ async function _codeRunBuild(prompt) {
         conversationHistory: _codeState.conversationHistory,
         fileTree: _codeState.fileTree,
         generatedFiles: generatedContents,
-        activeFile: _codeState.activeFile || '',   // Fix 6: smart context ordering
+        activeFile: _codeState.activeFile || '',
       })
     });
 
-    // ── Read the streamed response body progressively ─────────────────────
-    // Backend now streams SSE chunks; we reassemble into a JSON string.
-    // While reading, display raw tokens in the editor so the user sees
-    // the AI writing in real time.
-    let rawText = '';
+    if (!res.ok && !res.body) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || 'Request failed');
+    }
+
+    // ── Read SSE stream ───────────────────────────────────────────────────────
     const reader = res.body?.getReader();
-    const textDecoder = new TextDecoder();
+    const decoder = new TextDecoder();
+    let sseBuffer = '';
+    let data = null;
 
     if (reader) {
-      let done = false;
-      while (!done) {
-        const { value, done: streamDone } = await reader.read();
-        done = streamDone;
-        if (value) {
-          const chunk = textDecoder.decode(value, { stream: true });
-          rawText += chunk;
-          // Stream raw JSON tokens into the editor for live feedback
-          if (streamView) {
-            streamBuffer = rawText.slice(0, 4000); // cap display for perf
-            streamView.textContent = streamBuffer;
-            streamView.scrollTop = streamView.scrollHeight;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        sseBuffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE messages (terminated by \n\n)
+        let boundary;
+        while ((boundary = sseBuffer.indexOf('\n\n')) !== -1) {
+          const message = sseBuffer.slice(0, boundary);
+          sseBuffer = sseBuffer.slice(boundary + 2);
+
+          // Parse event name and data
+          let eventName = 'message';
+          let eventData = '';
+          for (const line of message.split('\n')) {
+            if (line.startsWith('event: ')) eventName = line.slice(7).trim();
+            else if (line.startsWith('data: ')) eventData = line.slice(6).trim();
+          }
+
+          if (eventName === 'token') {
+            // ── Live token: append to chat bubble ─────────────────────────
+            try {
+              const token = JSON.parse(eventData);
+              streamBubbleText += token;
+              // Only render the "message" portion — stop at the first `"files"` key
+              // so the user never sees raw JSON file content streaming in
+              const displayText = _extractMessageFromPartialJSON(streamBubbleText);
+              if (streamBubble && displayText !== null) {
+                streamBubble.innerHTML = _escapeHtml(displayText) + '<span class="code-chat-cursor">▍</span>';
+                if (chatList) chatList.scrollTop = chatList.scrollHeight;
+              }
+            } catch { /* skip malformed token */ }
+
+          } else if (eventName === 'status') {
+            try {
+              const s = JSON.parse(eventData);
+              if (s.msg) codeLog('🔄 ' + s.msg, 'info');
+            } catch { /* skip */ }
+
+          } else if (eventName === 'done') {
+            try { data = JSON.parse(eventData); } catch { /* handled below */ }
+
+          } else if (eventName === 'error') {
+            try {
+              const e = JSON.parse(eventData);
+              throw new Error(e.error || 'Stream error');
+            } catch (parseErr) { throw parseErr; }
           }
         }
       }
-    } else {
-      // Fallback for non-streaming (shouldn't happen but just in case)
-      rawText = await res.text();
     }
 
-    // Parse the collected JSON response
-    let data;
-    try { data = JSON.parse(rawText); }
-    catch { data = { error: 'parse_error', message: "Hmm, I had trouble formatting that response. I'm trying again..." }; }
+    // Remove streaming cursor from bubble
+    if (streamBubble) streamBubble.querySelector('.code-chat-cursor')?.remove();
 
-    if (!res.ok || data.error) {
-      const errMsg = data.message || data.error || 'Generation failed';
+    if (!data || data.error) {
+      const errMsg = data?.message || data?.error || 'Generation failed';
       codeLog('❌ ' + errMsg, 'error');
-      // Show the error as a chat bubble, not just a toast
-      _codeChatAddMessage('ai', '⚠️ ' + errMsg);
+      if (streamBubble) streamBubble.innerHTML = '⚠️ ' + _escapeHtml(errMsg);
       return;
     }
 
@@ -11235,54 +11268,47 @@ async function _codeRunBuild(prompt) {
     if (!files.length) {
       const noFilesMsg = "I didn't get any files back from the model. This sometimes happens — want to try again with a bit more detail in your prompt?";
       codeLog('⚠️ AI returned no files', 'error');
-      _codeChatAddMessage('ai', noFilesMsg);
+      if (streamBubble) streamBubble.innerHTML = _escapeHtml(noFilesMsg);
       return;
     }
 
-    // ── Write each file the AI produced ──────────────────────────────────────
+    // ── Write each file ───────────────────────────────────────────────────────
     codeLog(`📁 Writing ${files.length} file${files.length > 1 ? 's' : ''}…`, 'info');
-
     files.forEach(({ path, content }) => {
       if (!path || content === undefined) return;
-      // Store in generatedFiles
       const existingSha = _codeState.generatedFiles[path]?.sha || null;
       _codeState.generatedFiles[path] = { content, sha: existingSha };
-      // Update file panel
       _codeAddFileToPanel(path);
       codeLog(`  ✏️ ${path} (${content.split('\n').length} lines)`, 'success');
     });
 
-    // ── Open the most important file (first HTML, then first JS, then first) ─
+    // Open preferred file
     const preferredFile = files.find(f => f.path.endsWith('.html'))
       || files.find(f => f.path.endsWith('.jsx') || f.path.endsWith('.tsx'))
       || files[0];
-
     _codeState.activeFile = preferredFile.path;
     _codeState.activeFileContent = preferredFile.content;
     _codeState.activeFileSha = _codeState.generatedFiles[preferredFile.path]?.sha || null;
     _codeState.projectStarted = true;
-
-    // Render the active file in code view
     _codeRenderCode(preferredFile.content, preferredFile.path);
 
-    // ── Update conversation history (memory) ──────────────────────────────────
+    // Update conversation history
     const filesSummary = files.map(f => `${f.path} (${f.content.split('\n').length} lines)`).join(', ');
     _codeState.conversationHistory.push({ role: 'user', content: prompt });
     _codeState.conversationHistory.push({
       role: 'assistant',
       content: `${data.message || 'Done.'} Files written: ${filesSummary}`
     });
-    // Keep history from bloating — last 20 messages
     if (_codeState.conversationHistory.length > 20) {
       _codeState.conversationHistory = _codeState.conversationHistory.slice(-20);
     }
 
-    // ── Show AI message in chat panel + suggestion chips ─────────────────────
-    const postBuildMsg = data.message
-      ? `${data.message} (${files.length} file${files.length>1?'s':''} written)`
-      : `Done — ${files.length} file${files.length>1?'s':''} written.`;
-    _codeChatAddMessage('ai', postBuildMsg);
-    // Suggest next steps based on what was built
+    // ── Finalise the chat bubble with full message + file summary ─────────────
+    const finalMsg = data.message || 'Done.';
+    const fileLine = `\n\n📁 ${files.length} file${files.length>1?'s':''} written: ${files.map(f=>f.path).join(', ')}`;
+    if (streamBubble) streamBubble.innerHTML = _escapeHtml(finalMsg + fileLine);
+
+    // Suggestion chips
     const fileNames = files.map(f => f.path);
     const hasHtmlFile = fileNames.some(f => f.endsWith('.html'));
     const nextSteps = hasHtmlFile
@@ -11290,22 +11316,20 @@ async function _codeRunBuild(prompt) {
       : ['Add unit tests', 'Add error handling', 'Connect to an API', 'Add TypeScript types'];
     _codeChatAddSuggestions(nextSteps.slice(0, 3));
 
-    // ── Auto-preview if there's an HTML file ─────────────────────────────────
+    // Auto-preview
     const hasHtml = files.some(f => f.path.endsWith('.html'));
     const hasCss  = files.some(f => f.path.endsWith('.css'));
     const hasJs   = files.some(f => f.path.endsWith('.js') || f.path.endsWith('.jsx') || f.path.endsWith('.ts') || f.path.endsWith('.tsx'));
     if (hasHtml || (hasCss && hasJs)) {
       _codeUpdatePreview();
-      // Show preview toggle
       const toggle = document.getElementById('code-view-toggle');
       if (toggle) toggle.style.display = 'flex';
-      // Auto-switch to preview on first build
       if (!_codeState.projectStarted || files.length > 1) {
         setTimeout(() => codeSetView('preview'), 300);
       }
     }
 
-    // ── Show action buttons ───────────────────────────────────────────────────
+    // Action buttons
     const copyBtn = document.getElementById('btn-code-copy');
     const pushBtn = document.getElementById('btn-code-push');
     const zipBtn  = document.getElementById('btn-code-zip');
@@ -11317,23 +11341,16 @@ async function _codeRunBuild(prompt) {
       if (pushAllWrap) pushAllWrap.style.display = 'block';
     }
 
-    // ── Show Publish Live URL button (always after first build) ───────────────
     const publishWrap = document.getElementById('code-publish-wrap');
     if (publishWrap) publishWrap.style.display = 'block';
-
-    // ── Auto-publish to get live URL ──────────────────────────────────────────
-    // Publish silently in background — user gets live URL without clicking
     codePublishPreview().catch(() => {});
 
-    // ── Show Deploy to Cloudflare button (if user has CF token) ──────────────
     const deployWrap = document.getElementById('code-deploy-cf-wrap');
     if (deployWrap) deployWrap.style.display = 'block';
 
-    // ── Update session badge ──────────────────────────────────────────────────
     _codeUpdateSessionBadge();
-
     codeLog(`✅ Done — ${_codeState.agentName} wrote ${files.length} file${files.length>1?'s':''}`, 'success');
-    // Track for CLAW context
+
     _clawTrackAction('code_generated', {
       type: 'code', files: files.length,
       prompt: prompt.slice(0, 80),
@@ -11341,20 +11358,54 @@ async function _codeRunBuild(prompt) {
     });
     _flowContext.codeFilesCount = Object.keys(_codeState.generatedFiles).length;
     _flowContext.codeProjectName = files[0]?.path?.split('/')[0] || null;
-
-    // Auto-log project to CLAW memory
     _clawLogProject({ deployUrl: '' });
-
-    // (prompt already cleared at start of _codeRunBuild)
 
   } catch(e) {
     const netMsg = 'Connection error — ' + (e.message || 'check your network and try again');
     codeLog('Network error: ' + e.message, 'error');
-    _codeChatAddMessage('ai', '⚠️ ' + netMsg);
+    if (streamBubble) streamBubble.innerHTML = '⚠️ ' + _escapeHtml(netMsg);
+    else _codeChatAddMessage('ai', '⚠️ ' + netMsg);
   } finally {
     _codeState.generating = false;
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Build'; }
   }
+}
+
+// ── Helper: extract the "message" string from a partially-streamed JSON ───────
+// Returns the message value as it's being written, or null if not yet started.
+// Stops rendering once we hit the "files" key so raw code never shows.
+function _extractMessageFromPartialJSON(raw) {
+  try {
+    // If the message key hasn't appeared yet, show nothing
+    const msgStart = raw.indexOf('"message"');
+    if (msgStart === -1) return null;
+    // Find the opening quote of the value
+    const colon = raw.indexOf(':', msgStart);
+    if (colon === -1) return null;
+    const q1 = raw.indexOf('"', colon + 1);
+    if (q1 === -1) return null;
+    // Collect chars until the closing unescaped quote or end of buffer
+    let result = '';
+    let i = q1 + 1;
+    while (i < raw.length) {
+      const ch = raw[i];
+      if (ch === '\\') { i += 2; continue; } // skip escape sequence
+      if (ch === '"') break; // end of string
+      result += ch;
+      i++;
+    }
+    return result;
+  } catch { return null; }
+}
+
+// ── Helper: escape HTML for safe insertion ────────────────────────────────────
+function _escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/\n/g, '<br>');
 }
 
 // ── Session management ────────────────────────────────────────────────────────
