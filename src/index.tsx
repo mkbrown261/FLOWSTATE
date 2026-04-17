@@ -2011,6 +2011,39 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
       }
     }
 
+    // Pass 4: handle Gemini wrapping JSON in ```json ... ``` fences
+    const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
+    if (fenceMatch) {
+      try {
+        const inside = fenceMatch[1].trim()
+        const obj = JSON.parse(inside)
+        if (obj.files?.length) return obj
+      } catch { /* continue */ }
+    }
+
+    // Pass 5: extract just the JSON object even if surrounded by prose
+    // Walk forward from first '{' balancing braces
+    if (first !== -1) {
+      let depth = 0, inStr = false, escape = false
+      for (let i = first; i < stripped.length; i++) {
+        const ch = stripped[i]
+        if (escape) { escape = false; continue }
+        if (ch === '\\' && inStr) { escape = true; continue }
+        if (ch === '"' && !escape) { inStr = !inStr; continue }
+        if (inStr) continue
+        if (ch === '{') depth++
+        else if (ch === '}') {
+          depth--
+          if (depth === 0) {
+            try {
+              const obj = JSON.parse(stripped.slice(first, i + 1))
+              if (obj.files?.length) return obj
+            } catch { break }
+          }
+        }
+      }
+    }
+
     return null
   }
 
@@ -2024,7 +2057,8 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
   }
 
   // ── Helper: call model (no streaming — collect full response) ─────────────
-  const callModelFull = async (): Promise<string> => {
+  const callModelFull = async (userMsgOverride?: string): Promise<string> => {
+    const effectiveUserMsg = userMsgOverride || currentUserMsg
     // ── Gemini direct ────────────────────────────────────────────────────
     if ((agent === 'gemini' || agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash') && (c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY)) {
       const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
@@ -2034,7 +2068,7 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModelMap[agent] || 'gemini-2.0-flash'}:generateContent?key=${geminiKey}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyMessages.map((m:any)=>`[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')}\n\n[USER]: ${currentUserMsg}` }] }],
+          contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyMessages.map((m:any)=>`[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')}\n\n[USER]: ${effectiveUserMsg}\n\nRespond with ONLY a raw JSON object starting with {. No markdown fences, no prose.` }] }],
           generationConfig: { temperature: 0.1, maxOutputTokens: maxTokens, responseMimeType: 'application/json' }
         })
       })
@@ -2054,7 +2088,7 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
         body: JSON.stringify({
           model: claudeModelMap[agent] || 'claude-sonnet-4-5-20251101',
           max_tokens: maxTokens, system: systemPrompt,
-          messages: [...historyMessages, { role: 'user', content: currentUserMsg }, { role: 'assistant', content: '{"' }],
+          messages: [...historyMessages, { role: 'user', content: effectiveUserMsg }, { role: 'assistant', content: '{"message":"' }],
           stream: false,
         })
       })
@@ -2065,24 +2099,57 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
     // ── OpenRouter fallback ──────────────────────────────────────────────
     if (!orKey) throw new Error('No AI API key configured — add OPENROUTER_API_KEY in Cloudflare secrets.')
     const orModelId = OR_MODEL_MAP[agent] || DEFAULT_OR_MODEL
-    const useJsonFormat = !orModelId.includes('anthropic') && !orModelId.includes('claude')
+    const isGeminiModel  = orModelId.includes('google') || orModelId.includes('gemini')
+    const isClaudeModel  = orModelId.includes('anthropic') || orModelId.includes('claude')
+    const isOpenAIModel  = orModelId.includes('openai') || orModelId.includes('gpt') || orModelId.includes('/o3') || orModelId.includes('/o4')
+    // json_object mode: works reliably for OpenAI models only.
+    // Gemini and Claude on OpenRouter often ignore or reject it — use prompt engineering instead.
+    const useJsonFormat = isOpenAIModel
+
+    // For Gemini via OpenRouter: force JSON output via message injection
+    // (Gemini ignores response_format but respects a trailing instruction)
+    const jsonForceMsg = isGeminiModel
+      ? `\n\nCRITICAL INSTRUCTION: Your response MUST be ONLY a raw JSON object. Start your response with { and end with }. Do NOT use markdown code fences (\`\`\`). Do NOT write any text before or after the JSON. The JSON must have exactly this shape: {"message":"...","files":[{"path":"...","content":"..."}]}`
+      : isClaudeModel
+      ? '' // Claude uses prefill below
+      : ''
+
+    // For Claude via OpenRouter: use assistant prefill to force JSON start
+    const orMessages = isClaudeModel
+      ? [
+          { role: 'system', content: systemPrompt },
+          ...historyMessages,
+          { role: 'user', content: effectiveUserMsg },
+          { role: 'assistant', content: '{"message":"' },
+        ]
+      : [
+          { role: 'system', content: systemPrompt },
+          ...historyMessages,
+          { role: 'user', content: effectiveUserMsg + jsonForceMsg },
+        ]
+
+    const orBody: any = {
+      model: orModelId,
+      messages: orMessages,
+      temperature: 0.1,
+      max_tokens: maxTokens,
+    }
+    if (useJsonFormat) orBody.response_format = { type: 'json_object' }
+
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${orKey}`, 'HTTP-Referer': 'https://flowst8.cc', 'X-Title': 'FlowState AI Code' },
-      body: JSON.stringify({
-        model: orModelId,
-        messages: [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: currentUserMsg }],
-        temperature: 0.1, max_tokens: maxTokens,
-        ...(useJsonFormat ? { response_format: { type: 'json_object' } } : {}),
-      })
+      body: JSON.stringify(orBody),
     })
     if (!r.ok) {
       const txt = await r.text().catch(() => '')
-      throw new Error(`Model API error (${r.status}): ${txt.slice(0, 300)}`)
+      throw new Error(`Model API error (${r.status}): ${txt.slice(0, 400)}`)
     }
     const d: any = await r.json()
-    if (d.error) throw new Error(d.error.message || 'OpenRouter error')
-    return d?.choices?.[0]?.message?.content || ''
+    if (d.error) throw new Error(d.error.message || JSON.stringify(d.error))
+    const rawContent = d?.choices?.[0]?.message?.content || ''
+    // Claude prefill: reconstruct the full JSON (we injected '{"message":"' as assistant start)
+    return isClaudeModel ? '{"message":"' + rawContent : rawContent
   }
 
   // ── Narration helper labels for richer UX ────────────────────────────────
@@ -2165,17 +2232,30 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
 
         if (!parsed?.files?.length) {
           sseWrite(controller, 'narrate', JSON.stringify({
-            msg: '🔄 Response needs cleanup — applying formatting corrections…', type: 'retry'
+            msg: '🔄 Response needs reformatting — retrying with strict JSON mode…', type: 'retry'
           }))
+          // On retry: inject a strict repair instruction so the model knows it failed
+          const retryMsg = `${currentUserMsg}\n\nCRITICAL: Your previous response was not valid JSON. Respond with ONLY a raw JSON object. Start with { immediately. No markdown. No prose. No code fences. Shape: {"message":"...","files":[{"path":"index.html","content":"..."}]}`
           try {
-            rawResponse = await callModelFull()
+            rawResponse = await callModelFull(retryMsg)
             parsed = extractJSON(rawResponse)
           } catch { /* use what we have */ }
         }
 
         if (!parsed?.files?.length) {
+          // Last resort: try to extract any HTML content from a raw response
+          const htmlMatch = rawResponse.match(/<!DOCTYPE[\s\S]*<\/html>/i)
+          if (htmlMatch) {
+            parsed = {
+              message: 'Generated HTML app.',
+              files: [{ path: 'index.html', content: htmlMatch[0] }]
+            }
+          }
+        }
+
+        if (!parsed?.files?.length) {
           sseWrite(controller, 'error', JSON.stringify({
-            error: 'The model returned an unparseable response. Try rephrasing your prompt or switching models. No credits charged.'
+            error: `The model returned a response that couldn't be parsed as JSON. Raw start: "${rawResponse.slice(0, 120).replace(/\n/g, ' ')}…" — Try switching to Gemini 2.5 Flash or a different model. No credits charged.`
           }))
           controller.close()
           return
