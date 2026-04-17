@@ -2987,9 +2987,21 @@ app.post('/api/generate/video', async (c) => {
 
   // Block free users from video generation entirely
   const vidUserId = session?.email || session?.id || c.req.header('CF-Connecting-IP') || 'anon'
-  const vidTierKey = session?.email ? `tier_email:${session.email}` : null
-  // Quick tier check — video is Pro+ only
-  if (!session || !isTierPro(session.tier)) {
+  // Quick tier check — video is Pro+ only — read tier from Redis (session cookie never stores tier)
+  if (!session) {
+    return c.json({ error: 'Video generation requires a Pro plan. Upgrade at flowst8.cc/pricing', code: 'PRO_REQUIRED', upgradeUrl: 'https://flowst8.cc/pricing' }, 403)
+  }
+  let vidRealTier = 'free'
+  if (session.email && c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+    try {
+      const tr = await redisPipeline(c.env.UPSTASH_REDIS_URL, c.env.UPSTASH_REDIS_TOKEN, [
+        ['GET', `tier_email:${session.email}`],
+        ['GET', `tier:${session.email}`],
+      ])
+      vidRealTier = (tr[0] || tr[1] || 'free') as string
+    } catch { vidRealTier = 'free' }
+  }
+  if (!isTierPro(vidRealTier)) {
     return c.json({ error: 'Video generation requires a Pro plan. Upgrade at flowst8.cc/pricing', code: 'PRO_REQUIRED', upgradeUrl: 'https://flowst8.cc/pricing' }, 403)
   }
 
@@ -3731,6 +3743,58 @@ app.get('/api/billing/revenue', async (c) => {
     months: results,
     note: 'apiTopupRecommendation shows suggested monthly credit purchases per service based on actual revenue. Top up OpenRouter at openrouter.ai/credits, Replicate at replicate.com/billing, ElevenLabs at elevenlabs.io/subscription.'
   })
+})
+
+// ─── Admin: inspect / set user tier ─────────────────────────────────────────
+// GET  /api/admin/user-tier?email=x@y.z          → returns current tier + credit usage
+// POST /api/admin/user-tier  { email, tier }      → overwrite tier in Redis (admin only)
+app.get('/api/admin/user-tier', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const adminEmail = c.env?.ADMIN_EMAIL
+  if (adminEmail && session.email !== adminEmail) return c.json({ error: 'forbidden' }, 403)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ error: 'Redis not configured' }, 503)
+  const email = String(c.req.query('email') || '')
+  if (!email) return c.json({ error: 'email param required' }, 400)
+  const month = new Date().toISOString().slice(0, 7)
+  const results = await redisPipeline(url, tok, [
+    ['GET', `tier_email:${email}`],
+    ['GET', `tier:${email}`],
+    ['GET', `monthly_credits_used:${email}:${month}`],
+    ['GET', `credit_balance:${encodeURIComponent(email)}`],
+  ])
+  return c.json({
+    email,
+    tier:          results[0] || results[1] || 'free',
+    tier_email_key: results[0],
+    tier_key:       results[1],
+    monthlyCreditsUsed: parseInt(results[2] as string || '0'),
+    purchasedCredits:   parseInt(results[3] as string || '0'),
+    month,
+  })
+})
+
+app.post('/api/admin/user-tier', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const adminEmail = c.env?.ADMIN_EMAIL
+  if (adminEmail && session.email !== adminEmail) return c.json({ error: 'forbidden' }, 403)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ error: 'Redis not configured' }, 503)
+  const { email, tier } = await c.req.json().catch(() => ({}))
+  if (!email || !tier) return c.json({ error: 'email and tier required' }, 400)
+  const validTiers = ['free', 'pro', 'team', 'enterprise', 'personal_pro', 'team_starter', 'team_growth', 'clawflow']
+  if (!validTiers.includes(tier)) return c.json({ error: `tier must be one of: ${validTiers.join(', ')}` }, 400)
+  await fetch(`${url}/set/tier_email:${encodeURIComponent(email)}/${tier}`, {
+    headers: { Authorization: `Bearer ${tok}` }
+  })
+  if (c.env?.DB) {
+    await setUserTier(c.env.DB, email, tier).catch(() => {})
+  }
+  return c.json({ ok: true, email, tier, message: `Tier for ${email} set to '${tier}'` })
 })
 
 // ─── ElevenLabs TTS ──────────────────────────────────────────────────────────
@@ -6874,7 +6938,16 @@ app.post('/api/264pro/video-gen', async (c) => {
     // Fall back to session cookie (web / CLAW wizard)
     const session = decodeSession(getCookie(c, 'fs_session') || '')
     if (!session) return c.json({ error: 'Not authenticated' }, 401)
-    tier = (session as any).tier || 'free'
+    // Read tier from Redis — session cookie never stores tier
+    if (session.email && c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+      try {
+        const tr264 = await redisPipeline(c.env.UPSTASH_REDIS_URL, c.env.UPSTASH_REDIS_TOKEN, [
+          ['GET', `tier_email:${session.email}`],
+          ['GET', `tier:${session.email}`],
+        ])
+        tier = (tr264[0] || tr264[1] || 'free') as string
+      } catch { tier = 'free' }
+    }
   }
 
   // All video generation requires Pro tier
@@ -7192,12 +7265,22 @@ app.post('/api/higgsfield/generate', async (c) => {
     try {
       const session = decodeSession(decodeURIComponent(match[1]))
       if (!session?.email) return c.json({ error: 'Invalid session' }, 401)
-      userEmail = session.email; userTier = session.tier || 'free'; userName = session.name || ''
+      userEmail = session.email; userName = session.name || ''
+      // Read tier from Redis — session cookie never stores tier
+      if (c.env?.UPSTASH_REDIS_URL && c.env?.UPSTASH_REDIS_TOKEN) {
+        try {
+          const trHf = await redisPipeline(c.env.UPSTASH_REDIS_URL, c.env.UPSTASH_REDIS_TOKEN, [
+            ['GET', `tier_email:${userEmail}`],
+            ['GET', `tier:${userEmail}`],
+          ])
+          userTier = (trHf[0] || trHf[1] || 'free') as string
+        } catch { userTier = 'free' }
+      }
     } catch { return c.json({ error: 'Session decode failed' }, 401) }
   }
 
   // Pro gate
-  const hasPro = ['personal_pro','team_starter','team_growth','enterprise','clawflow'].includes(userTier)
+  const hasPro = isTierPro(userTier)
   if (!hasPro) {
     return c.json({
       error: 'higgsfield_pro_required',
@@ -7758,14 +7841,31 @@ document.getElementById('magic-email').addEventListener('keydown', function(e){
 // ═══════════════════════════════════════════════════════════════════
 // MAIN HTML — FlowState v3 — Full Rebuild
 // ═══════════════════════════════════════════════════════════════════
-app.get('/', (c) => {
+app.get('/', async (c) => {
   const session   = decodeSession(getCookie(c, 'fs_session') || '')
   const notionSes = decodeSession(getCookie(c, 'fs_notion')  || '')
   const slackSes  = decodeSession(getCookie(c, 'fs_slack')   || '')
   const githubSes = decodeSession(getCookie(c, 'fs_github')  || '')
   const onboarding = decodeSession(getCookie(c, 'fs_onboarded') || '')
 
-  const userJson     = session     ? JSON.stringify({ name: session.name, email: session.email, picture: session.picture, role: session.role || 'member', tier: session.tier || 'free', provider: session.provider }) : 'null'
+  // Look up REAL tier from Redis — session cookie never stores tier
+  let realTier = 'free'
+  if (session?.email) {
+    const redisUrl = c.env?.UPSTASH_REDIS_URL
+    const redisTok = c.env?.UPSTASH_REDIS_TOKEN
+    if (redisUrl && redisTok) {
+      try {
+        const email = session.email
+        const results = await redisPipeline(redisUrl, redisTok, [
+          ['GET', `tier_email:${email}`],
+          ['GET', `tier:${email}`],
+        ])
+        realTier = (results[0] || results[1] || 'free') as string
+      } catch { realTier = 'free' }
+    }
+  }
+
+  const userJson     = session     ? JSON.stringify({ name: session.name, email: session.email, picture: session.picture, role: session.role || 'member', tier: realTier, provider: session.provider }) : 'null'
   const notionJson   = notionSes   ? JSON.stringify({ workspace: notionSes.workspace_name }) : 'null'
   const slackJson    = slackSes    ? JSON.stringify({ team: slackSes.team_name }) : 'null'
   const githubJson   = githubSes   ? JSON.stringify({ login: githubSes.login, name: githubSes.name, avatar_url: githubSes.avatar_url, public_repos: githubSes.public_repos }) : 'null'
@@ -8649,7 +8749,7 @@ em{color:var(--accent);font-style:italic}
   <div style="margin-left:auto;display:flex;gap:5px">
     <button class="btn-sm" id="btn-creds" title="API Credentials"><i class="fas fa-key"></i></button>
     <button class="btn-sm" id="btn-topup" title="Buy More Tokens" onclick="openTopupModal()" style="background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.4);color:#10b981;display:flex;align-items:center;gap:4px"><i class="fas fa-coins"></i><span id="token-balance-display" style="font-size:10px;font-weight:700;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span></button>
-    <button class="btn-sm" id="btn-pricing"><i class="fas fa-star"></i> Pro</button>
+    <button class="btn-sm" id="btn-pricing" onclick="openPricingModal()"><i class="fas fa-star"></i> <span id="nav-tier-label">Free</span></button>
     <button class="btn-sm" id="btn-invite" title="Invite friends — earn tokens"><i class="fas fa-user-plus"></i></button>
     <button class="btn-sm" onclick="openFlowCoach()" title="AI Flow Coach — personalized insights" style="color:#a855f7;border-color:rgba(168,85,247,.4)"><i class="fas fa-brain"></i></button>
     <button class="btn-sm" id="btn-pair" onclick="openPairingModal()" title="Find an accountability partner" style="color:#10b981;border-color:rgba(16,185,129,.4)"><i class="fas fa-handshake"></i></button>

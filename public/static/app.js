@@ -705,6 +705,8 @@ function setupTabListeners() {
   document.getElementById('btn-creds')?.addEventListener('click', openCredsModal);
   document.getElementById('btn-topup')?.addEventListener('click', openTopupModal);
   document.getElementById('btn-pricing')?.addEventListener('click', openPricingModal);
+  // Set nav tier label from server-injected FS_USER.tier immediately on load
+  _updateNavTierLabel(FS_USER?.tier || 'free');
   document.getElementById('btn-invite')?.addEventListener('click', openInviteModal);
   document.getElementById('btn-settings')?.addEventListener('click', openSettingsModal);
   document.getElementById('btn-exit-demo')?.addEventListener('click', () => { window.location.reload(); });
@@ -6093,6 +6095,25 @@ function _scheduleTokenRefresh() {
   scheduleAtMidnight();
 }
 
+function _updateNavTierLabel(tier) {
+  const el = document.getElementById('nav-tier-label');
+  if (!el) return;
+  const map = { pro: 'Pro', team: 'Team', enterprise: 'Enterprise',
+    personal_pro: 'Pro', team_starter: 'Team', team_growth: 'Team', clawflow: 'ClawFlow' };
+  el.textContent = map[tier] || 'Free';
+  // Color the badge: green=free, purple=pro, blue=team
+  const btn = document.getElementById('btn-pricing');
+  if (btn) {
+    if (tier === 'free' || !tier) {
+      btn.style.background = ''; btn.style.borderColor = ''; btn.style.color = '';
+    } else {
+      btn.style.background = 'rgba(168,85,247,.15)';
+      btn.style.borderColor = 'rgba(168,85,247,.4)';
+      btn.style.color = 'var(--accent)';
+    }
+  }
+}
+
 async function loadTokenBalance() {
   // T5: Show guest fallback immediately so button never shows blank
   const elInitial = document.getElementById('token-balance-display');
@@ -6121,6 +6142,8 @@ async function loadTokenBalance() {
     if (data.error) return;
     _tokenBalance = data;
     _tokenBalanceDate = new Date().toISOString().slice(0, 10); // stamp the fetch date
+    // Update nav tier badge with real tier from Redis
+    _updateNavTierLabel(_tokenBalance.tier || 'free');
     const fmt = n => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+'M'
                    : n >= 10_000   ? Math.round(n/1_000)+'k'
                    : n >= 1_000    ? (n/1_000).toFixed(1)+'k'
