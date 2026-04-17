@@ -11174,69 +11174,86 @@ function _codeChatAddSuggestions(suggestions) {
 // ── The actual build (previously the body of codeGenerate) ───────────────────
 async function _codeRunBuild(prompt) {
   if (_codeState.generating) return;
-  const lang = '';
-  const stylePreset = document.getElementById('code-style-preset')?.value || 'flowstate-dark';
+  const stylePreset = document.getElementById('code-style-preset')?.value || 'ai-decides';
 
   _codeState.generating = true;
   const btn = document.getElementById('btn-code-generate');
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Building…'; }
 
-  // Clear prompt input immediately
-  const promptInp = document.getElementById('code-prompt-input');
-  if (promptInp) promptInp.value = '';
-
   const msgEl = document.getElementById('code-ai-message');
   if (msgEl) msgEl.style.display = 'none';
 
-  const PRESET_LABELS = {
-    'ai-decides': '✨ AI Decides',
-    'flowstate-dark': '⚡ FlowState Dark', 'flowstate-light': '☀️ FlowState Light',
-    'glassmorphism': '🔮 Glassmorphism', 'brutalist': '🔲 Brutalist',
-    'terminal': '💻 Terminal', 'minimal-saas': '🧊 Minimal SaaS',
-    'cyberpunk': '🌆 Cyberpunk', 'react-app': '⚛️ React App',
-    'react-dashboard': '📊 React Dashboard', 'plain': '📝 Plain',
-  };
-  const presetLabel = PRESET_LABELS[stylePreset] || stylePreset;
-  codeLog(`🎨 Style: ${presetLabel}`, 'info');
-  codeLog('🤖 ' + prompt.slice(0,70) + (prompt.length > 70 ? '…' : ''), 'ai');
+  // Show editor spinner immediately
+  const editorWrap = document.getElementById('code-editor-wrap');
+  if (editorWrap && !_codeState.activeFile) {
+    editorWrap.innerHTML = `<div class="code-generating"><div class="code-gen-pulse"></div><span>AI is writing your code…</span></div>`;
+  }
 
-  // Snapshot current files for context
+  // Snapshot files for context
   const generatedContents = {};
-  Object.entries(_codeState.generatedFiles).forEach(([path, fd]) => {
-    generatedContents[path] = fd.content;
-  });
+  Object.entries(_codeState.generatedFiles).forEach(([path, fd]) => { generatedContents[path] = fd.content; });
 
-  // ── Create a live-streaming AI chat bubble ────────────────────────────────
-  // Insert a placeholder AI message bubble that we'll fill token-by-token
+  // ── Create the AI narration bubble (rich tool-call style) ─────────────────
   const chatList = document.getElementById('code-chat-messages');
-  // Remove the empty-state placeholder if present
   chatList?.querySelector('.code-chat-empty')?.remove();
-  let streamBubble = null;
-  let streamBubbleText = '';
+  let narrateBubble = null;
+  let narrateSteps = []; // [{type, msg, el}]
   if (chatList) {
-    streamBubble = document.createElement('div');
-    streamBubble.className = 'code-chat-bubble code-chat-ai';
-    streamBubble.innerHTML = '<span class="code-chat-cursor">▍</span>';
-    chatList.appendChild(streamBubble);
+    narrateBubble = document.createElement('div');
+    narrateBubble.className = 'code-chat-bubble code-chat-ai';
+    narrateBubble.style.cssText = 'padding:10px 14px;border-radius:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);';
+    // Typing indicator
+    narrateBubble.innerHTML = '<div class="ai-thinking-row"><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span><span style="margin-left:8px;font-size:11px;color:#666;font-style:italic">AI is thinking…</span></div>';
+    chatList.appendChild(narrateBubble);
     chatList.scrollTop = chatList.scrollHeight;
   }
 
-  // Also show a minimal spinner in the editor if nothing is open yet
-  if (!_codeState.activeFile) {
-    const editor = document.getElementById('code-editor-wrap');
-    if (editor) editor.innerHTML = `<div class="code-generating"><div class="code-gen-pulse"></div><span>AI is writing your code…</span></div>`;
-  }
+  const TYPE_ICONS = {
+    thinking: '🧠', planning: '🎯', building: '🏗️', writing: '✍️', parsing: '📐',
+    retry: '🔄', file_complete: '✅', complete: '🎉', error: '⚠️', info: 'ℹ️',
+  };
+
+  const addNarrateLine = (msg, type = 'info') => {
+    if (!narrateBubble) return;
+    // Remove typing indicator on first real message
+    const thinking = narrateBubble.querySelector('.ai-thinking-row');
+    if (thinking) thinking.remove();
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:3px 0;font-size:12px;line-height:1.6;animation:fsds-fadeIn .2s both;';
+    const isComplete = type === 'complete';
+    const isError = type === 'error';
+    const isFile = type === 'file_complete';
+    row.style.color = isComplete ? '#6ee7b7' : isError ? '#fca5a5' : isFile ? '#93c5fd' : '#c4c4d4';
+    row.innerHTML = `<span style="flex-shrink:0;font-size:11px;margin-top:1px">${TYPE_ICONS[type] || '▸'}</span><span>${_escapeHtml(msg)}</span>`;
+    narrateBubble.appendChild(row);
+    // Add blinking cursor row (replace previous one)
+    let cursor = narrateBubble.querySelector('.ai-live-cursor');
+    if (!cursor && !isComplete && !isError) {
+      cursor = document.createElement('div');
+      cursor.className = 'ai-live-cursor';
+      cursor.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0 0;';
+      cursor.innerHTML = '<span style="display:inline-block;width:8px;height:14px;background:var(--accent,#a855f7);border-radius:2px;animation:code-blink 1s step-end infinite;vertical-align:middle;opacity:.8"></span>';
+      narrateBubble.appendChild(cursor);
+    }
+    if (isComplete || isError) {
+      narrateBubble.querySelector('.ai-live-cursor')?.remove();
+    }
+    chatList.scrollTop = chatList.scrollHeight;
+    narrateSteps.push({ type, msg });
+  };
+
+  const files = [];
 
   try {
     const res = await fetch('/api/github/ai-code', {
-      method: 'POST',
-      credentials: 'include',
+      method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt,
         repo: _codeState.selectedRepo?.full_name || '',
         agent: _codeState.agent,
-        language: lang,
+        language: '',
         stylePreset,
         conversationHistory: _codeState.conversationHistory,
         fileTree: _codeState.fileTree,
@@ -11247,20 +11264,18 @@ async function _codeRunBuild(prompt) {
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      const errMsg = errData.error || `Server error (${res.status})`;
-      codeLog('❌ ' + errMsg, 'error');
-      if (streamBubble) { streamBubble.innerHTML = '⚠️ ' + _escapeHtml(errMsg); streamBubble.style.color = '#fca5a5'; }
-      else _codeChatAddMessage('ai', '⚠️ ' + errMsg);
+      const errMsg = errData.error || `Server error (${res.status}) — please try again. No credits charged.`;
+      addNarrateLine(errMsg, 'error');
       _codeState.generating = false;
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Build'; }
       return;
     }
 
-    // ── Read SSE stream ───────────────────────────────────────────────────────
+    // ── Read SSE stream ──────────────────────────────────────────────────────
     const reader = res.body?.getReader();
     const decoder = new TextDecoder();
     let sseBuffer = '';
-    let data = null;
+    let finalData = null;
 
     if (reader) {
       while (true) {
@@ -11268,53 +11283,55 @@ async function _codeRunBuild(prompt) {
         if (done) break;
         sseBuffer += decoder.decode(value, { stream: true });
 
-        // Process complete SSE messages (terminated by \n\n)
         let boundary;
         while ((boundary = sseBuffer.indexOf('\n\n')) !== -1) {
           const message = sseBuffer.slice(0, boundary);
           sseBuffer = sseBuffer.slice(boundary + 2);
-
-          // Parse event name and data
-          let eventName = 'message';
-          let eventData = '';
+          let eventName = 'message', eventData = '';
           for (const line of message.split('\n')) {
             if (line.startsWith('event: ')) eventName = line.slice(7).trim();
             else if (line.startsWith('data: ')) eventData = line.slice(6).trim();
           }
 
-          if (eventName === 'token') {
-            // ── Live token: append to chat bubble ─────────────────────────
+          if (eventName === 'narrate') {
+            // ── Live status narration ─────────────────────────────────────
             try {
-              const token = JSON.parse(eventData);
-              streamBubbleText += token;
-              // Only render the "message" portion — stop at the first `"files"` key
-              // so the user never sees raw JSON file content streaming in
-              const displayText = _extractMessageFromPartialJSON(streamBubbleText);
-              if (streamBubble && displayText !== null) {
-                streamBubble.innerHTML = _escapeHtml(displayText) + '<span class="code-chat-cursor">▍</span>';
-                if (chatList) chatList.scrollTop = chatList.scrollHeight;
-              }
-            } catch { /* skip malformed token */ }
+              const n = JSON.parse(eventData);
+              if (n.msg) addNarrateLine(n.msg, n.type || 'info');
+            } catch {}
 
-          } else if (eventName === 'status') {
+          } else if (eventName === 'file') {
+            // ── File received — render in editor immediately ───────────────
             try {
-              const s = JSON.parse(eventData);
-              if (s.msg) codeLog('🔄 ' + s.msg, 'info');
-            } catch { /* skip */ }
+              const f = JSON.parse(eventData);
+              if (f.path && f.content !== undefined) {
+                files.push(f);
+                // Store in state
+                const existingSha = _codeState.generatedFiles[f.path]?.sha || null;
+                _codeState.generatedFiles[f.path] = { content: f.content, sha: existingSha };
+                _codeAddFileToPanel(f.path);
+                // Auto-open first HTML file in editor as it arrives
+                const isHtml = f.path.endsWith('.html') || f.path.endsWith('.htm');
+                const isFirst = files.length === 1;
+                if (isFirst || (isHtml && !_codeState.activeFile)) {
+                  _codeState.activeFile = f.path;
+                  _codeState.activeFileContent = f.content;
+                  _codeRenderCode(f.content, f.path);
+                  // Show code view immediately
+                  const toggle = document.getElementById('code-view-toggle');
+                  if (toggle) toggle.style.display = 'flex';
+                  codeSetView('code');
+                }
+              }
+            } catch {}
 
           } else if (eventName === 'done') {
-            try { data = JSON.parse(eventData); } catch { /* handled below */ }
+            try { finalData = JSON.parse(eventData); } catch {}
 
           } else if (eventName === 'error') {
-            let errMsg = 'Generation error';
+            let errMsg = 'Generation failed';
             try { const e = JSON.parse(eventData); errMsg = e.error || errMsg; } catch {}
-            // Remove streaming cursor, show error in bubble immediately
-            if (streamBubble) {
-              streamBubble.querySelector('.code-chat-cursor')?.remove();
-              streamBubble.innerHTML = '⚠️ ' + _escapeHtml(errMsg) + ' — No credits were charged.';
-              streamBubble.style.color = '#fca5a5';
-            }
-            codeLog('❌ ' + errMsg, 'error');
+            addNarrateLine(errMsg, 'error');
             _codeState.generating = false;
             if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Build'; }
             return;
@@ -11323,126 +11340,94 @@ async function _codeRunBuild(prompt) {
       }
     }
 
-    // Remove streaming cursor from bubble
-    if (streamBubble) streamBubble.querySelector('.code-chat-cursor')?.remove();
+    // Clean up any remaining cursor
+    narrateBubble?.querySelector('.ai-live-cursor')?.remove();
 
-    if (!data || data.error) {
-      const errMsg = data?.message || data?.error || 'Generation failed';
-      codeLog('❌ ' + errMsg, 'error');
-      if (streamBubble) streamBubble.innerHTML = '⚠️ ' + _escapeHtml(errMsg);
-      return;
-    }
-
-    const files = data.files || [];
     if (!files.length) {
-      const noFilesMsg = "I didn't get any files back from the model. This sometimes happens — want to try again with a bit more detail in your prompt?";
-      codeLog('⚠️ AI returned no files', 'error');
-      if (streamBubble) streamBubble.innerHTML = _escapeHtml(noFilesMsg);
+      addNarrateLine('No files were generated. Please try a different prompt.', 'error');
       return;
     }
 
-    // ── Write each file ───────────────────────────────────────────────────────
-    codeLog(`📁 Writing ${files.length} file${files.length > 1 ? 's' : ''}…`, 'info');
-    files.forEach(({ path, content }) => {
-      if (!path || content === undefined) return;
-      const existingSha = _codeState.generatedFiles[path]?.sha || null;
-      _codeState.generatedFiles[path] = { content, sha: existingSha };
-      _codeAddFileToPanel(path);
-      codeLog(`  ✏️ ${path} (${content.split('\n').length} lines)`, 'success');
-    });
+    // ── All files written — add final summary row ─────────────────────────────
+    const summary = finalData?.message || `Built ${files.length} file${files.length > 1 ? 's' : ''} successfully.`;
+    const creditsMsg = finalData?.creditsUsed ? ` · 💳 ${finalData.creditsUsed} credits` : '';
+    // Add final summary as a new rich row (narration bubble already has file rows)
+    if (narrateBubble) {
+      narrateBubble.querySelector('.ai-live-cursor')?.remove();
+      // Summary row
+      const sumRow = document.createElement('div');
+      sumRow.style.cssText = 'margin-top:8px;padding:8px 10px;background:rgba(110,231,183,.08);border:1px solid rgba(110,231,183,.2);border-radius:8px;font-size:12px;color:#6ee7b7;line-height:1.5;animation:fsds-fadeIn .3s both;';
+      sumRow.innerHTML = `<strong style="display:block;margin-bottom:3px">✅ Build complete${creditsMsg}</strong><span style="color:#a0aec0;font-size:11px">${_escapeHtml(summary)}</span>`;
+      narrateBubble.appendChild(sumRow);
+      chatList.scrollTop = chatList.scrollHeight;
+    }
 
-    // Open preferred file
-    const preferredFile = files.find(f => f.path.endsWith('.html'))
+    // Open best file (prefer index.html)
+    const preferredFile = files.find(f => f.path === 'index.html')
+      || files.find(f => f.path.endsWith('.html'))
       || files.find(f => f.path.endsWith('.jsx') || f.path.endsWith('.tsx'))
       || files[0];
-    _codeState.activeFile = preferredFile.path;
-    _codeState.activeFileContent = preferredFile.content;
-    _codeState.activeFileSha = _codeState.generatedFiles[preferredFile.path]?.sha || null;
+    if (preferredFile) {
+      _codeState.activeFile = preferredFile.path;
+      _codeState.activeFileContent = preferredFile.content;
+      _codeState.activeFileSha = _codeState.generatedFiles[preferredFile.path]?.sha || null;
+      _codeRenderCode(preferredFile.content, preferredFile.path);
+    }
     _codeState.projectStarted = true;
-    _codeRenderCode(preferredFile.content, preferredFile.path);
 
     // Update conversation history
     const filesSummary = files.map(f => `${f.path} (${f.content.split('\n').length} lines)`).join(', ');
     _codeState.conversationHistory.push({ role: 'user', content: prompt });
-    _codeState.conversationHistory.push({
-      role: 'assistant',
-      content: `${data.message || 'Done.'} Files written: ${filesSummary}`
-    });
-    if (_codeState.conversationHistory.length > 20) {
-      _codeState.conversationHistory = _codeState.conversationHistory.slice(-20);
-    }
-
-    // ── Finalise the chat bubble with full message + file summary ─────────────
-    const finalMsg = data.message || 'Done.';
-    const fileLine = `\n\n📁 ${files.length} file${files.length>1?'s':''} written: ${files.map(f=>f.path).join(', ')}`;
-    if (streamBubble) streamBubble.innerHTML = _escapeHtml(finalMsg + fileLine);
-
-    // Suggestion chips
-    const fileNames = files.map(f => f.path);
-    const hasHtmlFile = fileNames.some(f => f.endsWith('.html'));
-    const nextSteps = hasHtmlFile
-      ? ['Add a dark mode toggle', 'Make it mobile responsive', 'Add animations to cards', 'Add a contact form']
-      : ['Add unit tests', 'Add error handling', 'Connect to an API', 'Add TypeScript types'];
-    _codeChatAddSuggestions(nextSteps.slice(0, 3));
+    _codeState.conversationHistory.push({ role: 'assistant', content: `${summary} Files: ${filesSummary}` });
+    if (_codeState.conversationHistory.length > 20) _codeState.conversationHistory = _codeState.conversationHistory.slice(-20);
 
     // Auto-preview
     const hasHtml = files.some(f => f.path.endsWith('.html'));
-    const hasCss  = files.some(f => f.path.endsWith('.css'));
-    const hasJs   = files.some(f => f.path.endsWith('.js') || f.path.endsWith('.jsx') || f.path.endsWith('.ts') || f.path.endsWith('.tsx'));
-    if (hasHtml || (hasCss && hasJs)) {
+    if (hasHtml) {
       _codeUpdatePreview();
       const toggle = document.getElementById('code-view-toggle');
       if (toggle) toggle.style.display = 'flex';
-      if (!_codeState.projectStarted || files.length > 1) {
-        setTimeout(() => codeSetView('preview'), 300);
-      }
+      // Switch to preview after short delay so editor flash is visible
+      setTimeout(() => codeSetView('preview'), 600);
     }
 
-    // Action buttons
-    const copyBtn = document.getElementById('btn-code-copy');
-    const pushBtn = document.getElementById('btn-code-push');
-    const zipBtn  = document.getElementById('btn-code-zip');
-    if (copyBtn) copyBtn.style.display = 'flex';
-    if (zipBtn)  zipBtn.style.display  = 'flex';
-    if (pushBtn && _codeState.ghConnected) pushBtn.style.display = 'flex';
-    if (_codeState.ghConnected && _codeState.selectedRepo) {
-      const pushAllWrap = document.getElementById('code-push-all-wrap');
-      if (pushAllWrap) pushAllWrap.style.display = 'block';
+    // Show action buttons
+    ['btn-code-copy','btn-code-zip'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'flex';
+    });
+    if (_codeState.ghConnected) {
+      const pushBtn = document.getElementById('btn-code-push'); if (pushBtn) pushBtn.style.display = 'flex';
     }
-
     const publishWrap = document.getElementById('code-publish-wrap');
     if (publishWrap) publishWrap.style.display = 'block';
+
+    // Auto-publish to R2 for live preview URL
     codePublishPreview().catch(() => {});
 
     const deployWrap = document.getElementById('code-deploy-cf-wrap');
     if (deployWrap) deployWrap.style.display = 'block';
 
-    _codeUpdateSessionBadge();
-    codeLog(`✅ Done — ${_codeState.agentName} wrote ${files.length} file${files.length>1?'s':''}`, 'success');
+    // Suggestion chips
+    const nextSteps = hasHtml
+      ? ['Make it mobile responsive', 'Add a dark mode toggle', 'Add smooth animations', 'Add a contact form']
+      : ['Add error handling', 'Write unit tests', 'Add TypeScript types', 'Connect to an API'];
+    _codeChatAddSuggestions(nextSteps.slice(0, 3));
 
-    _clawTrackAction('code_generated', {
-      type: 'code', files: files.length,
-      prompt: prompt.slice(0, 80),
-      model: _codeState.agentName,
-    });
+    _codeUpdateSessionBadge();
+    codeLog(`✅ ${files.length} file${files.length > 1 ? 's' : ''} written`, 'success');
+
+    _clawTrackAction('code_generated', { type: 'code', files: files.length, prompt: prompt.slice(0, 80), model: _codeState.agentName });
     _flowContext.codeFilesCount = Object.keys(_codeState.generatedFiles).length;
-    _flowContext.codeProjectName = files[0]?.path?.split('/')[0] || null;
-    _clawLogProject({ deployUrl: '' });
 
   } catch(e) {
-    // No credits charged on error — safe to retry
-    const errMsg = e.message || 'Generation failed — please try again';
-    const isNetErr = errMsg.toLowerCase().includes('failed to fetch') || errMsg.toLowerCase().includes('network') || errMsg.toLowerCase().includes('load failed');
-    const userMsg = isNetErr
-      ? '⚠️ Connection error — check your internet and try again. No credits were charged.'
-      : '⚠️ ' + errMsg + (errMsg.includes('credit') ? '' : ' — No credits were charged.');
+    const errMsg = e.message || 'Connection error — check your network. No credits charged.';
+    const isNet = errMsg.toLowerCase().includes('fetch') || errMsg.toLowerCase().includes('network') || errMsg.toLowerCase().includes('load');
+    const userMsg = isNet
+      ? 'Connection error — check your internet and try again. No credits were charged.'
+      : errMsg;
+    addNarrateLine(userMsg, 'error');
+    if (!narrateBubble) _codeChatAddMessage('ai', '⚠️ ' + userMsg);
     codeLog('❌ ' + errMsg, 'error');
-    if (streamBubble) {
-      streamBubble.innerHTML = userMsg;
-      streamBubble.style.color = '#fca5a5';
-    } else {
-      _codeChatAddMessage('ai', userMsg);
-    }
   } finally {
     _codeState.generating = false;
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Build'; }

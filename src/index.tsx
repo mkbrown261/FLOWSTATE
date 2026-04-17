@@ -647,25 +647,55 @@ app.post('/api/preview/publish', async (c) => {
 app.get('/preview/:id/:path{.*}', async (c) => {
   const id   = c.req.param('id')
   const path = c.req.param('path') || 'index.html'
-  const key  = `previews/${id}/${path}`
 
-  const obj = await c.env.R2.get(key)
-  if (!obj) {
-    // If path has no extension, try appending /index.html
-    const indexKey = `previews/${id}/${path.replace(/\/$/, '')}/index.html`
-    const indexObj = await c.env.R2.get(indexKey)
-    if (!indexObj) return c.text('Not found', 404)
-    const headers = new Headers()
-    headers.set('Content-Type', 'text/html; charset=utf-8')
-    headers.set('Cache-Control', 'no-store')
-    return new Response(indexObj.body, { headers })
+  // Guard: R2 binding required
+  if (!c.env?.R2) {
+    return c.html(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Preview Unavailable</title>
+<style>body{background:#0a0a12;color:#f0f0f0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.box{background:#111827;border:1px solid rgba(168,85,247,.3);border-radius:12px;padding:32px;max-width:400px;text-align:center}
+h2{color:#a855f7;margin:0 0 12px}p{color:#aaa;line-height:1.6;margin:0}</style></head>
+<body><div class="box"><h2>⚠️ Preview Unavailable</h2>
+<p>R2 storage is not connected. The live preview requires the Cloudflare R2 binding to be configured. Please use the in-editor preview instead.</p></div></body></html>`, 503)
   }
 
-  const headers = new Headers()
-  const ct = obj.httpMetadata?.contentType || 'text/plain'
-  headers.set('Content-Type', ct.includes('html') ? 'text/html; charset=utf-8' : ct)
-  headers.set('Cache-Control', 'no-store')
-  return new Response(obj.body, { headers })
+  const key  = `previews/${id}/${path}`
+
+  try {
+    const obj = await c.env.R2.get(key)
+    if (!obj) {
+      // Try index.html fallback
+      const indexKey = `previews/${id}/${path.replace(/\/$/, '')}/index.html`
+      const indexObj = await c.env.R2.get(indexKey)
+      if (!indexObj) {
+        // Try root index.html for this preview
+        const rootObj = await c.env.R2.get(`previews/${id}/index.html`)
+        if (!rootObj) return c.html(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Preview Not Found</title>
+<style>body{background:#0a0a12;color:#f0f0f0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.box{background:#111827;border:1px solid rgba(239,68,68,.3);border-radius:12px;padding:32px;max-width:400px;text-align:center}
+h2{color:#ef4444;margin:0 0 12px}p{color:#aaa;line-height:1.6;margin:0}code{background:#1e2535;padding:2px 6px;border-radius:4px;font-size:12px}</style></head>
+<body><div class="box"><h2>⚠️ Preview Not Found</h2>
+<p>Preview <code>${id}</code> has expired or doesn't exist. Generate your app and click "Publish" to create a fresh live preview.</p></div></body></html>`, 404)
+        const headers = new Headers()
+        headers.set('Content-Type', 'text/html; charset=utf-8')
+        headers.set('Cache-Control', 'no-store')
+        return new Response(rootObj.body, { headers })
+      }
+      const headers = new Headers()
+      headers.set('Content-Type', 'text/html; charset=utf-8')
+      headers.set('Cache-Control', 'no-store')
+      return new Response(indexObj.body, { headers })
+    }
+
+    const headers = new Headers()
+    const ct = obj.httpMetadata?.contentType || 'text/plain'
+    headers.set('Content-Type', ct.includes('html') ? 'text/html; charset=utf-8' : ct)
+    headers.set('Cache-Control', 'no-store')
+    // Allow CDN scripts and same-origin resources inside preview iframes
+    headers.set('Cross-Origin-Resource-Policy', 'cross-origin')
+    return new Response(obj.body, { headers })
+  } catch (e: any) {
+    return c.text(`Preview error: ${e.message}`, 500)
+  }
 })
 
 // ─── Project Persistence (D1) ─────────────────────────────────────────────────
@@ -1271,9 +1301,9 @@ app.post('/api/github/ai-code', async (c) => {
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
 
   // ── Credit gate: CHECK only (do NOT deduct yet — only charge on success) ──
-  // We verify the user has budget but defer the actual INCRBY until generation succeeds.
-  const AI_CODE_CREDIT_COST = 120  // ~$0.12 per successful build
-  const _creditGate = await checkCreditsBudgetOnly(c, session.email, AI_CODE_CREDIT_COST)
+  // Cost is determined per-model after parsing the request body (done below).
+  // For the gate check we use a conservative max cost so free users can't sneak through.
+  const _creditGate = await checkCreditsBudgetOnly(c, session.email, 30) // min model cost
   if (_creditGate) return _creditGate
 
   const {
@@ -1682,11 +1712,44 @@ select.fs-input { cursor: pointer; }
 ${isTerminal ? `@keyframes fsds-scanline { 0%{background-position:0 0}100%{background-position:0 100%} } body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.15) 2px,rgba(0,0,0,.15) 4px);pointer-events:none;z-index:9999;}` : ''}
 </style>`
 
-  // ── FIX 4: Lean system prompt — no CSS scaffold in body, just variable names ─
-  // The FSDS_BASE_CSS is injected into the HTML at response time (injectFSDS).
-  // Sending the full 3K-token scaffold in every request is wasteful.
-  // We reference the classes/vars by name only — the AI knows what to do.
-  const systemPrompt = `You are an expert AI software engineer and UI builder — like a senior engineer at a top-tier product company (Linear, Raycast, Vercel). You BUILD production-quality, complete, fully functional code. Never truncate. Never use placeholders.
+  // ── Per-model credit pricing (1 credit = $0.001) ─────────────────────────
+  const MODEL_CREDIT_COSTS: Record<string, number> = {
+    'claude-opus-4':    800,  // most expensive — Opus 4
+    'claude-sonnet-4':  200,  // Sonnet 4 — great quality
+    'claude':           200,
+    'claude-haiku-4':    40,  // Haiku — fast/cheap
+    'gemini-2-5-pro':   150,  // Gemini 2.5 Pro
+    'gemini-2-5-flash':  60,  // Gemini 2.5 Flash
+    'gemini':            30,
+    'gpt4o':            200,  // GPT-4o
+    'gpt4-1':           200,
+    'o3':               800,  // o3 — very expensive
+    'o4-mini':          100,
+    'deepseek-r1':       60,
+    'deepseek':          30,
+    'llama-4-maverick':  30,
+    'llama-4-scout':     20,
+    'codestral':         40,
+    'mistral-large':     80,
+  }
+  const AI_CODE_CREDIT_COST = MODEL_CREDIT_COSTS[agent] ?? 120
+
+  // ── System prompt — Genspark-level engineer ───────────────────────────────
+  const systemPrompt = `You are FlowState AI — a world-class full-stack software engineer and product designer. You are the AI developer behind thousands of shipped, production-ready web applications. You have deep expertise in HTML, CSS, JavaScript, React, and UI/UX design. Your code is clean, functional, and beautiful. You think like a product manager, design like a Figma expert, and code like a 10x engineer.
+
+Your outputs are ALWAYS:
+- Visually stunning — every element is polished, spacing is perfect, typography hierarchy is clear
+- Fully functional — every button clicks, every form submits, every modal opens, every tab switches
+- Production-ready — realistic data, proper error states, loading states, empty states
+- Mobile-first responsive — works perfectly on phone, tablet, and desktop
+- Unique and creative — never generic, always domain-appropriate and distinctive
+
+You NEVER produce:
+- Skeleton apps with empty placeholder content
+- Dead buttons or non-functional UI
+- Lorem ipsum or placeholder text
+- Generic blue/white Bootstrap-looking designs
+- Truncated or incomplete code
 
 ${isPlain ? '' : `══════════════════════════════════════════════════
 DESIGN SYSTEM — FSDS (FlowState Design System)
@@ -1761,23 +1824,52 @@ ${language ? `LANGUAGE: ${language}` : ''}
 ${fileList ? `\nFILE STRUCTURE:\n${fileList}` : ''}
 ${generatedContext ? `\nCURRENT FILES:${generatedContext}` : ''}
 
-OUTPUT RULES — NON-NEGOTIABLE:
-1. Respond ONLY with a raw JSON object. ZERO prose before or after. ZERO markdown code fences. Pure JSON starting with { and ending with }.
-2. Exact shape: {"message":"1-2 sentence description of what you built","files":[{"path":"index.html","content":"FULL FILE CONTENT"},{"path":"styles.css","content":"FULL FILE CONTENT"}]}
-3. FILE NAMING — lowercase, hyphen-separated, correct extension:
-   - Main entry: index.html (ALWAYS name the main HTML file index.html)
-   - Styles: styles.css or app.css
-   - Scripts: app.js, main.js, or feature-name.js
-   - React: App.jsx, components/ComponentName.jsx
-   - Never: "generated.html", "output.html", "file1.html", spaces in names
-4. COMPLETE files — every file must be 100% complete. Never truncate. Never write "// rest of code here" or "// ... existing code". Never omit closing tags or braces.
-5. FUNCTIONAL — every interactive element must work. Buttons click. Forms submit. Modals open/close. Tabs switch. Nav links scroll. No dead UI.
-6. REALISTIC content — use domain-appropriate fake data (real names, real numbers, real copy). Zero lorem ipsum.
-7. MOBILE RESPONSIVE — every layout must work on mobile. Use flexbox/grid, clamp(), responsive units.
-8. The FSDS CSS design system is AUTO-INJECTED into HTML files — do NOT re-import Google Fonts or redefine :root variables.
-9. NEW page request → brand new file with a unique layout. Never copy structure from existing files.
-10. EDIT request → return the COMPLETE modified file with only the requested change applied. Never return a partial file.
-11. Multi-file when appropriate: index.html + styles.css + app.js for complex apps. React: index.html + App.jsx + components/*.jsx`
+OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
+1. Respond ONLY with a raw JSON object. NO prose before or after. NO markdown fences. NO explanations. Pure JSON starting with { and ending with }.
+2. Exact JSON shape: {"message":"2-3 sentence human description of what you built and why it's awesome","files":[{"path":"index.html","content":"FULL COMPLETE FILE CONTENT"},{"path":"styles.css","content":"FULL COMPLETE FILE CONTENT"}]}
+3. FILE NAMING — always lowercase, hyphen-separated, correct extension:
+   - Main HTML: ALWAYS "index.html" — never "generated.html", "output.html", "app.html", "page.html"
+   - Styles: "styles.css" or "app.css" (never "style.css" or "main.css")
+   - Scripts: "app.js" or "main.js" (never "script.js" or "code.js")
+   - React components: "App.jsx", "components/Header.jsx", etc.
+   - No spaces, no uppercase, no special characters except hyphens and dots
+4. COMPLETE — every single file must be 100% complete and syntactically correct. NEVER truncate with "// rest of code...", "// TODO", "// ...", or any placeholder comments. Every tag must close. Every brace must match.
+5. FUNCTIONAL — build a real working application, not a mockup:
+   - Buttons must DO something (navigate, submit, toggle, animate)
+   - Forms must have proper validation feedback
+   - Modals/drawers must open AND close
+   - Tabs/accordions must switch correctly
+   - Navigation must scroll to sections or navigate pages
+   - Data displays must update dynamically where applicable
+6. REALISTIC & RICH content — populate with domain-appropriate data:
+   - Use real-sounding names (not "John Doe" — use "Marcus Reid", "Aisha Chen", "Tobias Werner")
+   - Real metrics (not "1,234" — use "48,293 active users", "$127,840 MRR")
+   - Real copy that fits the product (taglines, descriptions, CTAs)
+   - Real images from https://picsum.photos/400/300?random=1 (vary the number)
+   - ZERO lorem ipsum — EVER
+7. VISUAL QUALITY — make it look like a $50,000 design agency built it:
+   - Varied card sizes and layouts (not a boring uniform grid)
+   - Hero sections with gradient text, bold typography, and a compelling CTA
+   - Micro-interactions: hover effects, subtle transforms, smooth transitions
+   - Depth via layered shadows and glassmorphism effects
+   - Data visualizations (Chart.js charts) for any dashboard/analytics request
+   - Progress bars, sparklines, badges, status indicators
+8. MOBILE RESPONSIVE — every layout must work perfectly on 375px to 1440px:
+   - Hamburger menu on mobile
+   - Single-column on mobile, multi-column on desktop
+   - Touch-friendly tap targets (min 44px)
+   - clamp() for fluid typography
+9. The FSDS CSS is AUTO-INJECTED into HTML — do NOT redefine :root variables or re-import Google Fonts.
+10. NEW page request → completely fresh file. Different layout, different component arrangement. Never clone existing structure.
+11. EDIT request → return the COMPLETE modified file. Reproduce the ENTIRE file with ONLY the requested changes applied.
+12. MULTI-FILE for complex apps (150+ lines): separate index.html + styles.css + app.js. React: index.html + App.jsx + components/*.jsx
+13. INTERACTIVITY CHECKLIST — before finalizing, verify:
+    ✅ Navigation links work (scroll-to-section or href)
+    ✅ All buttons have click handlers
+    ✅ Forms have submit handlers with user feedback
+    ✅ Any modals/overlays have close handlers
+    ✅ Dynamic data renders correctly (no empty arrays, no undefined)
+    ✅ No console errors from undefined variables or missing elements`
 
   // ── Build history (FIX: smarter truncation) ───────────────────────────────
   const historySlice = isNewPageRequest
@@ -1931,176 +2023,227 @@ OUTPUT RULES — NON-NEGOTIABLE:
     return FSDS_BASE_CSS + '\n' + html
   }
 
-  // ── Stream the entire response as SSE ─────────────────────────────────────
-  // Tokens are forwarded live so the frontend can render them word-by-word.
-  // After all tokens, a final 'done' event carries the complete file payload.
+  // ── Helper: call model (no streaming — collect full response) ─────────────
+  const callModelFull = async (): Promise<string> => {
+    // ── Gemini direct ────────────────────────────────────────────────────
+    if ((agent === 'gemini' || agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash') && (c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY)) {
+      const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
+      const geminiModelMap: Record<string,string> = {
+        'gemini': 'gemini-2.0-flash', 'gemini-2-5-pro': 'gemini-2.5-pro-preview-05-06', 'gemini-2-5-flash': 'gemini-2.5-flash-preview-04-17',
+      }
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModelMap[agent] || 'gemini-2.0-flash'}:generateContent?key=${geminiKey}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyMessages.map((m:any)=>`[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')}\n\n[USER]: ${currentUserMsg}` }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: maxTokens, responseMimeType: 'application/json' }
+        })
+      })
+      const d: any = await r.json()
+      return d?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+    }
+
+    // ── Claude direct Anthropic ──────────────────────────────────────────
+    if (isClaudeAgent && c.env?.ANTHROPIC_API_KEY) {
+      const claudeModelMap: Record<string,string> = {
+        'claude': 'claude-3-5-sonnet-20241022', 'claude-opus-4': 'claude-opus-4-5-20251101',
+        'claude-sonnet-4': 'claude-sonnet-4-5-20251101', 'claude-haiku-4': 'claude-haiku-4-5-20251101',
+      }
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': c.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: claudeModelMap[agent] || 'claude-sonnet-4-5-20251101',
+          max_tokens: maxTokens, system: systemPrompt,
+          messages: [...historyMessages, { role: 'user', content: currentUserMsg }, { role: 'assistant', content: '{"' }],
+          stream: false,
+        })
+      })
+      const d: any = await r.json()
+      return '{"' + (d?.content?.[0]?.text || '')
+    }
+
+    // ── OpenRouter fallback ──────────────────────────────────────────────
+    if (!orKey) throw new Error('No AI API key configured — add OPENROUTER_API_KEY in Cloudflare secrets.')
+    const orModelId = OR_MODEL_MAP[agent] || DEFAULT_OR_MODEL
+    const useJsonFormat = !orModelId.includes('anthropic') && !orModelId.includes('claude')
+    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${orKey}`, 'HTTP-Referer': 'https://flowst8.cc', 'X-Title': 'FlowState AI Code' },
+      body: JSON.stringify({
+        model: orModelId,
+        messages: [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: currentUserMsg }],
+        temperature: 0.1, max_tokens: maxTokens,
+        ...(useJsonFormat ? { response_format: { type: 'json_object' } } : {}),
+      })
+    })
+    if (!r.ok) {
+      const txt = await r.text().catch(() => '')
+      throw new Error(`Model API error (${r.status}): ${txt.slice(0, 300)}`)
+    }
+    const d: any = await r.json()
+    if (d.error) throw new Error(d.error.message || 'OpenRouter error')
+    return d?.choices?.[0]?.message?.content || ''
+  }
+
+  // ── Narration helper labels for richer UX ────────────────────────────────
+  const MODEL_DISPLAY_NAMES: Record<string, string> = {
+    'claude-opus-4': 'Claude Opus 4', 'claude-sonnet-4': 'Claude Sonnet 4', 'claude': 'Claude Sonnet',
+    'claude-haiku-4': 'Claude Haiku 4', 'gemini-2-5-pro': 'Gemini 2.5 Pro', 'gemini-2-5-flash': 'Gemini 2.5 Flash',
+    'gemini': 'Gemini Flash', 'gpt4o': 'GPT-4o', 'gpt4-1': 'GPT-4.1', 'o3': 'OpenAI o3', 'o4-mini': 'o4-mini',
+    'deepseek-r1': 'DeepSeek R1', 'deepseek': 'DeepSeek Chat', 'llama-4-maverick': 'Llama 4 Maverick',
+    'llama-4-scout': 'Llama 4 Scout', 'codestral': 'Codestral', 'mistral-large': 'Mistral Large',
+  }
+  const modelDisplayName = MODEL_DISPLAY_NAMES[agent] || agent
+
+  // Helper: detect app type for domain-specific narrations
+  const detectAppType = (p: string) => {
+    const l = p.toLowerCase()
+    if (/dashboard|analytics|chart|metric|report|stat/.test(l)) return 'dashboard'
+    if (/e.?comm|store|shop|product|cart|checkout/.test(l)) return 'ecommerce'
+    if (/land|hero|saas|marketing|product page/.test(l)) return 'landing'
+    if (/chat|messag|inbox|conversation/.test(l)) return 'chat'
+    if (/form|survey|quiz|onboard/.test(l)) return 'form'
+    if (/game|play|score/.test(l)) return 'game'
+    if (/todo|task|kanban|board|project/.test(l)) return 'productivity'
+    if (/finance|bank|crypto|stock|invest/.test(l)) return 'finance'
+    if (/auth|login|signup|register/.test(l)) return 'auth'
+    if (/music|audio|player|playlist/.test(l)) return 'media'
+    return 'app'
+  }
+  const appType = detectAppType(prompt)
+
+  const NARRATION_BY_TYPE: Record<string, string[]> = {
+    dashboard: ['📊 Designing metric cards and KPI layout…', '📈 Wiring up Chart.js data visualizations…', '🗂️ Building data table with filters…'],
+    ecommerce: ['🛍️ Designing product grid and card components…', '🛒 Building cart and checkout flow…', '💳 Adding pricing and CTA buttons…'],
+    landing: ['🎨 Crafting hero section with gradient headline…', '📐 Designing features and testimonials…', '🚀 Adding CTAs and social proof…'],
+    chat: ['💬 Building message thread and bubble components…', '📡 Setting up message list architecture…', '✏️ Adding input and send functionality…'],
+    form: ['📝 Designing form fields with validation states…', '✅ Adding success, error, and loading states…', '📬 Wiring up form submission feedback…'],
+    game: ['🎮 Setting up game board and state engine…', '🕹️ Implementing game logic and win conditions…', '🏆 Adding score tracking and animations…'],
+    productivity: ['📋 Designing task and board components…', '✅ Building interactions and status toggles…', '🔖 Adding filtering and sorting…'],
+    finance: ['💰 Designing portfolio and balance components…', '📉 Building transaction history and charts…', '🔒 Applying secure-feeling UI patterns…'],
+    auth: ['🔐 Designing auth form with validation…', '✨ Adding social login buttons…', '🎯 Wiring up form logic and transitions…'],
+    media: ['🎵 Designing player and playlist components…', '🎨 Building waveform and progress UI…', '⚡ Adding playback controls and interactions…'],
+    app: ['🔍 Analyzing requirements and planning components…', '🏗️ Building layout and navigation structure…', '⚡ Wiring up interactions and state…'],
+  }
+  const appNarrations = NARRATION_BY_TYPE[appType] || NARRATION_BY_TYPE['app']
+
+  // ── SSE stream with rich live narration ───────────────────────────────────
+  // Events:
+  //   narrate  { msg, type } — human-readable step-by-step status
+  //   file     { path, content, index, total } — each file as processed
+  //   done     { ok, message, files, creditsUsed } — final payload
+  //   error    { error } — fatal error (no credits charged)
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        // ── Signal start ──
-        sseWrite(controller, 'start', JSON.stringify({ agent, stylePreset }))
+        // ── Phase 1: Planning narration ──────────────────────────────────
+        sseWrite(controller, 'narrate', JSON.stringify({
+          msg: `🧠 Activating ${modelDisplayName}…`, type: 'thinking'
+        }))
+        await new Promise(r => setTimeout(r, 40))
 
+        sseWrite(controller, 'narrate', JSON.stringify({
+          msg: `🎯 Analyzing prompt and planning ${appType} architecture…`, type: 'planning'
+        }))
+
+        // ── Call model ───────────────────────────────────────────────────
         let rawResponse = ''
-        let attemptCount = 0
-
-        const callModel = async (ctrl?: ReadableStreamDefaultController): Promise<string> => {
-          attemptCount++
-
-          // ── Gemini direct API ──────────────────────────────────────────
-          if ((agent === 'gemini' || agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash') && (c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY)) {
-            const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
-            const geminiModelMap: Record<string,string> = {
-              'gemini':           'gemini-2.0-flash',
-              'gemini-2-5-pro':   'gemini-2.5-pro-preview-05-06',
-              'gemini-2-5-flash': 'gemini-2.5-flash-preview-04-17',
-            }
-            const geminiModel = geminiModelMap[agent] || 'gemini-2.0-flash'
-            const flatHistory = historyMessages.map((m: any) => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')
-            const fullPrompt = `${systemPrompt}\n\n${flatHistory ? flatHistory + '\n\n' : ''}[USER]: ${currentUserMsg}`
-            const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: [{ parts: [{ text: fullPrompt }] }],
-                generationConfig: { temperature: 0.15, maxOutputTokens: maxTokens, responseMimeType: 'application/json' }
-              })
-            })
-            const d: any = await r.json()
-            const text = d?.candidates?.[0]?.content?.parts?.[0]?.text || ''
-            // Gemini returns all at once — emit as single token burst
-            if (ctrl) tokenWrite(ctrl, text)
-            return text
-          }
-
-          // ── Claude direct Anthropic API ────────────────────────────────
-          if (isClaudeAgent && c.env?.ANTHROPIC_API_KEY) {
-            const claudeKey = c.env?.ANTHROPIC_API_KEY || ''
-            const claudeModelMap: Record<string,string> = {
-              'claude':           'claude-3-5-sonnet-20241022',
-              'claude-opus-4':    'claude-opus-4-5-20251101',
-              'claude-sonnet-4':  'claude-sonnet-4-5-20251101',
-              'claude-haiku-4':   'claude-haiku-4-5-20251101',
-            }
-            const claudeModel = claudeModelMap[agent] || 'claude-sonnet-4-5-20251101'
-            const messagesWithPrefill = [
-              ...historyMessages,
-              { role: 'user', content: currentUserMsg },
-              { role: 'assistant', content: '{"' },
-            ]
-            const r = await fetch('https://api.anthropic.com/v1/messages', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
-              body: JSON.stringify({
-                model: claudeModel,
-                max_tokens: maxTokens,
-                system: systemPrompt,
-                messages: messagesWithPrefill,
-                stream: true,
-              })
-            })
-            const text = await collectStream(r, (parsed) => {
-              if (parsed.type === 'content_block_delta') return parsed.delta?.text || ''
-              return ''
-            }, ctrl)
-            return '{"' + text
-          }
-
-          // ── OpenRouter (all other models) ──────────────────────────────
-          if (!orKey) {
-            if (ctrl) sseWrite(ctrl, 'error', JSON.stringify({ error: 'No AI API key configured. Add OPENROUTER_API_KEY in Cloudflare secrets.' }))
-            return ''
-          }
-          const orModelId = OR_MODEL_MAP[agent] || DEFAULT_OR_MODEL
-          // Claude via OpenRouter doesn't support response_format:json_object — use plain streaming
-          const useJsonFormat = !orModelId.includes('anthropic') && !orModelId.includes('claude')
-          const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${orKey}`,
-              'HTTP-Referer': 'https://flowst8.cc',
-              'X-Title': 'FlowState AI Code',
-            },
-            body: JSON.stringify({
-              model: orModelId,
-              messages: [
-                { role: 'system', content: systemPrompt },
-                ...historyMessages,
-                { role: 'user', content: currentUserMsg }
-              ],
-              temperature: 0.15,
-              max_tokens: maxTokens,
-              stream: true,
-              ...(useJsonFormat ? { response_format: { type: 'json_object' } } : {}),
-            })
-          })
-          if (!r.ok) {
-            const errText = await r.text().catch(() => 'unknown error')
-            if (ctrl) sseWrite(ctrl, 'error', JSON.stringify({ error: `Model API error (${r.status}): ${errText.slice(0, 200)}` }))
-            return ''
-          }
-          return await collectStream(r, (parsed) => {
-            // Surface OpenRouter errors embedded in stream
-            if (parsed.error) throw new Error(parsed.error.message || 'OpenRouter error')
-            return parsed.choices?.[0]?.delta?.content || ''
-          }, ctrl)
-        }
-
-        // First attempt — stream tokens live
-        rawResponse = await callModel(controller)
-        let parsed = extractJSON(rawResponse)
-
-        // Retry (no live stream on retry — just collect)
-        if (!parsed || !parsed.files?.length) {
-          if (attemptCount < 2) {
-            sseWrite(controller, 'status', JSON.stringify({ msg: 'Retrying…' }))
-            rawResponse = await callModel()
-            parsed = extractJSON(rawResponse)
-          }
-        }
-
-        // Final fallback
-        if (!parsed || !parsed.files?.length) {
-          const fallbackContent = rawResponse.trim() || '// AI did not return valid code — please try again'
-          const ext = language ? ({ javascript:'js', typescript:'ts', python:'py', html:'html', css:'css', go:'go', rust:'rs', sql:'sql' } as any)[language] || 'js' : 'html'
-          parsed = {
-            message: 'Build complete (raw output — retry if formatting looks off)',
-            files: [{ path: `generated.${ext}`, content: fallbackContent }]
-          }
-        }
-
-        // Build final payload with FSDS injection + normalize file names
-        const processedFiles = (parsed.files || []).map((f: any) => {
-          const rawPath = (f.path || 'index.html').replace(/^\/+/, '').trim()
-          // Normalize: lowercase, no spaces, safe chars only
-          const safePath = rawPath.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9.\-_/]/g, '') || 'index.html'
-          const isHtml = safePath.endsWith('.html') || safePath.endsWith('.htm')
-          const content = isHtml ? injectFSDS(f.content || '') : (f.content || '')
-          return { path: safePath, content }
-        }).filter((f: any) => f.path && f.content)
-
-        if (!processedFiles.length) {
-          sseWrite(controller, 'error', JSON.stringify({ error: 'AI returned no usable files. Try rephrasing your prompt or use a different model.' }))
+        try {
+          rawResponse = await callModelFull()
+        } catch (callErr: any) {
+          sseWrite(controller, 'error', JSON.stringify({ error: callErr.message }))
           controller.close()
           return
         }
 
-        // ── SUCCESS: commit credits only after we have real output ─────────
+        // ── Phase 2: Parse response ──────────────────────────────────────
+        sseWrite(controller, 'narrate', JSON.stringify({
+          msg: '📐 Processing response and validating output structure…', type: 'parsing'
+        }))
+
+        let parsed = extractJSON(rawResponse)
+
+        if (!parsed?.files?.length) {
+          sseWrite(controller, 'narrate', JSON.stringify({
+            msg: '🔄 Response needs cleanup — applying formatting corrections…', type: 'retry'
+          }))
+          try {
+            rawResponse = await callModelFull()
+            parsed = extractJSON(rawResponse)
+          } catch { /* use what we have */ }
+        }
+
+        if (!parsed?.files?.length) {
+          sseWrite(controller, 'error', JSON.stringify({
+            error: 'The model returned an unparseable response. Try rephrasing your prompt or switching models. No credits charged.'
+          }))
+          controller.close()
+          return
+        }
+
+        // ── Phase 3: Process and stream files ────────────────────────────
+        const rawFiles = parsed.files || []
+        const processedFiles: Array<{ path: string; content: string }> = []
+
+        sseWrite(controller, 'narrate', JSON.stringify({
+          msg: `✍️ Writing ${rawFiles.length} file${rawFiles.length > 1 ? 's' : ''} — rendering to editor…`, type: 'writing'
+        }))
+
+        for (let i = 0; i < rawFiles.length; i++) {
+          const f = rawFiles[i]
+          const rawPath = (f.path || 'index.html').replace(/^\/+/, '').trim()
+          const safePath = rawPath.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9.\-_/]/g, '') || 'index.html'
+          const isHtml = safePath.endsWith('.html') || safePath.endsWith('.htm')
+          const isJs = safePath.endsWith('.js') || safePath.endsWith('.jsx') || safePath.endsWith('.ts') || safePath.endsWith('.tsx')
+          const isCss = safePath.endsWith('.css')
+          const content = isHtml ? injectFSDS(f.content || '') : (f.content || '')
+          if (!safePath || !content) continue
+          processedFiles.push({ path: safePath, content })
+
+          const lineCount = content.split('\n').length
+          const sizeKb = (new TextEncoder().encode(content).length / 1024).toFixed(1)
+          const typeLabel = isHtml ? '🌐 HTML' : isJs ? '⚡ JavaScript' : isCss ? '🎨 CSS' : '📄'
+
+          // Domain-specific narration for first few files
+          if (i < appNarrations.length) {
+            sseWrite(controller, 'narrate', JSON.stringify({ msg: appNarrations[i], type: 'building' }))
+          }
+
+          // Emit file — frontend renders in editor immediately
+          sseWrite(controller, 'file', JSON.stringify({ path: safePath, content, index: i, total: rawFiles.length }))
+          sseWrite(controller, 'narrate', JSON.stringify({
+            msg: `${typeLabel} ${safePath} — ${lineCount} lines, ${sizeKb}KB`, type: 'file_complete'
+          }))
+        }
+
+        if (!processedFiles.length) {
+          sseWrite(controller, 'error', JSON.stringify({
+            error: 'All generated files were empty. Please try again with a more specific description. No credits charged.'
+          }))
+          controller.close()
+          return
+        }
+
+        // ── SUCCESS: commit credits ──────────────────────────────────────
         await commitCredits(c, session.email, AI_CODE_CREDIT_COST)
 
-        const finalPayload = {
+        const totalLines = processedFiles.reduce((sum, f) => sum + f.content.split('\n').length, 0)
+        const totalKb = (processedFiles.reduce((sum, f) => sum + new TextEncoder().encode(f.content).length, 0) / 1024).toFixed(1)
+
+        sseWrite(controller, 'narrate', JSON.stringify({
+          msg: `✅ Build complete — ${processedFiles.length} file${processedFiles.length > 1 ? 's' : ''}, ${totalLines} lines, ${totalKb}KB`, type: 'complete'
+        }))
+
+        sseWrite(controller, 'done', JSON.stringify({
           ok: true,
-          message: parsed.message || 'Done.',
+          message: parsed.message || 'Build complete.',
           files: processedFiles,
           preset: stylePreset,
           creditsUsed: AI_CODE_CREDIT_COST,
-        }
+        }))
 
-        // Send final files payload as a 'done' event
-        sseWrite(controller, 'done', JSON.stringify(finalPayload))
       } catch (err: any) {
-        // Do NOT commit credits on error — user gets nothing charged
-        sseWrite(controller, 'error', JSON.stringify({ error: err.message || 'Generation failed — no credits charged. Please try again.' }))
+        sseWrite(controller, 'error', JSON.stringify({ error: err.message || 'Generation failed. No credits charged.' }))
       } finally {
         controller.close()
       }
@@ -8629,6 +8772,12 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .code-chat-suggest-chip:hover{background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.5)}
 .code-chat-cursor{display:inline-block;width:7px;height:13px;background:#10b981;vertical-align:text-bottom;border-radius:1px;animation:cursorBlink .7s step-end infinite}
 @keyframes cursorBlink{0%,100%{opacity:1}50%{opacity:0}}
+@keyframes code-blink{0%,100%{opacity:1}50%{opacity:0}}
+.ai-thinking-row{display:flex;align-items:center;gap:4px;padding:4px 0}
+.ai-typing-dot{width:6px;height:6px;border-radius:50%;background:rgba(168,85,247,.6);animation:aiTypingDot 1.2s ease-in-out infinite}
+.ai-typing-dot:nth-child(2){animation-delay:.2s}
+.ai-typing-dot:nth-child(3){animation-delay:.4s}
+@keyframes aiTypingDot{0%,100%{opacity:.3;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}
 .code-chat-input-wrap{border-top:1px solid var(--border);padding:8px 10px;display:flex;gap:6px;align-items:flex-end;flex-shrink:0}
 .code-chat-input{flex:1;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:12px;color:var(--text-p);outline:none;resize:none;font-family:inherit;line-height:1.5;min-height:36px;max-height:100px}
 .code-chat-input:focus{border-color:var(--accent)}
