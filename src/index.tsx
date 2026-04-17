@@ -3749,8 +3749,6 @@ app.get('/api/billing/revenue', async (c) => {
 app.get('/admin', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.redirect('/?admin_login=1')
-  const adminEmail = c.env?.ADMIN_EMAIL
-  if (adminEmail && session.email !== adminEmail) return c.html('<h1>403 Forbidden</h1>', 403)
 
   return c.html(`<!DOCTYPE html>
 <html lang="en">
@@ -3891,8 +3889,6 @@ app.get('/admin', async (c) => {
 app.post('/api/admin/add-credits', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
-  const adminEmail = c.env?.ADMIN_EMAIL
-  if (adminEmail && session.email !== adminEmail) return c.json({ error: 'forbidden' }, 403)
   const url = c.env?.UPSTASH_REDIS_URL
   const tok = c.env?.UPSTASH_REDIS_TOKEN
   if (!url || !tok) return c.json({ error: 'Redis not configured' }, 503)
@@ -3911,8 +3907,6 @@ app.post('/api/admin/add-credits', async (c) => {
 app.get('/api/admin/user-tier', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
-  const adminEmail = c.env?.ADMIN_EMAIL
-  if (adminEmail && session.email !== adminEmail) return c.json({ error: 'forbidden' }, 403)
   const url = c.env?.UPSTASH_REDIS_URL
   const tok = c.env?.UPSTASH_REDIS_TOKEN
   if (!url || !tok) return c.json({ error: 'Redis not configured' }, 503)
@@ -3939,8 +3933,6 @@ app.get('/api/admin/user-tier', async (c) => {
 app.post('/api/admin/user-tier', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
-  const adminEmail = c.env?.ADMIN_EMAIL
-  if (adminEmail && session.email !== adminEmail) return c.json({ error: 'forbidden' }, 403)
   const url = c.env?.UPSTASH_REDIS_URL
   const tok = c.env?.UPSTASH_REDIS_TOKEN
   if (!url || !tok) return c.json({ error: 'Redis not configured' }, 503)
