@@ -1270,9 +1270,11 @@ app.post('/api/github/ai-code', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session?.email) return c.json({ error: 'not_authenticated' }, 401)
 
-  // Credit cost — full AI code build (Claude Sonnet 32k output) ≈ 480 credits
-  const abuseCheck = await checkAntiAbuse(c, session.email, 480)
-  if (abuseCheck) return abuseCheck
+  // ── Credit gate: CHECK only (do NOT deduct yet — only charge on success) ──
+  // We verify the user has budget but defer the actual INCRBY until generation succeeds.
+  const AI_CODE_CREDIT_COST = 120  // ~$0.12 per successful build
+  const _creditGate = await checkCreditsBudgetOnly(c, session.email, AI_CODE_CREDIT_COST)
+  if (_creditGate) return _creditGate
 
   const {
     prompt,
@@ -1759,15 +1761,23 @@ ${language ? `LANGUAGE: ${language}` : ''}
 ${fileList ? `\nFILE STRUCTURE:\n${fileList}` : ''}
 ${generatedContext ? `\nCURRENT FILES:${generatedContext}` : ''}
 
-OUTPUT RULES — STRICTLY ENFORCED:
-1. Respond ONLY with a valid JSON object. Zero prose. Zero markdown fences. Pure JSON.
-2. Shape: {"message":"what you built (1-2 sentences)","files":[{"path":"index.html","content":"..."},{"path":"styles.css","content":"..."}]}
-3. COMPLETE files — never truncate, never "// rest unchanged", never omit closing tags.
-4. The FSDS CSS is auto-injected — do NOT rewrite Google Fonts imports or redefine :root.
-5. NEW page/view: new file, blank canvas, zero copying from existing HTML structure.
-6. EDIT request: modify the existing file, preserve structure, change only what was asked.
-7. Multiple files when warranted (HTML + CSS + JS, or React components).
-8. ISOLATION: Each HTML file is independent — never copy nav/hero/layout from another file.`
+OUTPUT RULES — NON-NEGOTIABLE:
+1. Respond ONLY with a raw JSON object. ZERO prose before or after. ZERO markdown code fences. Pure JSON starting with { and ending with }.
+2. Exact shape: {"message":"1-2 sentence description of what you built","files":[{"path":"index.html","content":"FULL FILE CONTENT"},{"path":"styles.css","content":"FULL FILE CONTENT"}]}
+3. FILE NAMING — lowercase, hyphen-separated, correct extension:
+   - Main entry: index.html (ALWAYS name the main HTML file index.html)
+   - Styles: styles.css or app.css
+   - Scripts: app.js, main.js, or feature-name.js
+   - React: App.jsx, components/ComponentName.jsx
+   - Never: "generated.html", "output.html", "file1.html", spaces in names
+4. COMPLETE files — every file must be 100% complete. Never truncate. Never write "// rest of code here" or "// ... existing code". Never omit closing tags or braces.
+5. FUNCTIONAL — every interactive element must work. Buttons click. Forms submit. Modals open/close. Tabs switch. Nav links scroll. No dead UI.
+6. REALISTIC content — use domain-appropriate fake data (real names, real numbers, real copy). Zero lorem ipsum.
+7. MOBILE RESPONSIVE — every layout must work on mobile. Use flexbox/grid, clamp(), responsive units.
+8. The FSDS CSS design system is AUTO-INJECTED into HTML files — do NOT re-import Google Fonts or redefine :root variables.
+9. NEW page request → brand new file with a unique layout. Never copy structure from existing files.
+10. EDIT request → return the COMPLETE modified file with only the requested change applied. Never return a partial file.
+11. Multi-file when appropriate: index.html + styles.css + app.js for complex apps. React: index.html + App.jsx + components/*.jsx`
 
   // ── Build history (FIX: smarter truncation) ───────────────────────────────
   const historySlice = isNewPageRequest
@@ -1809,24 +1819,32 @@ OUTPUT RULES — STRICTLY ENFORCED:
   // frontend can show live token output while the build is in progress.
 
   const OR_MODEL_MAP: Record<string, string> = {
-    'gemini-2-5-pro':   'google/gemini-2.5-pro-preview',
+    // Google — via OpenRouter
+    'gemini-2-5-pro':   'google/gemini-2.5-pro',
     'gemini-2-5-flash': 'google/gemini-2.5-flash',
     'gemini':           'google/gemini-2.0-flash-001',
+    // OpenAI
     'gpt4o':            'openai/gpt-4o',
     'o4-mini':          'openai/o4-mini',
     'o3':               'openai/o3',
     'gpt4-1':           'openai/gpt-4.1',
-    'claude-opus-4':    'anthropic/claude-opus-4.6',
-    'claude-sonnet-4':  'anthropic/claude-sonnet-4.6',
-    'claude':           'anthropic/claude-sonnet-4',
-    'claude-haiku-4':   'anthropic/claude-haiku-4.5',
+    // Anthropic — exact current IDs on OpenRouter
+    'claude-opus-4':    'anthropic/claude-opus-4-5',
+    'claude-sonnet-4':  'anthropic/claude-sonnet-4-5',
+    'claude':           'anthropic/claude-sonnet-4-5',
+    'claude-haiku-4':   'anthropic/claude-haiku-4-5',
+    // Meta
     'llama-4-maverick': 'meta-llama/llama-4-maverick',
     'llama-4-scout':    'meta-llama/llama-4-scout',
+    // DeepSeek
     'deepseek-r1':      'deepseek/deepseek-r1',
     'deepseek':         'deepseek/deepseek-chat-v3-0324',
-    'codestral':        'mistralai/codestral-2508',
-    'mistral-large':    'mistralai/mistral-large',
+    // Mistral
+    'codestral':        'mistralai/codestral-mamba',
+    'mistral-large':    'mistralai/mistral-large-2411',
   }
+  // Default to gemini-2.5-flash — fast, reliable, great at code, available on OpenRouter
+  const DEFAULT_OR_MODEL = 'google/gemini-2.5-flash'
 
   const orKey = c.env?.OPENROUTER_API_KEY || ''
 
@@ -1988,8 +2006,13 @@ OUTPUT RULES — STRICTLY ENFORCED:
           }
 
           // ── OpenRouter (all other models) ──────────────────────────────
-          if (!orKey) return ''
-          const orModelId = OR_MODEL_MAP[agent] || 'google/gemini-2.0-flash-001'
+          if (!orKey) {
+            if (ctrl) sseWrite(ctrl, 'error', JSON.stringify({ error: 'No AI API key configured. Add OPENROUTER_API_KEY in Cloudflare secrets.' }))
+            return ''
+          }
+          const orModelId = OR_MODEL_MAP[agent] || DEFAULT_OR_MODEL
+          // Claude via OpenRouter doesn't support response_format:json_object — use plain streaming
+          const useJsonFormat = !orModelId.includes('anthropic') && !orModelId.includes('claude')
           const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers: {
@@ -2008,10 +2031,19 @@ OUTPUT RULES — STRICTLY ENFORCED:
               temperature: 0.15,
               max_tokens: maxTokens,
               stream: true,
-              response_format: isClaudeAgent ? undefined : { type: 'json_object' },
+              ...(useJsonFormat ? { response_format: { type: 'json_object' } } : {}),
             })
           })
-          return await collectStream(r, (parsed) => parsed.choices?.[0]?.delta?.content || '', ctrl)
+          if (!r.ok) {
+            const errText = await r.text().catch(() => 'unknown error')
+            if (ctrl) sseWrite(ctrl, 'error', JSON.stringify({ error: `Model API error (${r.status}): ${errText.slice(0, 200)}` }))
+            return ''
+          }
+          return await collectStream(r, (parsed) => {
+            // Surface OpenRouter errors embedded in stream
+            if (parsed.error) throw new Error(parsed.error.message || 'OpenRouter error')
+            return parsed.choices?.[0]?.delta?.content || ''
+          }, ctrl)
         }
 
         // First attempt — stream tokens live
@@ -2037,23 +2069,38 @@ OUTPUT RULES — STRICTLY ENFORCED:
           }
         }
 
-        // Build final payload with FSDS injection
+        // Build final payload with FSDS injection + normalize file names
+        const processedFiles = (parsed.files || []).map((f: any) => {
+          const rawPath = (f.path || 'index.html').replace(/^\/+/, '').trim()
+          // Normalize: lowercase, no spaces, safe chars only
+          const safePath = rawPath.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9.\-_/]/g, '') || 'index.html'
+          const isHtml = safePath.endsWith('.html') || safePath.endsWith('.htm')
+          const content = isHtml ? injectFSDS(f.content || '') : (f.content || '')
+          return { path: safePath, content }
+        }).filter((f: any) => f.path && f.content)
+
+        if (!processedFiles.length) {
+          sseWrite(controller, 'error', JSON.stringify({ error: 'AI returned no usable files. Try rephrasing your prompt or use a different model.' }))
+          controller.close()
+          return
+        }
+
+        // ── SUCCESS: commit credits only after we have real output ─────────
+        await commitCredits(c, session.email, AI_CODE_CREDIT_COST)
+
         const finalPayload = {
           ok: true,
           message: parsed.message || 'Done.',
-          files: (parsed.files || []).map((f: any) => {
-            const path = (f.path || 'generated.js').replace(/^\/+/, '')
-            const isHtml = path.endsWith('.html') || path.endsWith('.htm')
-            const content = isHtml ? injectFSDS(f.content || '') : (f.content || '')
-            return { path, content }
-          }),
+          files: processedFiles,
           preset: stylePreset,
+          creditsUsed: AI_CODE_CREDIT_COST,
         }
 
         // Send final files payload as a 'done' event
         sseWrite(controller, 'done', JSON.stringify(finalPayload))
       } catch (err: any) {
-        sseWrite(controller, 'error', JSON.stringify({ error: err.message || 'Unknown error' }))
+        // Do NOT commit credits on error — user gets nothing charged
+        sseWrite(controller, 'error', JSON.stringify({ error: err.message || 'Generation failed — no credits charged. Please try again.' }))
       } finally {
         controller.close()
       }
@@ -2588,6 +2635,72 @@ async function redisPipeline(url: string, token: string, commands: any[][]): Pro
 //
 // Credits track ALL media types: text, image, video, voice, music.
 // The ai-orchestrator.ts costUnits map to credits directly.
+// ── checkCreditsBudgetOnly: verify user has budget WITHOUT deducting ──────────
+// Used for AI code builder — credits only committed after successful generation.
+async function checkCreditsBudgetOnly(c: any, userId: string, cost: number = 1): Promise<Response | null> {
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return null
+
+  const month        = new Date().toISOString().slice(0, 7)
+  const tierEmailKey = `tier_email:${userId}`
+  const tierKey      = `tier:${userId}`
+  const monthKey     = `monthly_credits_used:${userId}:${month}`
+  const minute       = Math.floor(Date.now() / 60000)
+  const velKey       = `velocity:${userId}:${minute}`
+
+  const results = await redisPipeline(url, token, [
+    ['GET',  tierEmailKey],
+    ['GET',  tierKey],
+    ['GET',  monthKey],
+    ['INCR', velKey],
+    ['EXPIRE', velKey, 90],
+  ])
+
+  const tier        = (results[0] || results[1] || 'free') as string
+  const used        = parseInt(results[2] as string || '0')
+  const velocity    = parseInt(results[3] as string || '0')
+  const isPaid      = ['pro', 'team', 'enterprise', 'personal_pro', 'team_starter', 'team_growth'].includes(tier)
+  const isEnterprise = tier === 'enterprise'
+
+  if (velocity >= 10) {
+    return c.json({ error: 'Too many requests — slow down for 60 seconds.', code: 'VELOCITY_EXCEEDED' }, 429)
+  }
+  if (isEnterprise || isPaid) return null
+
+  const FREE_MONTHLY_LIMIT = 3_000
+  if (used >= FREE_MONTHLY_LIMIT) {
+    const balKey = `credit_balance:${encodeURIComponent(userId)}`
+    const balRes = await fetch(`${url}/get/${balKey}`, { headers: { Authorization: `Bearer ${token}` } })
+    const balData: any = await balRes.json().catch(() => ({}))
+    const balance = parseInt(balData?.result || '0')
+    if (balance >= cost) return null
+    return c.json({
+      error: 'Monthly credit limit reached (3,000 credits). Upgrade to Pro for 10,000 credits/month or buy a credit pack.',
+      code: 'MONTHLY_LIMIT', used, limit: FREE_MONTHLY_LIMIT, isPaid: false, canTopUp: true,
+    }, 429)
+  }
+  return null
+}
+
+// ── commitCredits: deduct credits after a SUCCESSFUL operation ─────────────
+async function commitCredits(c: any, userId: string, cost: number): Promise<void> {
+  const url   = c.env?.UPSTASH_REDIS_URL
+  const token = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !token) return
+
+  const month    = new Date().toISOString().slice(0, 7)
+  const monthKey = `monthly_credits_used:${userId}:${month}`
+  const now      = new Date()
+  const endOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0))
+  const monthExpireAt = Math.floor(endOfMonth.getTime() / 1000)
+
+  await redisPipeline(url, token, [
+    ['INCRBY',   monthKey, cost],
+    ['EXPIREAT', monthKey, monthExpireAt],
+  ]).catch(() => {})
+}
+
 async function checkCredits(c: any, userId: string, cost: number = 1): Promise<Response | null> {
   const url   = c.env?.UPSTASH_REDIS_URL
   const token = c.env?.UPSTASH_REDIS_TOKEN

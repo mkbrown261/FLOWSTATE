@@ -11245,9 +11245,15 @@ async function _codeRunBuild(prompt) {
       })
     });
 
-    if (!res.ok && !res.body) {
+    if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error || 'Request failed');
+      const errMsg = errData.error || `Server error (${res.status})`;
+      codeLog('❌ ' + errMsg, 'error');
+      if (streamBubble) { streamBubble.innerHTML = '⚠️ ' + _escapeHtml(errMsg); streamBubble.style.color = '#fca5a5'; }
+      else _codeChatAddMessage('ai', '⚠️ ' + errMsg);
+      _codeState.generating = false;
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Build'; }
+      return;
     }
 
     // ── Read SSE stream ───────────────────────────────────────────────────────
@@ -11300,10 +11306,18 @@ async function _codeRunBuild(prompt) {
             try { data = JSON.parse(eventData); } catch { /* handled below */ }
 
           } else if (eventName === 'error') {
-            try {
-              const e = JSON.parse(eventData);
-              throw new Error(e.error || 'Stream error');
-            } catch (parseErr) { throw parseErr; }
+            let errMsg = 'Generation error';
+            try { const e = JSON.parse(eventData); errMsg = e.error || errMsg; } catch {}
+            // Remove streaming cursor, show error in bubble immediately
+            if (streamBubble) {
+              streamBubble.querySelector('.code-chat-cursor')?.remove();
+              streamBubble.innerHTML = '⚠️ ' + _escapeHtml(errMsg) + ' — No credits were charged.';
+              streamBubble.style.color = '#fca5a5';
+            }
+            codeLog('❌ ' + errMsg, 'error');
+            _codeState.generating = false;
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Build'; }
+            return;
           }
         }
       }
@@ -11416,10 +11430,19 @@ async function _codeRunBuild(prompt) {
     _clawLogProject({ deployUrl: '' });
 
   } catch(e) {
-    const netMsg = 'Connection error — ' + (e.message || 'check your network and try again');
-    codeLog('Network error: ' + e.message, 'error');
-    if (streamBubble) streamBubble.innerHTML = '⚠️ ' + _escapeHtml(netMsg);
-    else _codeChatAddMessage('ai', '⚠️ ' + netMsg);
+    // No credits charged on error — safe to retry
+    const errMsg = e.message || 'Generation failed — please try again';
+    const isNetErr = errMsg.toLowerCase().includes('failed to fetch') || errMsg.toLowerCase().includes('network') || errMsg.toLowerCase().includes('load failed');
+    const userMsg = isNetErr
+      ? '⚠️ Connection error — check your internet and try again. No credits were charged.'
+      : '⚠️ ' + errMsg + (errMsg.includes('credit') ? '' : ' — No credits were charged.');
+    codeLog('❌ ' + errMsg, 'error');
+    if (streamBubble) {
+      streamBubble.innerHTML = userMsg;
+      streamBubble.style.color = '#fca5a5';
+    } else {
+      _codeChatAddMessage('ai', userMsg);
+    }
   } finally {
     _codeState.generating = false;
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> Build'; }
@@ -12089,6 +12112,8 @@ function _codeUpdatePreview() {
     // Add cache-bust so updates always show after republish
     const bust = `?v=${Date.now()}`;
     const url  = _codeState.previewUrl.split('?')[0] + bust;
+    // Remove sandbox restriction on same-origin R2 previews so CDN scripts and links work
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox');
     if (frame.src !== url) frame.src = url;
     return;
   }
@@ -12105,37 +12130,37 @@ function _codeUpdatePreview() {
   let srcdoc = '';
 
   if (htmlFiles.length > 0) {
-    let html = files[htmlFiles[0]].content;
+    // Prefer index.html as entry point
+    const mainHtml = htmlFiles.find(p => p === 'index.html' || p.endsWith('/index.html')) || htmlFiles[0];
+    let html = files[mainHtml].content;
 
+    // Inline CSS: replace <link> refs or inject before </head>
     cssFiles.forEach(cssPath => {
       const fname = cssPath.split('/').pop();
       const cssContent = files[cssPath]?.content || '';
-      html = html.replace(
-        new RegExp(`<link[^>]*href=["'][^"']*${fname.replace('.','\\.')}["'][^>]*>`, 'gi'),
-        `<style>${cssContent}</style>`
-      );
+      if (!cssContent) return;
+      const escaped = fname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const linked = new RegExp(`<link[^>]*href=["'][^"']*${escaped}["'][^>]*>`, 'gi');
+      if (linked.test(html)) {
+        html = html.replace(new RegExp(`<link[^>]*href=["'][^"']*${escaped}["'][^>]*>`, 'gi'), `<style>${cssContent}</style>`);
+      } else {
+        html = html.includes('</head>') ? html.replace('</head>', `<style>${cssContent}</style>\n</head>`) : html + `<style>${cssContent}</style>`;
+      }
     });
 
+    // Inline JS: replace <script src> refs or inject before </body>
     jsFiles.forEach(jsPath => {
       const fname = jsPath.split('/').pop();
       const jsContent = files[jsPath]?.content || '';
-      html = html.replace(
-        new RegExp(`<script[^>]*src=["'][^"']*${fname.replace('.','\\.')}["'][^>]*>\\s*</script>`, 'gi'),
-        `<script>${jsContent}</script>`
-      );
+      if (!jsContent) return;
+      const escaped = fname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const linked = new RegExp(`<script[^>]*src=["'][^"']*${escaped}["'][^>]*>\\s*</script>`, 'gi');
+      if (linked.test(html)) {
+        html = html.replace(new RegExp(`<script[^>]*src=["'][^"']*${escaped}["'][^>]*>\\s*</script>`, 'gi'), `<script>${jsContent}</script>`);
+      } else {
+        html = html.includes('</body>') ? html.replace('</body>', `<script>${jsContent}</script>\n</body>`) : html + `<script>${jsContent}</script>`;
+      }
     });
-
-    const hasUnlinkedCss = cssFiles.some(p => !html.includes(files[p]?.content?.slice(0,30) || '~~'));
-    if (hasUnlinkedCss) {
-      const allCss = cssFiles.map(p => files[p]?.content || '').join('\n');
-      html = html.replace('</head>', `<style>${allCss}</style>\n</head>`);
-    }
-
-    const hasUnlinkedJs = jsFiles.some(p => !html.includes(files[p]?.content?.slice(0,30) || '~~'));
-    if (hasUnlinkedJs) {
-      const allJs = jsFiles.map(p => files[p]?.content || '').join('\n');
-      html = html.replace('</body>', `<script>${allJs}</script>\n</body>`);
-    }
 
     srcdoc = html;
 
@@ -12172,7 +12197,11 @@ if(typeof App!=='undefined'){import{createRoot}from'https://esm.sh/react-dom@18/
 </head><body><div id="app"></div><script>${allJs}</script></body></html>`;
   }
 
-  if (srcdoc) frame.srcdoc = srcdoc;
+  if (srcdoc) {
+    // Allow all necessary features for srcdoc previews including CDN scripts
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-top-navigation-by-user-activation');
+    frame.srcdoc = srcdoc;
+  }
 }
 
 // ── File panel ─────────────────────────────────────────────────────────────────
