@@ -3745,6 +3745,166 @@ app.get('/api/billing/revenue', async (c) => {
   })
 })
 
+// ─── Admin panel UI ──────────────────────────────────────────────────────────
+app.get('/admin', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.redirect('/?admin_login=1')
+  const adminEmail = c.env?.ADMIN_EMAIL
+  if (adminEmail && session.email !== adminEmail) return c.html('<h1>403 Forbidden</h1>', 403)
+
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlowState Admin</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f0f1a; color: #e0e0e0; min-height: 100vh; padding: 32px 16px; }
+    h1 { font-size: 22px; font-weight: 800; color: #a855f7; margin-bottom: 4px; }
+    .sub { color: #666; font-size: 13px; margin-bottom: 32px; }
+    .card { background: #1a1a2e; border: 1px solid rgba(168,85,247,.25); border-radius: 14px; padding: 24px; max-width: 560px; margin: 0 auto 24px; }
+    .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 16px; color: #c084fc; }
+    label { display: block; font-size: 12px; color: #888; margin-bottom: 6px; margin-top: 14px; }
+    input, select { width: 100%; background: #0f0f1a; border: 1px solid rgba(168,85,247,.3); border-radius: 8px; padding: 10px 12px; color: #e0e0e0; font-size: 14px; outline: none; }
+    input:focus, select:focus { border-color: #a855f7; }
+    button { margin-top: 18px; width: 100%; padding: 12px; background: linear-gradient(135deg,#a855f7,#ec4899); border: none; border-radius: 10px; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; }
+    button:hover { opacity: .9; }
+    .result { margin-top: 16px; padding: 12px 14px; border-radius: 8px; font-size: 13px; display: none; }
+    .result.ok  { background: rgba(16,185,129,.15); border: 1px solid rgba(16,185,129,.4); color: #6ee7b7; }
+    .result.err { background: rgba(239,68,68,.15);  border: 1px solid rgba(239,68,68,.4);  color: #fca5a5; }
+    .tier-badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; margin-left: 8px; }
+    .tier-free { background: rgba(107,114,128,.2); color: #9ca3af; }
+    .tier-pro  { background: rgba(168,85,247,.2);  color: #c084fc; }
+    .tier-team { background: rgba(59,130,246,.2);  color: #93c5fd; }
+    .tier-enterprise { background: rgba(245,158,11,.2); color: #fcd34d; }
+  </style>
+</head>
+<body>
+  <div style="max-width:560px;margin:0 auto">
+    <h1>⚡ FlowState Admin</h1>
+    <p class="sub">Signed in as ${session.email}</p>
+
+    <div class="card">
+      <h2>🔍 Look Up User</h2>
+      <label>Email address</label>
+      <input id="lookup-email" type="email" placeholder="user@example.com" />
+      <button onclick="lookupUser()">Look Up</button>
+      <div id="lookup-result" class="result"></div>
+    </div>
+
+    <div class="card">
+      <h2>✏️ Change User Tier</h2>
+      <label>Email address</label>
+      <input id="set-email" type="email" placeholder="user@example.com" />
+      <label>New tier</label>
+      <select id="set-tier">
+        <option value="free">free</option>
+        <option value="pro">pro</option>
+        <option value="team">team</option>
+        <option value="enterprise">enterprise</option>
+        <option value="personal_pro">personal_pro</option>
+        <option value="team_starter">team_starter</option>
+        <option value="team_growth">team_growth</option>
+        <option value="clawflow">clawflow</option>
+      </select>
+      <button onclick="setTier()">Save Tier</button>
+      <div id="set-result" class="result"></div>
+    </div>
+
+    <div class="card">
+      <h2>🪙 Add Credits to User</h2>
+      <label>Email address</label>
+      <input id="credit-email" type="email" placeholder="user@example.com" />
+      <label>Credits to add</label>
+      <input id="credit-amount" type="number" placeholder="e.g. 5000" min="1" />
+      <button onclick="addCredits()">Add Credits</button>
+      <div id="credit-result" class="result"></div>
+    </div>
+  </div>
+
+  <script>
+    async function lookupUser() {
+      const email = document.getElementById('lookup-email').value.trim()
+      const el = document.getElementById('lookup-result')
+      if (!email) { showResult(el, 'err', 'Enter an email'); return }
+      try {
+        const r = await fetch('/api/admin/user-tier?email=' + encodeURIComponent(email))
+        const d = await r.json()
+        if (!r.ok) { showResult(el, 'err', d.error); return }
+        const tierClass = 'tier-' + (d.tier || 'free')
+        showResult(el, 'ok', \`
+          <strong>\${d.email}</strong>
+          <span class="tier-badge \${tierClass}">\${d.tier || 'free'}</span><br>
+          Credits used this month: <strong>\${d.monthlyCreditsUsed.toLocaleString()}</strong><br>
+          Purchased credits: <strong>\${d.purchasedCredits.toLocaleString()}</strong>
+        \`)
+      } catch(e) { showResult(el, 'err', 'Request failed') }
+    }
+
+    async function setTier() {
+      const email = document.getElementById('set-email').value.trim()
+      const tier  = document.getElementById('set-tier').value
+      const el    = document.getElementById('set-result')
+      if (!email) { showResult(el, 'err', 'Enter an email'); return }
+      try {
+        const r = await fetch('/api/admin/user-tier', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, tier })
+        })
+        const d = await r.json()
+        if (!r.ok) { showResult(el, 'err', d.error); return }
+        showResult(el, 'ok', '✅ ' + d.message)
+      } catch(e) { showResult(el, 'err', 'Request failed') }
+    }
+
+    async function addCredits() {
+      const email  = document.getElementById('credit-email').value.trim()
+      const amount = parseInt(document.getElementById('credit-amount').value)
+      const el     = document.getElementById('credit-result')
+      if (!email) { showResult(el, 'err', 'Enter an email'); return }
+      if (!amount || amount < 1) { showResult(el, 'err', 'Enter a valid credit amount'); return }
+      try {
+        const r = await fetch('/api/admin/add-credits', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, amount })
+        })
+        const d = await r.json()
+        if (!r.ok) { showResult(el, 'err', d.error); return }
+        showResult(el, 'ok', '✅ ' + d.message)
+      } catch(e) { showResult(el, 'err', 'Request failed') }
+    }
+
+    function showResult(el, type, html) {
+      el.className = 'result ' + type
+      el.innerHTML = html
+      el.style.display = 'block'
+    }
+  </script>
+</body>
+</html>`)
+})
+
+// ─── Admin: add credits to a user ────────────────────────────────────────────
+app.post('/api/admin/add-credits', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  const adminEmail = c.env?.ADMIN_EMAIL
+  if (adminEmail && session.email !== adminEmail) return c.json({ error: 'forbidden' }, 403)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ error: 'Redis not configured' }, 503)
+  const { email, amount } = await c.req.json().catch(() => ({}))
+  if (!email || !amount || amount < 1) return c.json({ error: 'email and amount required' }, 400)
+  const balKey = `credit_balance:${encodeURIComponent(email)}`
+  const res = await fetch(`${url}/incrby/${balKey}/${amount}`, { headers: { Authorization: `Bearer ${tok}` } })
+  const data: any = await res.json()
+  const newBalance = data.result || 0
+  return c.json({ ok: true, email, added: amount, newBalance, message: `Added ${amount.toLocaleString()} credits to ${email}. New balance: ${newBalance.toLocaleString()}` })
+})
+
 // ─── Admin: inspect / set user tier ─────────────────────────────────────────
 // GET  /api/admin/user-tier?email=x@y.z          → returns current tier + credit usage
 // POST /api/admin/user-tier  { email, tier }      → overwrite tier in Redis (admin only)
