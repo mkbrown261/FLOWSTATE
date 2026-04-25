@@ -429,11 +429,77 @@ document.getElementById('btn-google-login').addEventListener('click', () => {
 });
 
 document.getElementById('btn-magic-login').addEventListener('click', () => {
-  const email = prompt('Enter your work email:');
-  if (!email) return;
-  fetch('/api/auth/magic-link', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email}) })
-    .then(r => r.json()).then(d => { if (d.success) { window.location.reload(); } else { notify('Error: ' + (d.error||'unknown'),'error'); } });
+  const form = document.getElementById('magic-login-form');
+  if (!form) return;
+  const isVisible = form.style.display !== 'none';
+  form.style.display = isVisible ? 'none' : 'block';
+  if (!isVisible) {
+    const inp = document.getElementById('magic-login-email');
+    if (inp) inp.focus();
+  }
 });
+
+window.sendMagicLoginInline = async function() {
+  const inp  = document.getElementById('magic-login-email');
+  const btn  = document.getElementById('magic-login-send-btn');
+  const warn = document.getElementById('magic-login-warn');
+  const err  = document.getElementById('magic-login-err');
+  const ok   = document.getElementById('magic-login-ok');
+  if (!inp) return;
+
+  const email = (inp.value || '').trim().toLowerCase();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    err.textContent = 'Please enter a valid email address.';
+    err.style.display = 'block';
+    return;
+  }
+
+  // Reset state
+  warn.style.display = 'none';
+  err.style.display  = 'none';
+  ok.style.display   = 'none';
+
+  // iCloud / Apple warning
+  const isApple = /@(icloud|me|mac)\.com$/i.test(email);
+  if (isApple) {
+    warn.innerHTML = '&#9888;&#65039; Apple/iCloud sometimes blocks or delays sign-in emails. If you don\'t receive the link within 2 minutes, please use <strong>Continue with Google</strong> above or try a Gmail/work email.';
+    warn.style.display = 'block';
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+
+  try {
+    const res  = await fetch('/api/auth/magic-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+
+    if (data.success || data.user) {
+      ok.innerHTML = '&#10003; Sign-in link sent to <strong>' + email + '</strong>. Check your inbox (and spam folder) — it expires in 15 minutes.';
+      ok.style.display = 'block';
+      inp.value = '';
+      btn.textContent = 'Sent ✓';
+      if (data.user) { setTimeout(() => { window.location.reload(); }, 800); }
+    } else {
+      const msg = data.message || data.error || 'Failed to send sign-in email.';
+      const isBounce = msg.toLowerCase().includes('bounce') || msg.toLowerCase().includes('reject') || msg.toLowerCase().includes('invalid');
+      err.innerHTML = '&#10060; ' + msg + (isBounce
+        ? '<br><br>&#128161; Your email server rejected this message. Please <strong>use a Gmail or work email</strong>, or <strong>Continue with Google</strong> above.'
+        : '<br><br>&#128161; Try <strong>Continue with Google</strong> above — it always works.');
+      err.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Send link';
+    }
+  } catch (e) {
+    err.textContent = 'Network error. Please check your connection and try again.';
+    err.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Send link';
+  }
+};
 
 document.getElementById('btn-demo-login').addEventListener('click', () => {
   enterDemoMode();

@@ -10791,6 +10791,22 @@ em{color:var(--accent);font-style:italic}
       Continue with Google
     </button>
     <button class="btn-magic" id="btn-magic-login"><i class="fas fa-envelope"></i> Continue with work email</button>
+    <!-- Magic link inline form (hidden until btn-magic-login is clicked) -->
+    <div id="magic-login-form" style="display:none;margin-top:4px">
+      <div style="position:relative;display:flex;gap:8px;align-items:stretch">
+        <input id="magic-login-email" type="email" autocomplete="email" placeholder="your@email.com"
+          style="flex:1;background:var(--bg-base,#0d0d1a);border:1px solid rgba(168,85,247,.35);border-radius:10px;color:var(--text,#e2e8f0);padding:11px 14px;font-size:14px;outline:none;font-family:inherit"
+          onkeydown="if(event.key==='Enter')sendMagicLoginInline()"
+        >
+        <button onclick="sendMagicLoginInline()" id="magic-login-send-btn"
+          style="padding:11px 16px;border-radius:10px;background:linear-gradient(135deg,#a855f7,#ec4899);border:none;color:#fff;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;transition:.2s">
+          Send link
+        </button>
+      </div>
+      <div id="magic-login-warn" style="display:none;margin-top:6px;padding:8px 10px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:8px;font-size:11px;color:#fcd34d;text-align:left;line-height:1.5"></div>
+      <div id="magic-login-err"  style="display:none;margin-top:6px;padding:8px 10px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:11px;color:#fca5a5;text-align:left;line-height:1.5"></div>
+      <div id="magic-login-ok"   style="display:none;margin-top:6px;padding:8px 10px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:8px;font-size:11px;color:#6ee7b7;text-align:left;line-height:1.5"></div>
+    </div>
     <button class="btn-demo-login" id="btn-demo-login"><i class="fas fa-eye"></i> Try Demo (no login needed)</button>
     <div class="login-features">
       <div class="login-feat"><i class="fas fa-check"></i> 7 AI models</div>
