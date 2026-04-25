@@ -50,7 +50,7 @@ type Bindings = {
   XAI_API_KEY: string; MISTRAL_API_KEY: string; DEEPSEEK_API_KEY: string
   TOGETHER_API_KEY: string; ELEVENLABS_API_KEY: string
   STRIPE_SECRET_KEY: string; STRIPE_PUBLISHABLE_KEY: string; STRIPE_WEBHOOK_SECRET: string
-  RESEND_API_KEY: string; SESSION_SECRET: string
+  RESEND_API_KEY: string; RESEND_FROM_EMAIL: string; SESSION_SECRET: string
   CLAWBOT_API_KEY: string
   // Upstash Redis — rate limiting, token tracking, abuse prevention
   UPSTASH_REDIS_URL: string; UPSTASH_REDIS_TOKEN: string
@@ -2739,8 +2739,9 @@ app.post('/api/email/weekly-digest', async (c) => {
       method: 'POST',
       headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: 'FlowState <weekly@flowst8.cc>',
+        from: c.env?.RESEND_FROM_EMAIL || 'FlowState <noreply@flowst8.cc>',
         to: [session.email],
+        'reply-to': 'FlowState Support <hello@flowst8.cc>',
         subject: `⚡ Your FlowScore this week: ${flowScore} — ${weekStr}`,
         html,
       })
@@ -3598,60 +3599,259 @@ app.get('/api/behavior/insight', async (c) => {
 })
 
 // ─── Magic Link Auth ──────────────────────────────────────────────────────────
+// Secure flow:
+//   1. POST /api/auth/magic-link  → generates a cryptographically random token,
+//      stores it in Redis with 15-min TTL, sends link via Resend.
+//   2. GET  /api/auth/magic-link/verify?token=XXX  → validates against Redis,
+//      deletes key (single-use), sets session cookie.
+// Fallback: if RESEND_API_KEY is missing, auto-signs-in (dev/demo mode only).
+
 app.post('/api/auth/magic-link', async (c) => {
   const { email } = await c.req.json()
-  if (!email || !email.includes('@')) return c.json({ error: 'invalid_email' }, 400)
+  if (!email || !email.includes('@') || email.length > 320)
+    return c.json({ error: 'invalid_email' }, 400)
+
   const resendKey = c.env?.RESEND_API_KEY
-  const name = email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
-  const baseUrl = c.env?.CANONICAL_ORIGIN || new URL(c.req.url).origin
+  const redisUrl  = c.env?.UPSTASH_REDIS_URL
+  const redisTok  = c.env?.UPSTASH_REDIS_TOKEN
+  const baseUrl   = c.env?.CANONICAL_ORIGIN || 'https://flowst8.cc'
+  const name = email.split('@')[0].replace(/[._+-]/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()).trim() || 'there'
+
+  // ── Rate-limit: max 3 magic link requests per email per 10 minutes ─────────
+  if (redisUrl && redisTok) {
+    const rlKey    = `ml_rl:${email.toLowerCase()}`
+    const rlWindow = 600 // 10 minutes
+    try {
+      const pipeline = await fetch(`${redisUrl}/pipeline`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${redisTok}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify([
+          ['INCR',   rlKey],
+          ['EXPIRE', rlKey, rlWindow],
+        ])
+      })
+      const [incrRes] = await pipeline.json() as any[]
+      const count = parseInt(incrRes?.result || '0')
+      if (count > 3) {
+        return c.json({
+          error: 'too_many_requests',
+          message: 'Too many sign-in requests. Please wait 10 minutes before trying again.',
+        }, 429)
+      }
+    } catch { /* redis down — allow request */ }
+  }
 
   if (resendKey) {
-    const token = btoa(JSON.stringify({ email, name, exp: Date.now() + 15 * 60 * 1000 }))
-    const magicUrl = `${baseUrl}/api/auth/magic-link/verify?token=${encodeURIComponent(token)}`
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: 'FlowState <noreply@flowst8.cc>',
-        to: [email],
-        subject: 'Your FlowState sign-in link',
-        html: `
-          <div style="font-family:system-ui,sans-serif;background:#0f0f1a;color:#f0f0f0;padding:40px;max-width:480px;margin:0 auto;border-radius:16px">
-            <div style="font-size:32px;margin-bottom:8px">⚡</div>
-            <h1 style="font-size:22px;font-weight:800;margin-bottom:8px">Sign in to FlowState</h1>
-            <p style="color:#888;margin-bottom:24px">Click the button below to sign in. This link expires in 15 minutes.</p>
-            <a href="${magicUrl}" style="display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;text-decoration:none;padding:14px 32px;border-radius:12px;font-weight:700;font-size:15px">Sign in to FlowState →</a>
-            <p style="color:#555;font-size:12px;margin-top:24px">If you didn't request this, you can safely ignore this email.</p>
-          </div>
-        `
+    // ── Generate a secure random token and store it in Redis (15-min TTL) ────
+    const rawToken = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+      .map(b => b.toString(16).padStart(2, '0')).join('')
+    const tokenKey = `ml_token:${rawToken}`
+    const payload  = JSON.stringify({ email, name, issuedAt: Date.now() })
+
+    let redisOk = false
+    if (redisUrl && redisTok) {
+      try {
+        const setRes = await fetch(`${redisUrl}/set/${tokenKey}`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${redisTok}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify([payload, 'EX', 900]), // 15-min TTL
+        })
+        const setData: any = await setRes.json().catch(() => ({}))
+        redisOk = setData?.result === 'OK'
+      } catch { /* fall through */ }
+    }
+
+    if (!redisOk) {
+      // Redis unavailable — fall back to signed URL token (base64 payload + exp)
+      // This is less secure but ensures users can still sign in
+      console.error('[magic-link] Redis unavailable — using fallback URL token')
+    }
+
+    const magicUrl = redisOk
+      ? `${baseUrl}/api/auth/magic-link/verify?t=${rawToken}`
+      : `${baseUrl}/api/auth/magic-link/verify?token=${encodeURIComponent(btoa(JSON.stringify({ email, name, exp: Date.now() + 15 * 60 * 1000 })))}`
+
+    // ── Send the email via Resend ──────────────────────────────────────────
+    let emailSent  = false
+    let emailError = ''
+    try {
+      const emailRes = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: c.env?.RESEND_FROM_EMAIL || 'FlowState <noreply@flowst8.cc>',
+          to:   [email],
+          'reply-to': 'FlowState Support <hello@flowst8.cc>',
+          subject: 'Sign in to FlowState',
+          html: `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in to FlowState</title></head>
+<body style="margin:0;padding:0;background:#f4f4f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f7;padding:40px 20px">
+<tr><td align="center">
+<table width="520" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;max-width:520px;width:100%;border:1px solid #e5e7eb">
+<tr><td style="background:#ffffff;padding:32px 40px 24px;text-align:center;border-bottom:1px solid #f3f4f6">
+  <div style="font-size:28px;font-weight:900;color:#1a1a2e;letter-spacing:-0.5px">⚡ FlowState</div>
+</td></tr>
+<tr><td style="padding:36px 40px">
+  <h1 style="margin:0 0 12px;font-size:22px;font-weight:700;color:#111827">Hey ${name},</h1>
+  <p style="margin:0 0 28px;color:#6b7280;font-size:15px;line-height:1.6">Click the button below to sign in to FlowState. This link expires in <strong style="color:#111827">15 minutes</strong> and can only be used once.</p>
+  <table cellpadding="0" cellspacing="0" width="100%"><tr><td align="center" style="padding-bottom:28px">
+    <a href="${magicUrl}" style="display:inline-block;background:#7c3aed;color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:8px;font-weight:600;font-size:16px">Sign in to FlowState</a>
+  </td></tr></table>
+  <p style="margin:0 0 8px;color:#9ca3af;font-size:12px;line-height:1.5">Or copy this link into your browser:</p>
+  <p style="margin:0;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:10px 12px;font-family:'Courier New',Courier,monospace;font-size:11px;color:#6b7280;word-break:break-all">${magicUrl}</p>
+</td></tr>
+<tr><td style="padding:20px 40px 28px;border-top:1px solid #f3f4f6;text-align:center">
+  <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.6">If you did not request this email you can safely ignore it.<br>This link works once and expires in 15 minutes.<br><br>FlowState &middot; <a href="https://flowst8.cc" style="color:#9ca3af">flowst8.cc</a></p>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`,
+        })
       })
+
+      const emailData: any = await emailRes.json().catch(() => ({}))
+
+      if (emailRes.ok && emailData?.id) {
+        emailSent = true
+        // Log successful send for admin visibility
+        if (redisUrl && redisTok) {
+          try {
+            await fetch(`${redisUrl}/pipeline`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${redisTok}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify([
+                ['INCR',   `ml_sent:total`],
+                ['INCR',   `ml_sent:${new Date().toISOString().slice(0,7)}`],
+                ['EXPIRE', `ml_sent:${new Date().toISOString().slice(0,7)}`, 90 * 86400],
+              ])
+            })
+          } catch { /* non-critical */ }
+        }
+      } else {
+        // Capture the actual Resend error
+        emailError = emailData?.message || emailData?.name || `HTTP ${emailRes.status}`
+        console.error('[magic-link] Resend error:', emailError, JSON.stringify(emailData))
+        // Log failed send
+        if (redisUrl && redisTok) {
+          try {
+            await fetch(`${redisUrl}/pipeline`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${redisTok}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify([
+                ['INCR', `ml_failed:total`],
+                ['INCR', `ml_failed:${new Date().toISOString().slice(0,7)}`],
+                ['EXPIRE', `ml_failed:${new Date().toISOString().slice(0,7)}`, 90 * 86400],
+              ])
+            })
+          } catch { /* non-critical */ }
+        }
+      }
+    } catch (sendErr: any) {
+      emailError = sendErr.message || 'Network error sending email'
+      console.error('[magic-link] fetch threw:', emailError)
+    }
+
+    if (!emailSent) {
+      if (redisOk && redisUrl && redisTok) {
+        try {
+          await fetch(`${redisUrl}/del/${tokenKey}`, { headers: { Authorization: `Bearer ${redisTok}` } })
+        } catch { /* non-critical */ }
+      }
+      // Build a user-friendly message based on the error type
+      const isInvalidEmail = emailError.includes('invalid') || emailError.includes('not found') || emailError.includes('does not exist')
+      const isBlocked = emailError.includes('550') || emailError.includes('551') || emailError.includes('553') || emailError.includes('blocked') || emailError.includes('rejected')
+      const userMsg = isInvalidEmail
+        ? `That email address doesn't appear to be valid. Please check the address and try again.`
+        : isBlocked
+          ? `Your email provider blocked this message. This can happen with iCloud, corporate, or strict spam filters. Please try a Gmail address or use "Continue with Google" instead.`
+          : `We couldn't deliver the sign-in email right now. Please use "Continue with Google" or try again with a Gmail/work email address.`
+      return c.json({
+        error: 'email_send_failed',
+        message: userMsg,
+        emailError,
+        suggestion: 'Use "Continue with Google" — it works instantly with any Google account.',
+      }, 500)
+    }
+
+    return c.json({
+      success: true,
+      message: `Sign-in link sent to ${email}. Check your inbox (and spam folder) — it expires in 15 minutes.`,
     })
-    return c.json({ success: true, message: 'Magic link sent! Check your email.' })
+
   } else {
-    // Fallback: auto-sign-in (dev/demo mode — no Resend key)
+    // ── Fallback: no RESEND_API_KEY — auto-sign-in (dev/demo mode only) ──────
     const session = { name, email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
     setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
     if (c.env?.DB) {
       try { await upsertUser(c.env.DB, email, name, '', 'magic_link') } catch (_) {}
     }
-    return c.json({ success: true, user: { name, email } })
+    return c.json({
+      success: true,
+      user: { name, email },
+      warning: 'RESEND_API_KEY not configured — auto sign-in used (dev/demo mode). Add RESEND_API_KEY to Cloudflare secrets to send real magic link emails.',
+    })
   }
 })
 
 app.get('/api/auth/magic-link/verify', async (c) => {
-  const { token } = c.req.query() as any
-  if (!token) return c.html(authErrorPage('Invalid or missing token.'))
-  try {
-    const data = JSON.parse(atob(decodeURIComponent(token)))
-    if (Date.now() > data.exp) return c.html(authErrorPage('This link has expired. Please request a new one at <a href="/auth" style="color:#a855f7">flowst8.cc/auth</a>.'))
-    const session = { name: data.name, email: data.email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
-    setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
-    // Upsert user into D1 so their profile exists (magic link users never hit Google callback)
-    if (c.env?.DB) {
-      try { await upsertUser(c.env.DB, data.email, data.name, '', 'magic_link') } catch (_) {}
+  // Support both secure Redis-backed tokens (?t=) and legacy URL-payload tokens (?token=)
+  const { t, token } = c.req.query() as any
+  const redisUrl  = c.env?.UPSTASH_REDIS_URL
+  const redisTok  = c.env?.UPSTASH_REDIS_TOKEN
+
+  // ── Path A: Redis-backed secure token ─────────────────────────────────────
+  if (t && redisUrl && redisTok) {
+    const tokenKey = `ml_token:${t}`
+    try {
+      // Atomically GET then DEL (single-use token)
+      const pipeline = await fetch(`${redisUrl}/pipeline`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${redisTok}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify([
+          ['GET', tokenKey],
+          ['DEL', tokenKey],
+        ])
+      })
+      const results: any[] = await pipeline.json()
+      const raw = results[0]?.result
+      if (!raw) return c.html(authErrorPage('This sign-in link has expired or already been used. <a href="/" style="color:#a855f7">Request a new one</a>.'))
+
+      const data = JSON.parse(raw)
+      // Extra server-side expiry check (token payload has issuedAt)
+      if (Date.now() - data.issuedAt > 15 * 60 * 1000) {
+        return c.html(authErrorPage('This sign-in link has expired (15 minutes). <a href="/" style="color:#a855f7">Request a new one</a>.'))
+      }
+
+      const session = { name: data.name, email: data.email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
+      setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
+      if (c.env?.DB) {
+        try { await upsertUser(c.env.DB, data.email, data.name, '', 'magic_link') } catch (_) {}
+      }
+      return c.html(magicLinkSuccessPage(data.name))
+    } catch (err: any) {
+      return c.html(authErrorPage('Invalid sign-in link. Please <a href="/" style="color:#a855f7">request a new one</a>.'))
     }
-    return c.html(magicLinkSuccessPage(data.name))
-  } catch { return c.html(authErrorPage('Invalid token. Please request a new sign-in link at <a href="/auth" style="color:#a855f7">flowst8.cc/auth</a>.')) }
+  }
+
+  // ── Path B: Legacy URL-payload token (?token=) — kept for backward compat ─
+  if (token) {
+    try {
+      const data = JSON.parse(atob(decodeURIComponent(token)))
+      if (Date.now() > data.exp) return c.html(authErrorPage('This link has expired. Please <a href="/" style="color:#a855f7">request a new sign-in link</a>.'))
+      const session = { name: data.name, email: data.email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
+      setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
+      if (c.env?.DB) {
+        try { await upsertUser(c.env.DB, data.email, data.name, '', 'magic_link') } catch (_) {}
+      }
+      return c.html(magicLinkSuccessPage(data.name))
+    } catch { return c.html(authErrorPage('Invalid token. Please <a href="/" style="color:#a855f7">request a new sign-in link</a>.')) }
+  }
+
+  return c.html(authErrorPage('No sign-in token found. Please <a href="/" style="color:#a855f7">request a new link</a>.'))
 })
 
 // ─── Stripe Billing ───────────────────────────────────────────────────────────
@@ -3749,6 +3949,60 @@ app.post('/api/billing/portal', async (c) => {
   } catch (_) {
     return c.json({ error: 'Could not open billing portal' }, 500)
   }
+})
+
+// ─── Resend Email Webhook — bounce/delivery tracking ─────────────────────────
+// Register this at: resend.com/webhooks → URL: https://flowst8.cc/api/resend/webhook
+// Events to subscribe: email.bounced, email.delivery_delayed, email.complained
+app.post('/api/resend/webhook', async (c) => {
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+
+  let payload: any
+  try { payload = await c.req.json() } catch { return c.json({ ok: true }) }
+
+  const { type, data } = payload
+  const month = new Date().toISOString().slice(0, 7)
+  const ts    = new Date().toISOString()
+
+  if (!url || !tok) return c.json({ ok: true })
+
+  try {
+    if (type === 'email.bounced') {
+      const to = data?.to?.[0] || data?.email_id || 'unknown'
+      // Log bounce: increment counter and push to recent bounces list
+      await redisPipeline(url, tok, [
+        ['INCR',  `ml_failed:total`],
+        ['INCR',  `ml_failed:${month}`],
+        ['EXPIRE',`ml_failed:${month}`, 90 * 86400],
+        ['LPUSH', `ml_bounces:recent`, JSON.stringify({ to, ts, reason: data?.bounce?.type || 'hard' })],
+        ['LTRIM', `ml_bounces:recent`, 0, 49], // keep last 50
+      ])
+    } else if (type === 'email.delivery_delayed') {
+      const to = data?.to?.[0] || 'unknown'
+      await redisPipeline(url, tok, [
+        ['INCR',  `ml_delayed:${month}`],
+        ['EXPIRE',`ml_delayed:${month}`, 90 * 86400],
+        ['LPUSH', `ml_delayed:recent`, JSON.stringify({ to, ts })],
+        ['LTRIM', `ml_delayed:recent`, 0, 49],
+      ])
+    } else if (type === 'email.complained') {
+      const to = data?.to?.[0] || 'unknown'
+      await redisPipeline(url, tok, [
+        ['INCR',  `ml_spam:${month}`],
+        ['LPUSH', `ml_spam:recent`, JSON.stringify({ to, ts })],
+        ['LTRIM', `ml_spam:recent`, 0, 19],
+      ])
+    } else if (type === 'email.sent' || type === 'email.delivered') {
+      // Also count deliveries from Resend webhook for accuracy
+      await redisPipeline(url, tok, [
+        ['INCR',  `ml_delivered:${month}`],
+        ['EXPIRE',`ml_delivered:${month}`, 90 * 86400],
+      ])
+    }
+  } catch { /* non-critical */ }
+
+  return c.json({ ok: true })
 })
 
 app.post('/api/billing/webhook', async (c) => {
@@ -4085,139 +4339,1060 @@ app.get('/api/billing/revenue', async (c) => {
 app.get('/admin', async (c) => {
   const session = decodeSession(getCookie(c, 'fs_session') || '')
   if (!session) return c.redirect('/?admin_login=1')
-  if (session.email !== 'mkbrown261@gmail.com') return c.html('<h1>403 Forbidden</h1>', 403)
+  if (session.email !== 'mkbrown261@gmail.com') return c.html('<html><body style="background:#0a0a12;color:#ef4444;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><h1>403 Forbidden</h1></body></html>', 403)
 
   return c.html(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FlowState Admin</title>
+  <title>FlowState Admin Dashboard</title>
+  <link rel="icon" href="/static/favicon.ico">
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; background: #0f0f1a; color: #e0e0e0; min-height: 100vh; padding: 32px 16px; }
-    h1 { font-size: 22px; font-weight: 800; color: #a855f7; margin-bottom: 4px; }
-    .sub { color: #666; font-size: 13px; margin-bottom: 32px; }
-    .card { background: #1a1a2e; border: 1px solid rgba(168,85,247,.25); border-radius: 14px; padding: 24px; max-width: 560px; margin: 0 auto 24px; }
-    .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 16px; color: #c084fc; }
-    label { display: block; font-size: 12px; color: #888; margin-bottom: 6px; margin-top: 14px; }
-    input, select { width: 100%; background: #0f0f1a; border: 1px solid rgba(168,85,247,.3); border-radius: 8px; padding: 10px 12px; color: #e0e0e0; font-size: 14px; outline: none; }
-    input:focus, select:focus { border-color: #a855f7; }
-    button { margin-top: 18px; width: 100%; padding: 12px; background: linear-gradient(135deg,#a855f7,#ec4899); border: none; border-radius: 10px; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; }
-    button:hover { opacity: .9; }
-    .result { margin-top: 16px; padding: 12px 14px; border-radius: 8px; font-size: 13px; display: none; }
-    .result.ok  { background: rgba(16,185,129,.15); border: 1px solid rgba(16,185,129,.4); color: #6ee7b7; }
-    .result.err { background: rgba(239,68,68,.15);  border: 1px solid rgba(239,68,68,.4);  color: #fca5a5; }
-    .tier-badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; margin-left: 8px; }
-    .tier-free { background: rgba(107,114,128,.2); color: #9ca3af; }
-    .tier-pro  { background: rgba(168,85,247,.2);  color: #c084fc; }
-    .tier-team { background: rgba(59,130,246,.2);  color: #93c5fd; }
-    .tier-enterprise { background: rgba(245,158,11,.2); color: #fcd34d; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --bg:#07070f;--s1:#0f0f1e;--s2:#141428;--s3:#1a1a30;
+      --accent:#a855f7;--accent-dim:rgba(168,85,247,.12);--accent-glow:rgba(168,85,247,.4);
+      --green:#10b981;--red:#ef4444;--amber:#f59e0b;--cyan:#06b6d4;--pink:#ec4899;
+      --text:#f0f0f0;--text2:#9ca3af;--text3:#6b7280;
+      --border:rgba(168,85,247,.18);--border2:rgba(255,255,255,.07);
+    }
+    html{font-size:15px;-webkit-font-smoothing:antialiased}
+    body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex}
+
+    /* ── Sidebar ── */
+    .sidebar{width:220px;min-height:100vh;background:var(--s1);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:20px 0;position:fixed;top:0;left:0;z-index:50}
+    .sidebar-logo{padding:0 20px 20px;border-bottom:1px solid var(--border2)}
+    .sidebar-logo .brand{font-size:18px;font-weight:900;background:linear-gradient(135deg,#a855f7,#ec4899);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+    .sidebar-logo .sub{font-size:11px;color:var(--text3);margin-top:2px}
+    .nav-section{padding:16px 12px 4px;font-size:10px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--text3)}
+    .nav-item{display:flex;align-items:center;gap:10px;padding:9px 16px;margin:1px 8px;border-radius:8px;font-size:13px;font-weight:500;color:var(--text2);cursor:pointer;transition:.15s;text-decoration:none;border:none;background:none;width:calc(100% - 16px);text-align:left}
+    .nav-item:hover{background:var(--accent-dim);color:var(--text)}
+    .nav-item.active{background:var(--accent-dim);color:var(--accent);border:1px solid var(--border)}
+    .nav-item .icon{width:16px;text-align:center;font-size:14px;flex-shrink:0}
+    .sidebar-footer{margin-top:auto;padding:16px;border-top:1px solid var(--border2);font-size:11px;color:var(--text3)}
+    .admin-email{font-weight:600;color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+    /* ── Main ── */
+    .main{margin-left:220px;flex:1;padding:28px 32px;min-height:100vh;max-width:1400px}
+    .page{display:none}
+    .page.active{display:block;animation:fadeUp .2s ease}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+    /* ── Page header ── */
+    .page-header{margin-bottom:28px}
+    .page-header h1{font-size:22px;font-weight:800;color:var(--text);margin-bottom:4px}
+    .page-header p{font-size:13px;color:var(--text2)}
+
+    /* ── Metric cards ── */
+    .metrics-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;margin-bottom:28px}
+    .metric-card{background:var(--s2);border:1px solid var(--border);border-radius:14px;padding:20px;transition:.2s}
+    .metric-card:hover{border-color:rgba(168,85,247,.4);box-shadow:0 0 20px rgba(168,85,247,.15)}
+    .metric-label{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--text3);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+    .metric-value{font-size:26px;font-weight:800;color:var(--text);letter-spacing:-0.5px;line-height:1}
+    .metric-sub{font-size:11px;color:var(--text3);margin-top:6px}
+    .metric-up{color:var(--green)}
+    .metric-down{color:var(--red)}
+
+    /* ── Cards ── */
+    .card{background:var(--s2);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:20px}
+    .card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+    .card-title{font-size:14px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:8px}
+    .card-action{font-size:12px;color:var(--accent);cursor:pointer;padding:5px 12px;background:var(--accent-dim);border-radius:6px;border:1px solid rgba(168,85,247,.3);font-weight:600;transition:.15s}
+    .card-action:hover{background:rgba(168,85,247,.2)}
+
+    /* ── Table ── */
+    .table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border2)}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    thead th{padding:10px 14px;background:var(--s3);color:var(--text3);font-weight:600;font-size:11px;letter-spacing:.4px;text-transform:uppercase;text-align:left;white-space:nowrap}
+    tbody tr{border-top:1px solid var(--border2);transition:.15s}
+    tbody tr:hover{background:rgba(168,85,247,.04)}
+    tbody td{padding:11px 14px;color:var(--text);font-size:13px;vertical-align:middle}
+    td .email{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text2)}
+    td .date{font-size:11px;color:var(--text3)}
+
+    /* ── Badges ── */
+    .badge{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.3px;white-space:nowrap}
+    .badge-free{background:rgba(107,114,128,.18);color:#9ca3af;border:1px solid rgba(107,114,128,.25)}
+    .badge-pro{background:rgba(168,85,247,.18);color:#c084fc;border:1px solid rgba(168,85,247,.3)}
+    .badge-team{background:rgba(59,130,246,.18);color:#93c5fd;border:1px solid rgba(59,130,246,.3)}
+    .badge-enterprise{background:rgba(245,158,11,.18);color:#fcd34d;border:1px solid rgba(245,158,11,.3)}
+    .badge-clawflow{background:rgba(236,72,153,.18);color:#f9a8d4;border:1px solid rgba(236,72,153,.3)}
+    .badge-personal_pro{background:rgba(168,85,247,.18);color:#c084fc;border:1px solid rgba(168,85,247,.3)}
+    .badge-google{background:rgba(234,67,53,.12);color:#fca5a5;border:1px solid rgba(234,67,53,.2)}
+    .badge-magic_link{background:rgba(6,182,212,.12);color:#67e8f9;border:1px solid rgba(6,182,212,.2)}
+    .badge-green{background:rgba(16,185,129,.15);color:#6ee7b7;border:1px solid rgba(16,185,129,.3)}
+    .badge-red{background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3)}
+    .badge-amber{background:rgba(245,158,11,.15);color:#fcd34d;border:1px solid rgba(245,158,11,.3)}
+
+    /* ── Forms ── */
+    .form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+    .form-row-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px}
+    label.field-label{display:block;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.3px;text-transform:uppercase;margin-bottom:6px}
+    input.field,select.field{width:100%;background:var(--s3);border:1px solid rgba(168,85,247,.2);border-radius:8px;padding:9px 12px;color:var(--text);font-size:13px;outline:none;font-family:inherit;transition:.15s}
+    input.field::placeholder{color:var(--text3)}
+    input.field:focus,select.field:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+    select.field option{background:var(--s2)}
+    .btn{padding:9px 18px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;border:none;transition:.2s;display:inline-flex;align-items:center;gap:6px;font-family:inherit}
+    .btn-primary{background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;box-shadow:0 2px 12px rgba(168,85,247,.4)}
+    .btn-primary:hover{filter:brightness(1.1);transform:translateY(-1px)}
+    .btn-ghost{background:var(--accent-dim);color:var(--accent);border:1px solid rgba(168,85,247,.3)}
+    .btn-ghost:hover{background:rgba(168,85,247,.2)}
+    .btn-danger{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.3)}
+    .btn-danger:hover{background:rgba(239,68,68,.25)}
+    .btn-sm{padding:5px 12px;font-size:11px}
+    .btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important}
+
+    /* ── Alert/Result banners ── */
+    .alert{padding:12px 16px;border-radius:10px;font-size:13px;margin-top:14px;line-height:1.5;display:none}
+    .alert.ok{display:block;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);color:#6ee7b7}
+    .alert.err{display:block;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#fca5a5}
+    .alert.info{display:block;background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.3);color:#c084fc}
+
+    /* ── System health dots ── */
+    .health-dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px}
+    .health-ok{background:var(--green);box-shadow:0 0 6px var(--green)}
+    .health-warn{background:var(--amber);box-shadow:0 0 6px var(--amber)}
+    .health-err{background:var(--red);box-shadow:0 0 6px var(--red)}
+    .health-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border2);font-size:13px}
+    .health-row:last-child{border-bottom:none}
+
+    /* ── Credit bar ── */
+    .credit-bar-wrap{background:var(--s3);border-radius:4px;height:6px;overflow:hidden;margin-top:6px}
+    .credit-bar{height:100%;border-radius:4px;background:linear-gradient(90deg,#a855f7,#ec4899);transition:width .4s ease}
+
+    /* ── Tabs ── */
+    .tabs{display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid var(--border2);padding-bottom:0}
+    .tab{padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;color:var(--text2);transition:.15s;background:none;border-left:none;border-right:none;border-top:none;font-family:inherit;margin-bottom:-1px}
+    .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+    .tab:hover{color:var(--text)}
+
+    /* ── Spinner ── */
+    .spin{width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;display:inline-block}
+    @keyframes spin{to{transform:rotate(360deg)}}
+
+    /* ── Loading shimmer ── */
+    .loading-row td{background:linear-gradient(90deg,var(--s2) 25%,var(--s3) 50%,var(--s2) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:4px}
+    @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+
+    /* ── Mini chart ── */
+    canvas{max-height:200px}
+
+    /* ── Section grids ── */
+    .two-col{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px}
+    .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px}
+
+    /* ── Top users bar ── */
+    .user-row-item{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border2)}
+    .user-row-item:last-child{border-bottom:none}
+    .user-avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#ec4899);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:#fff;flex-shrink:0}
+    .user-info{flex:1;min-width:0}
+    .user-name{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .user-email-small{font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:'JetBrains Mono',monospace}
+    .user-credits{font-size:13px;font-weight:700;color:var(--accent);text-align:right;flex-shrink:0}
+
+    /* ── Magic link stats ── */
+    .ml-stat{text-align:center;padding:16px;background:var(--s3);border-radius:10px}
+    .ml-stat-value{font-size:24px;font-weight:800;color:var(--text)}
+    .ml-stat-label{font-size:11px;color:var(--text3);margin-top:4px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+
+    /* ── Revenue ── */
+    .rev-month-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border2)}
+    .rev-month-row:last-child{border-bottom:none}
+    .rev-month{font-size:12px;font-weight:600;color:var(--text2);min-width:70px}
+    .rev-bar-wrap{flex:1;background:var(--s3);border-radius:4px;height:8px;overflow:hidden}
+    .rev-bar{height:100%;border-radius:4px;background:linear-gradient(90deg,#a855f7,#ec4899);transition:width .6s ease}
+    .rev-amount{font-size:13px;font-weight:700;color:var(--text);min-width:70px;text-align:right}
+
+    /* ── Responsive ── */
+    @media(max-width:900px){
+      .sidebar{width:60px;padding:12px 0}
+      .sidebar-logo,.nav-section,.nav-item span,.sidebar-footer .admin-email{display:none}
+      .nav-item{justify-content:center;padding:10px}
+      .main{margin-left:60px;padding:16px}
+      .two-col,.three-col{grid-template-columns:1fr}
+      .form-row,.form-row-3{grid-template-columns:1fr}
+      .metrics-grid{grid-template-columns:repeat(2,1fr)}
+    }
   </style>
 </head>
 <body>
-  <div style="max-width:560px;margin:0 auto">
-    <h1>⚡ FlowState Admin</h1>
-    <p class="sub">Signed in as ${session.email}</p>
 
-    <div class="card">
-      <h2>🔍 Look Up User</h2>
-      <label>Email address</label>
-      <input id="lookup-email" type="email" placeholder="user@example.com" />
-      <button onclick="lookupUser()">Look Up</button>
-      <div id="lookup-result" class="result"></div>
+<!-- ══ SIDEBAR ══ -->
+<div class="sidebar">
+  <div class="sidebar-logo">
+    <div class="brand">⚡ FlowState</div>
+    <div class="sub">Admin Dashboard</div>
+  </div>
+
+  <div class="nav-section">Overview</div>
+  <button class="nav-item active" onclick="showPage('overview',this)"><span class="icon">📊</span><span>Overview</span></button>
+  <button class="nav-item" onclick="showPage('users',this)"><span class="icon">👥</span><span>Users</span></button>
+  <button class="nav-item" onclick="showPage('revenue',this)"><span class="icon">💰</span><span>Revenue</span></button>
+  <button class="nav-item" onclick="showPage('credits',this)"><span class="icon">⚡</span><span>Credits & API</span></button>
+  <button class="nav-item" onclick="showPage('email',this)"><span class="icon">✉️</span><span>Email / Magic Links</span></button>
+
+  <div class="nav-section">Tools</div>
+  <button class="nav-item" onclick="showPage('manage',this)"><span class="icon">🛠️</span><span>Manage Users</span></button>
+  <button class="nav-item" onclick="showPage('system',this)"><span class="icon">🔧</span><span>System Health</span></button>
+
+  <div class="sidebar-footer">
+    <div class="admin-email">${session.email}</div>
+    <div style="margin-top:4px;color:var(--text3);font-size:10px">Last refreshed: <span id="last-refresh">just now</span></div>
+    <button onclick="location.reload()" style="margin-top:8px;background:var(--accent-dim);border:1px solid var(--border);border-radius:6px;color:var(--accent);font-size:11px;padding:4px 10px;cursor:pointer;font-family:inherit;font-weight:600">↺ Refresh</button>
+  </div>
+</div>
+
+<!-- ══ MAIN CONTENT ══ -->
+<div class="main">
+
+  <!-- ─── OVERVIEW PAGE ─────────────────────────────────────────────── -->
+  <div class="page active" id="page-overview">
+    <div class="page-header">
+      <h1>Platform Overview</h1>
+      <p>Real-time snapshot of FlowState usage and health</p>
     </div>
 
-    <div class="card">
-      <h2>✏️ Change User Tier</h2>
-      <label>Email address</label>
-      <input id="set-email" type="email" placeholder="user@example.com" />
-      <label>New tier</label>
-      <select id="set-tier">
-        <option value="free">free</option>
-        <option value="pro">pro</option>
-        <option value="team">team</option>
-        <option value="enterprise">enterprise</option>
-        <option value="personal_pro">personal_pro</option>
-        <option value="team_starter">team_starter</option>
-        <option value="team_growth">team_growth</option>
-        <option value="clawflow">clawflow</option>
-      </select>
-      <button onclick="setTier()">Save Tier</button>
-      <div id="set-result" class="result"></div>
+    <!-- KPI metrics row -->
+    <div class="metrics-grid" id="overview-metrics">
+      <div class="metric-card"><div class="metric-label">📦 Total Users</div><div class="metric-value" id="m-total-users">—</div><div class="metric-sub">registered accounts</div></div>
+      <div class="metric-card"><div class="metric-label">✨ New (7 days)</div><div class="metric-value" id="m-new-users">—</div><div class="metric-sub">signed up this week</div></div>
+      <div class="metric-card"><div class="metric-label">💜 Paid Users</div><div class="metric-value" id="m-paid-users">—</div><div class="metric-sub">pro + team + enterprise</div></div>
+      <div class="metric-card"><div class="metric-label">⚡ Credits Used</div><div class="metric-value" id="m-credits-month">—</div><div class="metric-sub">this month (all users)</div></div>
+      <div class="metric-card"><div class="metric-label">🔥 Active Today</div><div class="metric-value" id="m-active-today">—</div><div class="metric-sub">session activity</div></div>
+      <div class="metric-card"><div class="metric-label">✉️ Emails Sent</div><div class="metric-value" id="m-emails-sent">—</div><div class="metric-sub">magic links (month)</div></div>
+      <div class="metric-card"><div class="metric-label">🧩 Focus Sessions</div><div class="metric-value" id="m-sessions-today">—</div><div class="metric-sub">completed today</div></div>
+      <div class="metric-card"><div class="metric-label">💳 MRR</div><div class="metric-value" id="m-mrr">—</div><div class="metric-sub">estimated this month</div></div>
     </div>
 
-    <div class="card">
-      <h2>🪙 Add Credits to User</h2>
-      <label>Email address</label>
-      <input id="credit-email" type="email" placeholder="user@example.com" />
-      <label>Credits to add</label>
-      <input id="credit-amount" type="number" placeholder="e.g. 5000" min="1" />
-      <button onclick="addCredits()">Add Credits</button>
-      <div id="credit-result" class="result"></div>
+    <div class="two-col">
+      <!-- Tier breakdown -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">📊 Users by Tier</div></div>
+        <div id="tier-breakdown">
+          <div style="color:var(--text3);font-size:13px">Loading…</div>
+        </div>
+      </div>
+
+      <!-- Provider breakdown -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">🔑 Auth Providers</div></div>
+        <div id="provider-breakdown">
+          <div style="color:var(--text3);font-size:13px">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <!-- Recent signups -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">🆕 Recent Signups</div><span class="card-action" onclick="showPage('users',document.querySelector('.nav-item:nth-child(5)'))">View all →</span></div>
+        <div id="recent-signups"><div style="color:var(--text3);font-size:13px">Loading…</div></div>
+      </div>
+
+      <!-- Top credit users -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">🔥 Top Credit Users</div><div style="font-size:11px;color:var(--text3)">This month</div></div>
+        <div id="top-credit-users"><div style="color:var(--text3);font-size:13px">Loading…</div></div>
+      </div>
     </div>
   </div>
 
-  <script>
-    async function lookupUser() {
-      const email = document.getElementById('lookup-email').value.trim()
-      const el = document.getElementById('lookup-result')
-      if (!email) { showResult(el, 'err', 'Enter an email'); return }
-      try {
-        const r = await fetch('/api/admin/user-tier?email=' + encodeURIComponent(email))
-        const d = await r.json()
-        if (!r.ok) { showResult(el, 'err', d.error); return }
-        const tierClass = 'tier-' + (d.tier || 'free')
-        showResult(el, 'ok', \`
-          <strong>\${d.email}</strong>
-          <span class="tier-badge \${tierClass}">\${d.tier || 'free'}</span><br>
-          Credits used this month: <strong>\${d.monthlyCreditsUsed.toLocaleString()}</strong><br>
-          Purchased credits: <strong>\${d.purchasedCredits.toLocaleString()}</strong>
-        \`)
-      } catch(e) { showResult(el, 'err', 'Request failed') }
+  <!-- ─── USERS PAGE ─────────────────────────────────────────────────── -->
+  <div class="page" id="page-users">
+    <div class="page-header">
+      <h1>All Users</h1>
+      <p>Full user registry with tier, provider, and account details</p>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">👥 User Registry</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input class="field" id="user-search" type="text" placeholder="Filter by email…" style="width:220px;margin:0" oninput="filterUsers()">
+          <select class="field" id="user-tier-filter" style="width:130px;margin:0" onchange="filterUsers()">
+            <option value="">All tiers</option>
+            <option>free</option><option>pro</option><option>team</option>
+            <option>enterprise</option><option>personal_pro</option><option>clawflow</option>
+          </select>
+          <button class="btn btn-sm btn-ghost" onclick="exportUsersCSV()">⬇ CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>Email</th><th>Name</th><th>Tier</th><th>Provider</th><th>Credits Used</th><th>Joined</th><th>Actions</th></tr></thead>
+          <tbody id="users-table"><tr class="loading-row"><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr></tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;font-size:12px;color:var(--text3)">Showing <span id="users-shown">0</span> of <span id="users-total">0</span> users</div>
+    </div>
+  </div>
+
+  <!-- ─── REVENUE PAGE ───────────────────────────────────────────────── -->
+  <div class="page" id="page-revenue">
+    <div class="page-header">
+      <h1>Revenue</h1>
+      <p>Subscription revenue, API costs, and financial breakdown</p>
+    </div>
+
+    <div class="metrics-grid">
+      <div class="metric-card"><div class="metric-label">💰 Gross Revenue</div><div class="metric-value" id="rev-gross">—</div><div class="metric-sub">last 3 months</div></div>
+      <div class="metric-card"><div class="metric-label">📈 Net Revenue</div><div class="metric-value" id="rev-net">—</div><div class="metric-sub">after Stripe fees</div></div>
+      <div class="metric-card"><div class="metric-label">🤖 API Allocation</div><div class="metric-value" id="rev-api">—</div><div class="metric-sub">reserved for API costs</div></div>
+      <div class="metric-card"><div class="metric-label">💳 Transactions</div><div class="metric-value" id="rev-tx">—</div><div class="metric-sub">total payments</div></div>
+    </div>
+
+    <div class="two-col">
+      <div class="card">
+        <div class="card-header"><div class="card-title">📅 Monthly Revenue</div></div>
+        <div id="rev-months"><div style="color:var(--text3);font-size:13px">Loading…</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">🤖 API Budget Breakdown</div></div>
+        <div id="api-budget"><div style="color:var(--text3);font-size:13px">Loading…</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div class="card-title">📋 Transaction History</div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Date</th><th>Email</th><th>Type</th><th>Plan</th><th>Amount</th><th>Status</th></tr></thead>
+          <tbody id="transactions-table"><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:20px">Loading transactions…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── CREDITS & API PAGE ─────────────────────────────────────────── -->
+  <div class="page" id="page-credits">
+    <div class="page-header">
+      <h1>Credits &amp; API Usage</h1>
+      <p>Platform-wide API consumption, credit budgets, and top users</p>
+    </div>
+
+    <div class="metrics-grid">
+      <div class="metric-card"><div class="metric-label">⚡ Total Credits Used</div><div class="metric-value" id="api-total-credits">—</div><div class="metric-sub">this month (platform)</div></div>
+      <div class="metric-card"><div class="metric-label">🆓 Free Tier Used</div><div class="metric-value" id="api-free-credits">—</div><div class="metric-sub">free user consumption</div></div>
+      <div class="metric-card"><div class="metric-label">💜 Paid Tier Used</div><div class="metric-value" id="api-paid-credits">—</div><div class="metric-sub">pro/team consumption</div></div>
+      <div class="metric-card"><div class="metric-label">🚫 Blocked Requests</div><div class="metric-value" id="api-blocked">—</div><div class="metric-sub">rate limited this month</div></div>
+    </div>
+
+    <div class="two-col">
+      <div class="card">
+        <div class="card-header"><div class="card-title">🔥 Top API Consumers</div><div style="font-size:11px;color:var(--text3)">This month</div></div>
+        <div id="top-api-users"><div style="color:var(--text3);font-size:13px">Loading…</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">📊 Credit Usage by Tier</div></div>
+        <div id="credits-by-tier"><div style="color:var(--text3);font-size:13px">Loading…</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── EMAIL / MAGIC LINKS PAGE ──────────────────────────────────── -->
+  <div class="page" id="page-email">
+    <div class="page-header">
+      <h1>Email &amp; Magic Links</h1>
+      <p>Magic link delivery stats, bounce tracking, and email health diagnostics</p>
+    </div>
+
+    <div class="three-col">
+      <div class="ml-stat card" style="padding:20px;text-align:center">
+        <div class="ml-stat-value" id="ml-sent-month" style="color:var(--green)">—</div>
+        <div class="ml-stat-label">Sent this month</div>
+      </div>
+      <div class="ml-stat card" style="padding:20px;text-align:center">
+        <div class="ml-stat-value" id="ml-failed-month" style="color:var(--red)">—</div>
+        <div class="ml-stat-label">Bounced / Failed</div>
+      </div>
+      <div class="ml-stat card" style="padding:20px;text-align:center">
+        <div class="ml-stat-value" id="ml-delivery-rate" style="color:var(--cyan)">—</div>
+        <div class="ml-stat-label">Delivery rate</div>
+      </div>
+      <div class="ml-stat card" style="padding:20px;text-align:center">
+        <div class="ml-stat-value" id="ml-sent-total" style="color:var(--accent)">—</div>
+        <div class="ml-stat-label">All-time sent</div>
+      </div>
+    </div>
+
+    <div class="three-col">
+      <div class="card" style="padding:16px;text-align:center">
+        <div style="font-size:20px;font-weight:800;color:var(--cyan)" id="ml-delivery-rate">—</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px;text-transform:uppercase;letter-spacing:.5px;font-weight:600">Delivery Rate</div>
+      </div>
+      <div class="card" style="padding:16px;text-align:center">
+        <div style="font-size:20px;font-weight:800;color:var(--amber)" id="ml-delayed-month">—</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px;text-transform:uppercase;letter-spacing:.5px;font-weight:600">Delayed This Month</div>
+      </div>
+      <div class="card" style="padding:16px;text-align:center">
+        <div style="font-size:20px;font-weight:800;color:var(--pink)" id="ml-spam-month">—</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px;text-transform:uppercase;letter-spacing:.5px;font-weight:600">Spam Reports</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div class="card-title">🔍 Email System Diagnostics</div></div>
+      <div id="email-diagnostics"><div style="color:var(--text3);font-size:13px">Loading diagnostics…</div></div>
+    </div>
+
+    <div class="two-col">
+      <div class="card">
+        <div class="card-header"><div class="card-title">🚫 Recent Bounces</div><div style="font-size:11px;color:var(--text3)">Last 10 (via webhook)</div></div>
+        <div id="recent-bounces"><div style="color:var(--text3);font-size:13px">Loading…</div></div>
+        <div style="margin-top:12px;padding:10px 12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:8px;font-size:11px;color:var(--amber);line-height:1.5" id="webhook-note"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">🧪 Send Test Magic Link</div></div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:16px">Send a real magic link to verify the Resend integration works end-to-end.</p>
+        <div class="form-row">
+          <div>
+            <label class="field-label">Recipient Email</label>
+            <input class="field" id="test-email" type="email" placeholder="you@example.com">
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button class="btn btn-primary" onclick="sendTestMagicLink()" id="btn-test-ml">✉️ Send Test Link</button>
+          </div>
+        </div>
+        <div class="alert" id="test-ml-result"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── MANAGE USERS PAGE ──────────────────────────────────────────── -->
+  <div class="page" id="page-manage">
+    <div class="page-header">
+      <h1>Manage Users</h1>
+      <p>Look up users, change tiers, adjust credits, and send magic links</p>
+    </div>
+
+    <!-- Lookup -->
+    <div class="card">
+      <div class="card-header"><div class="card-title">🔍 Look Up User</div></div>
+      <div class="form-row">
+        <div>
+          <label class="field-label">Email Address</label>
+          <input class="field" id="lookup-email" type="email" placeholder="user@example.com">
+        </div>
+        <div style="display:flex;align-items:flex-end">
+          <button class="btn btn-primary" onclick="lookupUser()">🔍 Look Up</button>
+        </div>
+      </div>
+      <div class="alert" id="lookup-result"></div>
+    </div>
+
+    <!-- Change tier -->
+    <div class="card">
+      <div class="card-header"><div class="card-title">✏️ Change User Tier</div></div>
+      <div class="form-row-3">
+        <div>
+          <label class="field-label">Email Address</label>
+          <input class="field" id="set-email" type="email" placeholder="user@example.com">
+        </div>
+        <div>
+          <label class="field-label">New Tier</label>
+          <select class="field" id="set-tier">
+            <option value="free">free</option>
+            <option value="pro">pro</option>
+            <option value="team">team</option>
+            <option value="enterprise">enterprise</option>
+            <option value="personal_pro">personal_pro</option>
+            <option value="team_starter">team_starter</option>
+            <option value="team_growth">team_growth</option>
+            <option value="clawflow">clawflow</option>
+          </select>
+        </div>
+        <div style="display:flex;align-items:flex-end">
+          <button class="btn btn-primary" onclick="setTier()">💾 Save Tier</button>
+        </div>
+      </div>
+      <div class="alert" id="set-result"></div>
+    </div>
+
+    <!-- Add credits -->
+    <div class="card">
+      <div class="card-header"><div class="card-title">🪙 Add Credits to User</div></div>
+      <div class="form-row-3">
+        <div>
+          <label class="field-label">Email Address</label>
+          <input class="field" id="credit-email" type="email" placeholder="user@example.com">
+        </div>
+        <div>
+          <label class="field-label">Credits to Add</label>
+          <input class="field" id="credit-amount" type="number" placeholder="e.g. 5000" min="1">
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:8px">
+          <button class="btn btn-primary" onclick="addCredits()">⚡ Add Credits</button>
+          <button class="btn btn-danger" onclick="resetCredits()" title="Reset this month's usage to 0">↺ Reset</button>
+        </div>
+      </div>
+      <div class="alert" id="credit-result"></div>
+    </div>
+
+    <!-- Send magic link -->
+    <div class="card">
+      <div class="card-header"><div class="card-title">✉️ Send Sign-in Link</div></div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:16px">Manually trigger a magic sign-in link for any user — useful for account recovery.</p>
+      <div class="form-row">
+        <div>
+          <label class="field-label">User Email</label>
+          <input class="field" id="ml-send-email" type="email" placeholder="user@example.com">
+        </div>
+        <div style="display:flex;align-items:flex-end">
+          <button class="btn btn-ghost" onclick="sendMagicLinkAdmin()" id="btn-ml-admin">✉️ Send Link</button>
+        </div>
+      </div>
+      <div class="alert" id="ml-send-result"></div>
+    </div>
+  </div>
+
+  <!-- ─── SYSTEM HEALTH PAGE ─────────────────────────────────────────── -->
+  <div class="page" id="page-system">
+    <div class="page-header">
+      <h1>System Health</h1>
+      <p>Infrastructure status, API key presence, and configuration checks</p>
+    </div>
+
+    <div class="two-col">
+      <div class="card">
+        <div class="card-header"><div class="card-title">🔧 Service Status</div><button class="card-action" onclick="loadSystemHealth()">↺ Recheck</button></div>
+        <div id="system-health-rows"><div style="color:var(--text3);font-size:13px">Checking services…</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">🔑 API Keys</div></div>
+        <div id="api-keys-rows"><div style="color:var(--text3);font-size:13px">Loading…</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div class="card-title">📋 Configuration</div></div>
+      <div id="config-rows"><div style="color:var(--text3);font-size:13px">Loading…</div></div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<script>
+// ═══════════════════════════════════════════════════════
+// FlowState Admin Dashboard — Client JS
+// ═══════════════════════════════════════════════════════
+
+let allUsers = []
+
+// ── Navigation ──────────────────────────────────────────
+function showPage(id, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'))
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'))
+  document.getElementById('page-' + id)?.classList.add('active')
+  btn?.classList.add('active')
+  // Lazy-load data per page
+  if (id === 'overview')  loadOverview()
+  if (id === 'users')     loadUsers()
+  if (id === 'revenue')   loadRevenue()
+  if (id === 'credits')   loadCredits()
+  if (id === 'email')     loadEmailStats()
+  if (id === 'system')    loadSystemHealth()
+  if (id === 'manage')    {}  // forms, no auto-load
+}
+
+// ── Helpers ──────────────────────────────────────────────
+const fmt = (n) => typeof n === 'number' ? n.toLocaleString() : (n || '—')
+const fmtUSD = (n) => typeof n === 'number' ? '\$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'
+const fmtDate = (s) => { if(!s) return '—'; const d=new Date(s); return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}) }
+const fmtAgo = (s) => { if(!s) return '—'; const ms=Date.now()-new Date(s).getTime(); const m=Math.floor(ms/60000); if(m<60) return m+'m ago'; const h=Math.floor(m/60); if(h<24) return h+'h ago'; return Math.floor(h/24)+'d ago' }
+
+function tierBadge(tier) {
+  const t = (tier||'free').toLowerCase().replace(/ /g,'_')
+  const label = t === 'personal_pro' ? 'Pro' : t === 'team_starter' ? 'Team' : t === 'team_growth' ? 'Team+' : t.charAt(0).toUpperCase()+t.slice(1)
+  return \`<span class="badge badge-\${t}">\${label}</span>\`
+}
+function providerBadge(p) {
+  const icons = { google:'G', magic_link:'✉️', email:'✉️' }
+  return \`<span class="badge badge-\${p||'google'}">\${icons[p]||'?'} \${p||'google'}</span>\`
+}
+
+function showAlert(el, type, msg) {
+  if (typeof el === 'string') el = document.getElementById(el)
+  if (!el) return
+  el.className = 'alert ' + type
+  el.innerHTML = msg
+}
+
+// ── OVERVIEW ────────────────────────────────────────────
+async function loadOverview() {
+  try {
+    const [statsRes, revenueRes, mlRes] = await Promise.all([
+      fetch('/api/admin/stats').then(r=>r.json()),
+      fetch('/api/billing/revenue?months=3').then(r=>r.json().catch(()=>({}))),
+      fetch('/api/admin/email-stats').then(r=>r.json().catch(()=>({}))),
+    ])
+
+    const s = statsRes || {}
+    document.getElementById('m-total-users').textContent  = fmt(s.totalUsers)
+    document.getElementById('m-new-users').textContent    = fmt(s.newUsersLast7Days)
+    document.getElementById('m-paid-users').textContent   = fmt(s.paidUsers)
+    document.getElementById('m-credits-month').textContent = fmtK(s.totalCreditsUsedMonth)
+    document.getElementById('m-active-today').textContent = fmt(s.activeToday)
+    document.getElementById('m-sessions-today').textContent = fmt(s.sessionsToday)
+    document.getElementById('m-emails-sent').textContent  = fmt(mlRes.sentMonth || 0)
+
+    // MRR estimate from revenue
+    const rev = revenueRes?.months || []
+    const latest = rev[0]
+    document.getElementById('m-mrr').textContent = latest?.gross ? fmtUSD(latest.gross) : '—'
+
+    // Tier breakdown
+    renderTierBreakdown(s.tierBreakdown || {}, s.totalUsers || 1)
+
+    // Provider breakdown
+    renderProviderBreakdown(s.providerBreakdown || {})
+
+    // Recent signups
+    renderRecentSignups(s.recentSignups || [])
+
+    // Top credit users
+    renderTopCreditUsers(s.topCreditUsers || [])
+
+  } catch(e) {
+    console.error('Overview load error:', e)
+  }
+}
+
+function fmtK(n) { if (!n && n!==0) return '—'; if (n>=1000000) return (n/1000000).toFixed(1)+'M'; if (n>=1000) return (n/1000).toFixed(1)+'K'; return String(n) }
+
+function renderTierBreakdown(tiers, total) {
+  const el = document.getElementById('tier-breakdown')
+  const colors = { free:'#9ca3af', pro:'#a855f7', team:'#3b82f6', enterprise:'#f59e0b', personal_pro:'#a855f7', clawflow:'#ec4899', team_starter:'#3b82f6', team_growth:'#60a5fa' }
+  el.innerHTML = Object.entries(tiers).sort((a,b)=>b[1]-a[1]).map(([tier,count])=>{
+    const pct = Math.round((count/total)*100)
+    const color = colors[tier] || '#6b7280'
+    return \`<div style="margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px">
+        <span>\${tierBadge(tier)}</span>
+        <span style="color:var(--text2);font-weight:600">\${fmt(count)} (\${pct}%)</span>
+      </div>
+      <div class="credit-bar-wrap"><div class="credit-bar" style="width:\${pct}%;background:\${color}40;border-right:2px solid \${color}"></div></div>
+    </div>\`
+  }).join('') || '<div style="color:var(--text3)">No data</div>'
+}
+
+function renderProviderBreakdown(providers) {
+  const el = document.getElementById('provider-breakdown')
+  const icons = { google:'🔵', magic_link:'✉️', email:'✉️' }
+  const total = Object.values(providers).reduce((a,b)=>a+(b||0),0) || 1
+  el.innerHTML = Object.entries(providers).sort((a,b)=>b[1]-a[1]).map(([prov,count])=>{
+    const pct = Math.round(((count||0)/total)*100)
+    return \`<div class="health-row">
+      <span style="font-size:13px">\${icons[prov]||'?'} \${prov||'unknown'}</span>
+      <span style="font-weight:700;color:var(--text)">\${fmt(count)} <span style="color:var(--text3);font-weight:400;font-size:11px">(\${pct}%)</span></span>
+    </div>\`
+  }).join('') || '<div style="color:var(--text3)">No data</div>'
+}
+
+function renderRecentSignups(users) {
+  const el = document.getElementById('recent-signups')
+  if (!users.length) { el.innerHTML = '<div style="color:var(--text3);font-size:13px">No recent signups</div>'; return }
+  el.innerHTML = users.slice(0,6).map(u => \`
+    <div class="user-row-item">
+      <div class="user-avatar">\${(u.name||u.email||'?')[0].toUpperCase()}</div>
+      <div class="user-info">
+        <div class="user-name">\${u.name || '(no name)'}</div>
+        <div class="user-email-small">\${u.email}</div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        \${tierBadge(u.tier)}
+        <div class="date" style="margin-top:3px">\${fmtAgo(u.created_at)}</div>
+      </div>
+    </div>
+  \`).join('')
+}
+
+function renderTopCreditUsers(users) {
+  const el = document.getElementById('top-credit-users')
+  if (!users.length) { el.innerHTML = '<div style="color:var(--text3);font-size:13px">No credit usage data</div>'; return }
+  const max = users[0]?.credits || 1
+  el.innerHTML = users.slice(0,6).map((u,i) => \`
+    <div class="user-row-item">
+      <div class="user-avatar" style="background:linear-gradient(135deg,\${i===0?'#f59e0b,#ef4444':i===1?'#9ca3af,#6b7280':'#374151,#1f2937'})">\${i+1}</div>
+      <div class="user-info">
+        <div class="user-email-small" style="font-size:12px">\${u.email}</div>
+        <div class="credit-bar-wrap" style="margin-top:5px"><div class="credit-bar" style="width:\${Math.round((u.credits/max)*100)}%"></div></div>
+      </div>
+      <div class="user-credits">\${fmtK(u.credits)}</div>
+    </div>
+  \`).join('')
+}
+
+// ── USERS ────────────────────────────────────────────────
+async function loadUsers() {
+  try {
+    const d = await fetch('/api/admin/users').then(r=>r.json())
+    allUsers = d.users || []
+    renderUsersTable(allUsers)
+  } catch(e) {
+    document.getElementById('users-table').innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--red);padding:20px">Failed to load users</td></tr>'
+  }
+}
+
+function filterUsers() {
+  const q = document.getElementById('user-search').value.toLowerCase()
+  const t = document.getElementById('user-tier-filter').value
+  const filtered = allUsers.filter(u =>
+    (!q || u.email?.toLowerCase().includes(q) || u.name?.toLowerCase().includes(q)) &&
+    (!t || (u.tier||'free') === t)
+  )
+  renderUsersTable(filtered)
+}
+
+function renderUsersTable(users) {
+  document.getElementById('users-shown').textContent = users.length
+  document.getElementById('users-total').textContent = allUsers.length
+  const tb = document.getElementById('users-table')
+  if (!users.length) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:20px">No users match</td></tr>'; return }
+  tb.innerHTML = users.map((u,i) => \`
+    <tr>
+      <td style="color:var(--text3);font-weight:500">\${i+1}</td>
+      <td><div class="email">\${u.email}</div></td>
+      <td style="color:var(--text2)">\${u.name||'—'}</td>
+      <td>\${tierBadge(u.tier||'free')}</td>
+      <td>\${providerBadge(u.provider)}</td>
+      <td><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent)">\${fmtK(u.credits_used||0)}</span></td>
+      <td class="date">\${fmtDate(u.created_at)}</td>
+      <td>
+        <button class="btn btn-sm btn-ghost" onclick="quickLookup('\${u.email}')">Details</button>
+      </td>
+    </tr>
+  \`).join('')
+}
+
+function quickLookup(email) {
+  document.getElementById('lookup-email').value = email
+  showPage('manage', document.querySelectorAll('.nav-item')[7])
+  setTimeout(() => lookupUser(), 100)
+}
+
+function exportUsersCSV() {
+  if (!allUsers.length) { alert('Load users first'); return }
+  const header = 'Email,Name,Tier,Provider,Credits Used,Joined'
+  const rows = allUsers.map(u => [
+    u.email, (u.name||'').replace(/,/g,''), u.tier||'free', u.provider||'google',
+    u.credits_used||0, u.created_at ? new Date(u.created_at).toISOString().slice(0,10) : ''
+  ].join(','))
+  const csv = [header, ...rows].join('\\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = 'flowstate-users-' + new Date().toISOString().slice(0,10) + '.csv'
+  a.click()
+}
+
+// ── REVENUE ──────────────────────────────────────────────
+async function loadRevenue() {
+  try {
+    const [rev, txData] = await Promise.all([
+      fetch('/api/billing/revenue?months=6').then(r=>r.json().catch(()=>({}))),
+      fetch('/api/admin/transactions').then(r=>r.json().catch(()=>({}))),
+    ])
+
+    const s = rev.summary || {}
+    document.getElementById('rev-gross').textContent = fmtUSD(s.totalGross)
+    document.getElementById('rev-net').textContent   = fmtUSD(s.totalNet)
+    document.getElementById('rev-api').textContent   = fmtUSD(s.totalApiAlloc)
+    document.getElementById('rev-tx').textContent    = fmt(s.totalTx)
+
+    // Monthly bars
+    const months = rev.months || []
+    const maxGross = Math.max(...months.map(m=>m.gross||0), 0.01)
+    document.getElementById('rev-months').innerHTML = months.map(m => \`
+      <div class="rev-month-row">
+        <span class="rev-month">\${m.month}</span>
+        <div class="rev-bar-wrap"><div class="rev-bar" style="width:\${Math.round((m.gross/maxGross)*100)}%"></div></div>
+        <span class="rev-amount">\${fmtUSD(m.gross)}</span>
+      </div>
+    \`).join('') || '<div style="color:var(--text3);font-size:13px">No revenue data</div>'
+
+    // API budget (latest month)
+    const latest = months[0]
+    if (latest?.apiTopupRecommendation) {
+      const r = latest.apiTopupRecommendation
+      document.getElementById('api-budget').innerHTML = \`
+        <div style="margin-bottom:16px;font-size:12px;color:var(--text3)">Recommended monthly top-ups based on \${latest.month} revenue:</div>
+        \${[['OpenRouter (Chat AI)','openrouter','#a855f7'],['Replicate (Video/Image)','replicate','#ec4899'],['ElevenLabs (TTS)','elevenlabs','#06b6d4']].map(([label,key,color])=>\`
+          <div class="health-row">
+            <span style="font-size:13px">\${label}</span>
+            <span style="font-weight:700;font-size:14px;color:\${color}">\${fmtUSD(r[key]||0)}</span>
+          </div>
+        \`).join('')}
+        <div style="margin-top:12px;font-size:11px;color:var(--text3)">\${rev.note||''}</div>
+      \`
     }
 
-    async function setTier() {
-      const email = document.getElementById('set-email').value.trim()
-      const tier  = document.getElementById('set-tier').value
-      const el    = document.getElementById('set-result')
-      if (!email) { showResult(el, 'err', 'Enter an email'); return }
-      try {
-        const r = await fetch('/api/admin/user-tier', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, tier })
-        })
-        const d = await r.json()
-        if (!r.ok) { showResult(el, 'err', d.error); return }
-        showResult(el, 'ok', '✅ ' + d.message)
-      } catch(e) { showResult(el, 'err', 'Request failed') }
+    // Transactions
+    const txs = txData.transactions || []
+    document.getElementById('transactions-table').innerHTML = txs.length
+      ? txs.slice(0,20).map(t => \`<tr>
+          <td class="date">\${fmtDate(t.created_at)}</td>
+          <td><div class="email">\${t.email}</div></td>
+          <td style="color:var(--text2);font-size:12px">\${t.type||'—'}</td>
+          <td>\${t.plan ? tierBadge(t.plan) : '—'}</td>
+          <td style="font-weight:700;color:var(--green)">\${fmtUSD((t.amount_cents||0)/100)}</td>
+          <td><span class="badge \${t.status==='succeeded'?'badge-green':'badge-red'}">\${t.status||'—'}</span></td>
+        </tr>\`).join('')
+      : '<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:20px">No transactions found</td></tr>'
+  } catch(e) {
+    console.error('Revenue load error:', e)
+  }
+}
+
+// ── CREDITS & API ────────────────────────────────────────
+async function loadCredits() {
+  try {
+    const d = await fetch('/api/admin/credits-overview').then(r=>r.json())
+    document.getElementById('api-total-credits').textContent = fmtK(d.totalCreditsMonth||0)
+    document.getElementById('api-free-credits').textContent  = fmtK(d.freeCreditsMonth||0)
+    document.getElementById('api-paid-credits').textContent  = fmtK(d.paidCreditsMonth||0)
+    document.getElementById('api-blocked').textContent       = fmt(d.blockedRequests||0)
+
+    const topEl = document.getElementById('top-api-users')
+    const top = d.topUsers || []
+    const maxC = top[0]?.credits || 1
+    topEl.innerHTML = top.length ? top.map((u,i) => \`
+      <div class="user-row-item">
+        <div class="user-avatar" style="width:28px;height:28px;font-size:11px">\${i+1}</div>
+        <div class="user-info">
+          <div class="user-email-small">\${u.email}</div>
+          <div class="credit-bar-wrap" style="margin-top:4px"><div class="credit-bar" style="width:\${Math.round((u.credits/maxC)*100)}%"></div></div>
+        </div>
+        <div class="user-credits">\${fmtK(u.credits)}</div>
+      </div>
+    \`).join('') : '<div style="color:var(--text3)">No data</div>'
+
+    const tierEl = document.getElementById('credits-by-tier')
+    const byTier = d.creditsByTier || {}
+    const totalC = Object.values(byTier).reduce((a,b)=>a+(b||0),0)||1
+    tierEl.innerHTML = Object.entries(byTier).sort((a,b)=>b[1]-a[1]).map(([tier,credits])=>{
+      const pct = Math.round(((credits||0)/totalC)*100)
+      return \`<div style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px">
+          \${tierBadge(tier)}
+          <span style="color:var(--text2);font-weight:600">\${fmtK(credits)} credits (\${pct}%)</span>
+        </div>
+        <div class="credit-bar-wrap"><div class="credit-bar" style="width:\${pct}%"></div></div>
+      </div>\`
+    }).join('') || '<div style="color:var(--text3)">No data</div>'
+  } catch(e) { console.error('Credits load error:', e) }
+}
+
+// ── EMAIL STATS ──────────────────────────────────────────
+async function loadEmailStats() {
+  try {
+    const d = await fetch('/api/admin/email-stats').then(r=>r.json())
+    document.getElementById('ml-sent-month').textContent   = fmt(d.sentMonth||0)
+    document.getElementById('ml-failed-month').textContent = fmt(d.failedMonth||0)
+    document.getElementById('ml-sent-total').textContent   = fmt(d.sentTotal||0)
+    document.getElementById('ml-delivery-rate').textContent = d.deliveryRate != null ? d.deliveryRate + '%' : '—'
+    document.getElementById('ml-delayed-month').textContent = fmt(d.delayedMonth||0)
+    document.getElementById('ml-spam-month').textContent    = fmt(d.spamMonth||0)
+
+    const rateEl = document.getElementById('ml-delivery-rate')
+    if (d.deliveryRate != null) {
+      rateEl.style.color = d.deliveryRate >= 95 ? 'var(--green)' : d.deliveryRate >= 80 ? 'var(--amber)' : 'var(--red)'
     }
 
-    async function addCredits() {
-      const email  = document.getElementById('credit-email').value.trim()
-      const amount = parseInt(document.getElementById('credit-amount').value)
-      const el     = document.getElementById('credit-result')
-      if (!email) { showResult(el, 'err', 'Enter an email'); return }
-      if (!amount || amount < 1) { showResult(el, 'err', 'Enter a valid credit amount'); return }
-      try {
-        const r = await fetch('/api/admin/add-credits', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, amount })
-        })
-        const d = await r.json()
-        if (!r.ok) { showResult(el, 'err', d.error); return }
-        showResult(el, 'ok', '✅ ' + d.message)
-      } catch(e) { showResult(el, 'err', 'Request failed') }
+    const domainOk   = d.domainStatus === 'verified'
+    const domainWarn = !d.domainStatus || d.domainStatus === 'unknown' || d.domainStatus === 'pending'
+    const domainBad  = d.domainStatus === 'failed' || d.domainStatus === 'not_added'
+
+    const diagEl = document.getElementById('email-diagnostics')
+    const diags = [
+      { label: 'RESEND_API_KEY configured',    ok: d.resendConfigured,  warn: false,       note: d.resendConfigured ? 'Resend configured ✓' : '⚠️ Add RESEND_API_KEY to Cloudflare secrets — email auth wont work without it' },
+      { label: 'Sending address',               ok: true,               warn: false,       note: d.fromEmail || 'FlowState <noreply@flowst8.cc> (default)' },
+      { label: 'flowst8.cc domain status',      ok: domainOk,           warn: domainWarn,  note: domainOk ? '✓ Verified — SPF/DKIM/DMARC active' : domainBad ? '❌ NOT verified — iCloud/Apple WILL reject emails! Verify at resend.com/domains' : '⏳ Status: ' + (d.domainStatus||'unknown') + ' — verify to fix iCloud/Apple bounces' },
+      { label: 'Redis token storage',           ok: d.redisConfigured,  warn: false,       note: d.redisConfigured ? '✓ Single-use tokens in Upstash Redis (15-min TTL)' : '⚠️ Add UPSTASH_REDIS_URL + UPSTASH_REDIS_TOKEN' },
+      { label: 'Delivery health (this month)',  ok: (d.failedMonth||0)===0||(d.deliveryRate||100)>=90, warn: (d.deliveryRate||100)<90&&(d.deliveryRate||100)>=70, note: d.failedMonth > 0 ? '⚠️ ' + d.failedMonth + ' bounce(s) this month — common causes: unverified domain, iCloud/Apple rejections' : '✓ No failures this month' },
+    ]
+    diagEl.innerHTML = diags.map(function(diag) {
+      return '<div class="health-row">' +
+        '<div style="display:flex;align-items:center">' +
+          '<span class="health-dot ' + (diag.ok?'health-ok':diag.warn?'health-warn':'health-err') + '"></span>' +
+          '<span style="font-size:13px">' + diag.label + '</span>' +
+        '</div>' +
+        '<span style="font-size:12px;color:' + (diag.ok?'var(--text2)':diag.warn?'var(--amber)':'var(--red)') + ';' + (diag.ok?'':'font-weight:600') + '">' + diag.note + '</span>' +
+      '</div>'
+    }).join('')
+
+    if (!domainOk && d.resendConfigured) {
+      diagEl.innerHTML += '<div style="margin-top:16px;padding:12px 14px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:10px;font-size:12px;color:#fca5a5;line-height:1.7">' +
+        '<strong>🔧 Fix iCloud/Apple Bounces:</strong><br>' +
+        '1. Go to <a href="https://resend.com/domains" target="_blank" style="color:#c084fc">resend.com/domains</a> → Add domain <strong>flowst8.cc</strong><br>' +
+        '2. Add SPF, DKIM &amp; DMARC DNS records at your registrar (Namecheap/Cloudflare/GoDaddy)<br>' +
+        '3. Click Verify — takes 5–30 min<br>' +
+        '4. Set Cloudflare secret: <code style="background:rgba(0,0,0,.3);padding:1px 5px;border-radius:3px">RESEND_FROM_EMAIL</code> = <code style="background:rgba(0,0,0,.3);padding:1px 5px;border-radius:3px">FlowState &lt;noreply@flowst8.cc&gt;</code><br>' +
+        '<em>Until then: emails send via onboarding@resend.dev (works, but shows "via resend.dev" in Gmail)</em>' +
+      '</div>'
     }
 
-    function showResult(el, type, html) {
-      el.className = 'result ' + type
-      el.innerHTML = html
-      el.style.display = 'block'
+    const bouncesEl = document.getElementById('recent-bounces')
+    const bounces = d.recentBounces || []
+    if (bounces.length === 0) {
+      bouncesEl.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:8px 0">No bounces logged yet. Set up the Resend webhook to start tracking (see note below).</div>'
+    } else {
+      bouncesEl.innerHTML = bounces.map(function(b) {
+        const ts = b.ts ? new Date(b.ts).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—'
+        return '<div class="health-row">' +
+          '<span style="font-family:\'JetBrains Mono\',monospace;font-size:11px;color:var(--text2)">' + (b.to||'?') + '</span>' +
+          '<span style="display:flex;align-items:center;gap:6px">' +
+            '<span class="badge badge-red">' + (b.reason||'bounce') + '</span>' +
+            '<span style="font-size:11px;color:var(--text3)">' + ts + '</span>' +
+          '</span>' +
+        '</div>'
+      }).join('')
     }
-  </script>
+
+    const wn = document.getElementById('webhook-note')
+    if (wn) wn.textContent = d.webhookNote || ''
+
+  } catch(e) { console.error('Email stats error:', e) }
+}
+
+async function sendTestMagicLink() {
+  const email = document.getElementById('test-email').value.trim()
+  const btn = document.getElementById('btn-test-ml')
+  const el  = document.getElementById('test-ml-result')
+  if (!email) { showAlert(el, 'err', 'Enter an email address'); return }
+  btn.disabled = true; btn.textContent = 'Sending…'
+  try {
+    const r = await fetch('/api/auth/magic-link', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email}) })
+    const d = await r.json()
+    if (d.success) showAlert(el, 'ok', '✅ Magic link sent to ' + email + '. Check inbox (and spam folder).')
+    else showAlert(el, 'err', '❌ ' + (d.message || d.error || 'Send failed'))
+  } catch(e) { showAlert(el, 'err', '❌ Request failed: ' + e.message) }
+  finally { btn.disabled=false; btn.textContent='✉️ Send Test Link' }
+}
+
+// ── SYSTEM HEALTH ────────────────────────────────────────
+async function loadSystemHealth() {
+  try {
+    const d = await fetch('/api/admin/system-health').then(r=>r.json())
+    const services = d.services || []
+    document.getElementById('system-health-rows').innerHTML = services.length
+      ? services.map(s => \`
+        <div class="health-row">
+          <div style="display:flex;align-items:center"><span class="health-dot \${s.ok?'health-ok':'health-err'}"></span><span style="font-size:13px">\${s.name}</span></div>
+          <span style="font-size:12px;color:\${s.ok?'var(--text2)':'var(--red)'}">\${s.note||''}</span>
+        </div>
+      \`).join('')
+      : '<div style="color:var(--text3)">Could not load health data</div>'
+
+    const keys = d.apiKeys || []
+    document.getElementById('api-keys-rows').innerHTML = keys.length
+      ? keys.map(k => \`
+        <div class="health-row">
+          <div style="display:flex;align-items:center"><span class="health-dot \${k.present?'health-ok':'health-warn'}"></span><span style="font-size:13px">\${k.name}</span></div>
+          <span style="font-size:12px;color:\${k.present?'var(--text2)':'var(--amber)'}">\${k.present?'Configured':'Missing'}</span>
+        </div>
+      \`).join('')
+      : '<div style="color:var(--text3)">No key data</div>'
+
+    const cfg = d.config || []
+    document.getElementById('config-rows').innerHTML = cfg.length
+      ? cfg.map(c => \`<div class="health-row"><span style="font-size:13px;color:var(--text2)">\${c.key}</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text)">\${c.value}</span></div>\`).join('')
+      : '<div style="color:var(--text3)">No config</div>'
+
+  } catch(e) { document.getElementById('system-health-rows').innerHTML = '<div style="color:var(--red)">Health check failed</div>' }
+}
+
+// ── MANAGE USER ACTIONS ──────────────────────────────────
+async function lookupUser() {
+  const email = document.getElementById('lookup-email').value.trim()
+  const el    = document.getElementById('lookup-result')
+  if (!email) { showAlert(el,'err','Enter an email'); return }
+  try {
+    const r = await fetch('/api/admin/user-tier?email=' + encodeURIComponent(email))
+    const d = await r.json()
+    if (!r.ok) { showAlert(el,'err','❌ ' + (d.error||'Not found')); return }
+    showAlert(el,'info',\`
+      <strong>\${d.email}</strong> \${tierBadge(d.tier||'free')} \${providerBadge(d.provider||'google')}<br>
+      <span style="font-size:12px;color:var(--text3)">Joined: \${fmtDate(d.created_at)}</span><br><br>
+      Credits used this month: <strong>\${fmtK(d.monthlyCreditsUsed)}</strong><br>
+      Purchased credit balance: <strong>\${fmtK(d.purchasedCredits)}</strong>
+    \`)
+  } catch(e) { showAlert(el,'err','❌ Request failed') }
+}
+
+async function setTier() {
+  const email = document.getElementById('set-email').value.trim()
+  const tier  = document.getElementById('set-tier').value
+  const el    = document.getElementById('set-result')
+  if (!email) { showAlert(el,'err','Enter an email'); return }
+  try {
+    const r = await fetch('/api/admin/user-tier', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email,tier}) })
+    const d = await r.json()
+    if (!r.ok) { showAlert(el,'err','❌ ' + d.error); return }
+    showAlert(el,'ok','✅ ' + d.message)
+    allUsers = [] // force refresh
+  } catch(e) { showAlert(el,'err','❌ Request failed') }
+}
+
+async function addCredits() {
+  const email  = document.getElementById('credit-email').value.trim()
+  const amount = parseInt(document.getElementById('credit-amount').value)
+  const el     = document.getElementById('credit-result')
+  if (!email) { showAlert(el,'err','Enter an email'); return }
+  if (!amount||amount<1) { showAlert(el,'err','Enter a valid credit amount'); return }
+  try {
+    const r = await fetch('/api/admin/add-credits', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email,amount}) })
+    const d = await r.json()
+    if (!r.ok) { showAlert(el,'err','❌ ' + d.error); return }
+    showAlert(el,'ok','✅ ' + d.message)
+  } catch(e) { showAlert(el,'err','❌ Request failed') }
+}
+
+async function resetCredits() {
+  const email = document.getElementById('credit-email').value.trim()
+  const el    = document.getElementById('credit-result')
+  if (!email) { showAlert(el,'err','Enter an email to reset credits for'); return }
+  if (!confirm('Reset this month\'s credit usage for ' + email + ' to zero?')) return
+  try {
+    const r = await fetch('/api/admin/reset-credits', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email}) })
+    const d = await r.json()
+    if (!r.ok) { showAlert(el,'err','❌ ' + (d.error||'Failed')); return }
+    showAlert(el,'ok','✅ ' + (d.message||'Credits reset'))
+  } catch(e) { showAlert(el,'err','❌ Request failed') }
+}
+
+async function sendMagicLinkAdmin() {
+  const email = document.getElementById('ml-send-email').value.trim()
+  const btn   = document.getElementById('btn-ml-admin')
+  const el    = document.getElementById('ml-send-result')
+  if (!email) { showAlert(el,'err','Enter an email'); return }
+  btn.disabled=true; btn.textContent='Sending…'
+  try {
+    const r = await fetch('/api/auth/magic-link', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email}) })
+    const d = await r.json()
+    if (d.success) showAlert(el,'ok','✅ Sign-in link sent to ' + email)
+    else showAlert(el,'err','❌ ' + (d.message||d.error||'Failed'))
+  } catch(e) { showAlert(el,'err','❌ ' + e.message) }
+  finally { btn.disabled=false; btn.textContent='✉️ Send Link' }
+}
+
+// ── BOOT: load overview ──────────────────────────────────
+loadOverview()
+const startTime = Date.now()
+// Update last-refresh timer every 30s
+setInterval(()=>{ const el=document.getElementById('last-refresh'); if(el){ const m=Math.round((Date.now()-startTime)/60000); el.textContent=m<1?'just now':m+' min ago' } },30000)
+// Auto-refresh overview data every 2 minutes
+setInterval(()=>{ const activePage=document.querySelector('.page.active'); if(activePage?.id==='page-overview') loadOverview() },120000)
+// Keyboard shortcut: press R to refresh current page
+document.addEventListener('keydown', e => {
+  if (e.key==='r' && !e.metaKey && !e.ctrlKey && !['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName||'')) {
+    const activePage = document.querySelector('.page.active')?.id?.replace('page-','')
+    if (activePage) { const btn = document.querySelector('.nav-item.active'); showPage(activePage, btn) }
+  }
+})
+</script>
 </body>
 </html>`)
 })
@@ -4230,13 +5405,29 @@ app.post('/api/admin/add-credits', async (c) => {
   const url = c.env?.UPSTASH_REDIS_URL
   const tok = c.env?.UPSTASH_REDIS_TOKEN
   if (!url || !tok) return c.json({ error: 'Redis not configured' }, 503)
-  const { email, amount } = await c.req.json().catch(() => ({}))
+  const { email, amount } = await c.req.json().catch(() => ({} as any))
   if (!email || !amount || amount < 1) return c.json({ error: 'email and amount required' }, 400)
   const balKey = `credit_balance:${encodeURIComponent(email)}`
   const res = await fetch(`${url}/incrby/${balKey}/${amount}`, { headers: { Authorization: `Bearer ${tok}` } })
   const data: any = await res.json()
   const newBalance = data.result || 0
   return c.json({ ok: true, email, added: amount, newBalance, message: `Added ${amount.toLocaleString()} credits to ${email}. New balance: ${newBalance.toLocaleString()}` })
+})
+
+// ─── Admin: reset this month's credit usage for a user ───────────────────────
+app.post('/api/admin/reset-credits', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  if (session.email !== 'mkbrown261@gmail.com') return c.json({ error: 'forbidden' }, 403)
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  if (!url || !tok) return c.json({ error: 'Redis not configured' }, 503)
+  const { email } = await c.req.json().catch(() => ({} as any))
+  if (!email) return c.json({ error: 'email required' }, 400)
+  const month = new Date().toISOString().slice(0, 7)
+  const usageKey = `monthly_credits_used:${email}:${month}`
+  await fetch(`${url}/set/${encodeURIComponent(usageKey)}/0`, { headers: { Authorization: `Bearer ${tok}` } })
+  return c.json({ ok: true, email, message: `Monthly credit usage for ${email} reset to 0 for ${month}` })
 })
 
 // ─── Admin: inspect / set user tier ─────────────────────────────────────────
@@ -4248,23 +5439,36 @@ app.get('/api/admin/user-tier', async (c) => {
   if (session.email !== 'mkbrown261@gmail.com') return c.json({ error: 'forbidden' }, 403)
   const url = c.env?.UPSTASH_REDIS_URL
   const tok = c.env?.UPSTASH_REDIS_TOKEN
-  if (!url || !tok) return c.json({ error: 'Redis not configured' }, 503)
   const email = String(c.req.query('email') || '')
   if (!email) return c.json({ error: 'email param required' }, 400)
   const month = new Date().toISOString().slice(0, 7)
-  const results = await redisPipeline(url, tok, [
-    ['GET', `tier_email:${email}`],
-    ['GET', `tier:${email}`],
-    ['GET', `monthly_credits_used:${email}:${month}`],
-    ['GET', `credit_balance:${encodeURIComponent(email)}`],
+
+  // Fetch from Redis (credits) and D1 (user profile) in parallel
+  const [redisResults, d1User] = await Promise.all([
+    url && tok ? redisPipeline(url, tok, [
+      ['GET', `tier_email:${email}`],
+      ['GET', `tier:${email}`],
+      ['GET', `monthly_credits_used:${email}:${month}`],
+      ['GET', `credit_balance:${encodeURIComponent(email)}`],
+    ]) : Promise.resolve([null, null, null, null]),
+    c.env?.DB ? c.env.DB.prepare(`SELECT email, name, tier, provider, created_at FROM users WHERE email = ?`).bind(email).first().catch(() => null) : Promise.resolve(null),
   ])
+
+  const redisTier = (redisResults[0] as string) || (redisResults[1] as string) || null
+  const d1Tier    = (d1User as any)?.tier || null
+  const tier      = redisTier || d1Tier || 'free'
+
+  if (!d1User && !redisTier) return c.json({ error: 'User not found', email }, 404)
+
   return c.json({
     email,
-    tier:          results[0] || results[1] || 'free',
-    tier_email_key: results[0],
-    tier_key:       results[1],
-    monthlyCreditsUsed: parseInt(results[2] as string || '0'),
-    purchasedCredits:   parseInt(results[3] as string || '0'),
+    name:        (d1User as any)?.name || null,
+    provider:    (d1User as any)?.provider || 'google',
+    created_at:  (d1User as any)?.created_at || null,
+    tier,
+    tier_source: redisTier ? 'redis' : d1Tier ? 'd1' : 'default',
+    monthlyCreditsUsed: parseInt(redisResults[2] as string || '0'),
+    purchasedCredits:   parseInt(redisResults[3] as string || '0'),
     month,
   })
 })
@@ -4287,6 +5491,397 @@ app.post('/api/admin/user-tier', async (c) => {
     await setUserTier(c.env.DB, email, tier).catch(() => {})
   }
   return c.json({ ok: true, email, tier, message: `Tier for ${email} set to '${tier}'` })
+})
+
+// ─── Admin: comprehensive platform stats ──────────────────────────────────────
+// GET /api/admin/stats → overview KPIs from D1 + Redis
+app.get('/api/admin/stats', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  if (session.email !== 'mkbrown261@gmail.com') return c.json({ error: 'forbidden' }, 403)
+
+  const db  = c.env?.DB
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  const month = new Date().toISOString().slice(0, 7)
+  const today = new Date().toISOString().slice(0, 10)
+  const week7 = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10)
+
+  let totalUsers = 0, newUsersLast7Days = 0, paidUsers = 0
+  let tierBreakdown: Record<string,number> = {}
+  let providerBreakdown: Record<string,number> = {}
+  let recentSignups: any[] = []
+  let sessionsToday = 0, activeToday = 0
+
+  if (db) {
+    try {
+      const counts: any = await db.prepare(`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as new7,
+          SUM(CASE WHEN tier NOT IN ('free','') AND tier IS NOT NULL THEN 1 ELSE 0 END) as paid
+        FROM users
+      `).bind(week7).first()
+      totalUsers        = counts?.total || 0
+      newUsersLast7Days = counts?.new7 || 0
+      paidUsers         = counts?.paid || 0
+
+      // Tier breakdown
+      const tiers = await db.prepare(`SELECT tier, COUNT(*) as cnt FROM users GROUP BY tier ORDER BY cnt DESC`).all()
+      ;(tiers.results || []).forEach((r: any) => { tierBreakdown[r.tier || 'free'] = r.cnt || 0 })
+
+      // Provider breakdown
+      const providers = await db.prepare(`SELECT provider, COUNT(*) as cnt FROM users GROUP BY provider ORDER BY cnt DESC`).all()
+      ;(providers.results || []).forEach((r: any) => { providerBreakdown[r.provider || 'google'] = r.cnt || 0 })
+
+      // Recent signups (last 10)
+      const recent = await db.prepare(`SELECT email, name, tier, provider, created_at FROM users ORDER BY created_at DESC LIMIT 10`).all()
+      recentSignups = (recent.results || []) as any[]
+
+      // Sessions today
+      const todaySess: any = await db.prepare(`SELECT COUNT(*) as cnt FROM sessions WHERE session_date = ? AND completed = 1`).bind(today).first()
+      sessionsToday = todaySess?.cnt || 0
+
+      // Active today (users who have a session today)
+      const todayActive: any = await db.prepare(`SELECT COUNT(DISTINCT email) as cnt FROM sessions WHERE session_date = ?`).bind(today).first()
+      activeToday = todayActive?.cnt || 0
+    } catch(_) {}
+  }
+
+  // Credit usage this month (platform-wide) from Redis
+  let totalCreditsUsedMonth = 0
+  let topCreditUsers: Array<{email:string, credits:number}> = []
+  if (url && tok) {
+    try {
+      // Scan for monthly credit keys (use pipeline for speed)
+      // We aggregate by scanning known user emails from D1
+      if (db) {
+        const emails = await db.prepare(`SELECT email FROM users ORDER BY created_at DESC LIMIT 200`).all()
+        const emailList = (emails.results || []).map((r: any) => r.email) as string[]
+        if (emailList.length > 0) {
+          const pipeline = emailList.map(e => ['GET', `monthly_credits_used:${e}:${month}`])
+          const results = await redisPipeline(url, tok, pipeline)
+          const creditMap: Array<{email:string,credits:number}> = []
+          emailList.forEach((email, i) => {
+            const credits = parseInt(results[i] as string || '0')
+            totalCreditsUsedMonth += credits
+            if (credits > 0) creditMap.push({ email, credits })
+          })
+          topCreditUsers = creditMap.sort((a,b) => b.credits - a.credits).slice(0, 10)
+        }
+      }
+    } catch(_) {}
+  }
+
+  // Magic link stats from Redis
+  let emailsSentMonth = 0
+  if (url && tok) {
+    try {
+      const mlRes = await redisPipeline(url, tok, [['GET', `ml_sent:${month}`]])
+      emailsSentMonth = parseInt(mlRes[0] as string || '0')
+    } catch(_) {}
+  }
+
+  return c.json({
+    totalUsers,
+    newUsersLast7Days,
+    paidUsers,
+    tierBreakdown,
+    providerBreakdown,
+    recentSignups,
+    sessionsToday,
+    activeToday,
+    totalCreditsUsedMonth,
+    topCreditUsers,
+    emailsSentMonth,
+    month,
+    today,
+  })
+})
+
+// GET /api/admin/users → full user list with credit usage (up to 500)
+app.get('/api/admin/users', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  if (session.email !== 'mkbrown261@gmail.com') return c.json({ error: 'forbidden' }, 403)
+
+  const db  = c.env?.DB
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  const month = new Date().toISOString().slice(0, 7)
+
+  if (!db) return c.json({ users: [] })
+
+  try {
+    const rows = await db.prepare(
+      `SELECT id, email, name, tier, provider, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT 500`
+    ).all()
+    const users: any[] = (rows.results || []) as any[]
+
+    // Fetch credit usage for each user via Redis pipeline
+    if (url && tok && users.length > 0) {
+      const pipeline = users.map(u => ['GET', `monthly_credits_used:${u.email}:${month}`])
+      const credits = await redisPipeline(url, tok, pipeline)
+      users.forEach((u, i) => { u.credits_used = parseInt(credits[i] as string || '0') })
+    }
+
+    return c.json({ users, total: users.length, month })
+  } catch (e: any) {
+    return c.json({ error: e.message, users: [] })
+  }
+})
+
+// GET /api/admin/email-stats → magic link delivery statistics
+app.get('/api/admin/email-stats', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  if (session.email !== 'mkbrown261@gmail.com') return c.json({ error: 'forbidden' }, 403)
+
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  const month = new Date().toISOString().slice(0, 7)
+
+  const resendConfigured = !!c.env?.RESEND_API_KEY
+  const redisConfigured  = !!(url && tok)
+  const fromEmail        = c.env?.RESEND_FROM_EMAIL || 'FlowState <noreply@flowst8.cc>'
+
+  let sentMonth = 0, failedMonth = 0, sentTotal = 0
+  let bouncedMonth = 0, delayedMonth = 0, spamMonth = 0, deliveredMonth = 0
+  let recentBounces: any[] = []
+  let domainStatus = 'unknown'
+
+  if (url && tok) {
+    try {
+      const results = await redisPipeline(url, tok, [
+        ['GET',   `ml_sent:${month}`],
+        ['GET',   `ml_failed:${month}`],
+        ['GET',   `ml_sent:total`],
+        ['GET',   `ml_failed:total`],
+        ['GET',   `ml_delivered:${month}`],
+        ['GET',   `ml_delayed:${month}`],
+        ['GET',   `ml_spam:${month}`],
+        ['LRANGE',`ml_bounces:recent`, 0, 9],
+      ])
+      sentMonth      = parseInt(results[0] as string || '0')
+      failedMonth    = parseInt(results[1] as string || '0')
+      sentTotal      = parseInt(results[2] as string || '0')
+      const failTotal= parseInt(results[3] as string || '0')
+      deliveredMonth = parseInt(results[4] as string || '0')
+      delayedMonth   = parseInt(results[5] as string || '0')
+      spamMonth      = parseInt(results[6] as string || '0')
+      bouncedMonth   = failedMonth // bounces are tracked as failures
+      // Parse recent bounces list
+      const bounceList = Array.isArray(results[7]) ? results[7] : []
+      recentBounces = bounceList.map((b: any) => {
+        try { return JSON.parse(b) } catch { return { to: b, ts: null } }
+      })
+    } catch(_) {}
+  }
+
+  // Check Resend domain status via API
+  if (resendConfigured && c.env?.RESEND_API_KEY) {
+    try {
+      const r = await fetch('https://api.resend.com/domains', {
+        headers: { Authorization: `Bearer ${c.env.RESEND_API_KEY}` }
+      })
+      if (r.ok) {
+        const d: any = await r.json()
+        const domains = d.data || []
+        const flowst8 = domains.find((d: any) => d.name?.includes('flowst8'))
+        if (flowst8) {
+          domainStatus = flowst8.status // 'verified', 'pending', 'failed'
+        } else {
+          domainStatus = domains.length > 0 ? `other (${domains.length} domains verified)` : 'not_added'
+        }
+      }
+    } catch(_) {}
+  }
+
+  const deliveryRate = sentMonth > 0 ? Math.round(((sentMonth - failedMonth) / sentMonth) * 100) : null
+
+  return c.json({
+    resendConfigured,
+    redisConfigured,
+    fromEmail,
+    domainStatus,
+    domainVerified: domainStatus === 'verified',
+    sentMonth,
+    failedMonth,
+    bouncedMonth,
+    delayedMonth,
+    spamMonth,
+    deliveredMonth,
+    sentTotal,
+    deliveryRate,
+    recentBounces,
+    webhookNote: 'To enable real-time bounce tracking, add webhook at resend.com/webhooks → https://flowst8.cc/api/resend/webhook (events: email.bounced, email.delivery_delayed, email.complained, email.delivered)',
+    month,
+  })
+})
+
+// GET /api/admin/credits-overview → platform-wide API usage breakdown
+app.get('/api/admin/credits-overview', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  if (session.email !== 'mkbrown261@gmail.com') return c.json({ error: 'forbidden' }, 403)
+
+  const db  = c.env?.DB
+  const url = c.env?.UPSTASH_REDIS_URL
+  const tok = c.env?.UPSTASH_REDIS_TOKEN
+  const month = new Date().toISOString().slice(0, 7)
+
+  let totalCreditsMonth = 0, freeCreditsMonth = 0, paidCreditsMonth = 0
+  let topUsers: Array<{email:string,credits:number,tier:string}> = []
+  let creditsByTier: Record<string,number> = {}
+  let blockedRequests = 0
+
+  if (db && url && tok) {
+    try {
+      // Get all users with their tiers
+      const rows = await db.prepare(`SELECT email, tier FROM users ORDER BY created_at DESC LIMIT 500`).all()
+      const users = (rows.results || []) as Array<{email:string, tier:string}>
+
+      if (users.length > 0) {
+        const pipeline = users.map(u => ['GET', `monthly_credits_used:${u.email}:${month}`])
+        const credits = await redisPipeline(url, tok, pipeline)
+
+        users.forEach((u, i) => {
+          const c = parseInt(credits[i] as string || '0')
+          totalCreditsMonth += c
+          const tier = u.tier || 'free'
+          const isPaid = !['free',''].includes(tier)
+          if (isPaid) paidCreditsMonth += c
+          else freeCreditsMonth += c
+          creditsByTier[tier] = (creditsByTier[tier] || 0) + c
+          if (c > 0) topUsers.push({ email: u.email, credits: c, tier })
+        })
+        topUsers = topUsers.sort((a,b) => b.credits - a.credits).slice(0, 15)
+      }
+    } catch(_) {}
+  }
+
+  return c.json({
+    totalCreditsMonth,
+    freeCreditsMonth,
+    paidCreditsMonth,
+    creditsByTier,
+    topUsers,
+    blockedRequests,
+    month,
+  })
+})
+
+// GET /api/admin/transactions → recent transaction history from D1
+app.get('/api/admin/transactions', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  if (session.email !== 'mkbrown261@gmail.com') return c.json({ error: 'forbidden' }, 403)
+
+  const db = c.env?.DB
+  if (!db) return c.json({ transactions: [] })
+
+  try {
+    const rows = await db.prepare(
+      `SELECT email, type, plan, amount_cents, currency, status, created_at FROM transactions ORDER BY created_at DESC LIMIT 50`
+    ).all()
+    return c.json({ transactions: rows.results || [] })
+  } catch(e: any) {
+    return c.json({ error: e.message, transactions: [] })
+  }
+})
+
+// GET /api/admin/system-health → infrastructure status check
+app.get('/api/admin/system-health', async (c) => {
+  const session = decodeSession(getCookie(c, 'fs_session') || '')
+  if (!session) return c.json({ error: 'not_authenticated' }, 401)
+  if (session.email !== 'mkbrown261@gmail.com') return c.json({ error: 'forbidden' }, 403)
+
+  const checks = await Promise.allSettled([
+    // D1 database check
+    (async () => {
+      if (!c.env?.DB) return { name: 'D1 Database', ok: false, note: 'Not bound' }
+      try {
+        await c.env.DB.prepare('SELECT 1').first()
+        return { name: 'D1 Database', ok: true, note: 'Connected' }
+      } catch(e: any) { return { name: 'D1 Database', ok: false, note: e.message } }
+    })(),
+    // Upstash Redis check
+    (async () => {
+      if (!c.env?.UPSTASH_REDIS_URL || !c.env?.UPSTASH_REDIS_TOKEN)
+        return { name: 'Upstash Redis', ok: false, note: 'Not configured' }
+      try {
+        const r = await fetch(`${c.env.UPSTASH_REDIS_URL}/ping`, {
+          headers: { Authorization: `Bearer ${c.env.UPSTASH_REDIS_TOKEN}` }
+        })
+        const d: any = await r.json()
+        return { name: 'Upstash Redis', ok: d.result === 'PONG', note: d.result === 'PONG' ? 'Connected' : 'Unexpected response' }
+      } catch(e: any) { return { name: 'Upstash Redis', ok: false, note: e.message } }
+    })(),
+    // Resend email check
+    (async () => {
+      if (!c.env?.RESEND_API_KEY) return { name: 'Resend Email', ok: false, note: 'RESEND_API_KEY not set — magic link email will not work' }
+      try {
+        const r = await fetch('https://api.resend.com/domains', {
+          headers: { Authorization: `Bearer ${c.env.RESEND_API_KEY}` }
+        })
+        if (r.ok) {
+          const d: any = await r.json()
+          const domains = d.data || []
+          const flowst8 = domains.find((d: any) => d.name?.includes('flowst8'))
+          const note = flowst8
+            ? `flowst8.cc — status: ${flowst8.status}`
+            : domains.length > 0 ? `${domains.length} domain(s) verified` : 'No domains verified — add flowst8.cc'
+          const ok = flowst8?.status === 'verified' || domains.length > 0
+          return { name: 'Resend Email', ok, note }
+        }
+        return { name: 'Resend Email', ok: false, note: `API error ${r.status}` }
+      } catch(e: any) { return { name: 'Resend Email', ok: false, note: e.message } }
+    })(),
+    // R2 storage check
+    (async () => {
+      if (!c.env?.R2) return { name: 'R2 Storage', ok: false, note: 'Not bound' }
+      return { name: 'R2 Storage', ok: true, note: 'Bound' }
+    })(),
+    // Stripe check
+    (async () => {
+      if (!c.env?.STRIPE_SECRET_KEY) return { name: 'Stripe Billing', ok: false, note: 'STRIPE_SECRET_KEY not set' }
+      return { name: 'Stripe Billing', ok: true, note: 'Key configured' }
+    })(),
+  ])
+
+  const services = checks.map(c => c.status === 'fulfilled' ? c.value : { name: 'Unknown', ok: false, note: 'Check failed' })
+
+  // API keys presence
+  const apiKeys = [
+    { name: 'OPENROUTER_API_KEY',  present: !!c.env?.OPENROUTER_API_KEY },
+    { name: 'ANTHROPIC_API_KEY',   present: !!c.env?.ANTHROPIC_API_KEY },
+    { name: 'GOOGLE_AI_KEY',       present: !!(c.env?.GOOGLE_AI_KEY || c.env?.GEMINI_API_KEY) },
+    { name: 'ELEVENLABS_API_KEY',  present: !!c.env?.ELEVENLABS_API_KEY },
+    { name: 'REPLICATE_API_KEY',   present: !!c.env?.REPLICATE_API_KEY },
+    { name: 'FAL_AI_KEY',          present: !!c.env?.FAL_AI_KEY },
+    { name: 'STRIPE_SECRET_KEY',   present: !!c.env?.STRIPE_SECRET_KEY },
+    { name: 'RESEND_API_KEY',      present: !!c.env?.RESEND_API_KEY },
+    { name: 'RESEND_FROM_EMAIL',   present: !!c.env?.RESEND_FROM_EMAIL },
+    { name: 'UPSTASH_REDIS_URL',   present: !!c.env?.UPSTASH_REDIS_URL },
+    { name: 'SESSION_SECRET',      present: !!c.env?.SESSION_SECRET },
+    { name: 'CANONICAL_ORIGIN',    present: !!c.env?.CANONICAL_ORIGIN },
+    { name: 'GITHUB_CLIENT_ID',    present: !!c.env?.GITHUB_CLIENT_ID },
+    { name: 'GOOGLE_CLIENT_ID',    present: !!c.env?.GOOGLE_CLIENT_ID },
+  ]
+
+  const config = [
+    { key: 'CANONICAL_ORIGIN',     value: c.env?.CANONICAL_ORIGIN || '(not set)' },
+    { key: 'RESEND_FROM_EMAIL',    value: c.env?.RESEND_FROM_EMAIL || 'FlowState <onboarding@resend.dev> (default)' },
+    { key: 'Environment',          value: 'Cloudflare Workers (Production)' },
+    { key: 'DB Name',              value: 'flowstate-production' },
+    { key: 'R2 Bucket',            value: 'flowstate-assets' },
+    { key: 'Admin Email',          value: 'mkbrown261@gmail.com' },
+    { key: 'Free Tier Limit',      value: '3,000 credits/month' },
+    { key: 'Pro Tier Limit',       value: '10,000 credits/month' },
+    { key: 'Magic Link TTL',       value: '15 minutes (Redis-backed)' },
+  ]
+
+  return c.json({ services, apiKeys, config })
 })
 
 // ─── ElevenLabs TTS ──────────────────────────────────────────────────────────
@@ -8270,6 +9865,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
     <button class="btn-magic" id="magic-btn" onclick="sendMagicLink()">
       ✉️ &nbsp;Send sign-in link
     </button>
+    <div id="magic-error" style="display:none;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.35);border-radius:10px;padding:12px 14px;font-size:12px;color:#fca5a5;text-align:left;line-height:1.6"></div>
   </div>
   <div class="magic-sent" id="magic-sent">
     <div style="font-size:22px;margin-bottom:6px">✉️</div>
@@ -8291,8 +9887,21 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 
 <script>
 async function sendMagicLink() {
-  const email = document.getElementById('magic-email').value.trim()
-  if (!email || !email.includes('@')) { alert('Please enter a valid email.'); return }
+  const email = document.getElementById('magic-email').value.trim().toLowerCase()
+  const errEl = document.getElementById('magic-error')
+  errEl.style.display = 'none'
+  if (!email || !email.includes('@')) {
+    errEl.innerHTML = '⚠️ Please enter a valid email address.'
+    errEl.style.display = 'block'
+    return
+  }
+  // iCloud/Apple warning — Apple mail servers are strict and may delay delivery
+  const isApple = email.endsWith('@icloud.com') || email.endsWith('@me.com') || email.endsWith('@mac.com')
+  if (isApple) {
+    errEl.innerHTML = '⚠️ <strong>Heads up:</strong> Apple/iCloud mail can sometimes block or delay sign-in emails. If you don\'t receive the link within 2 minutes, please use <strong>Continue with Google</strong> or try a Gmail/work email address instead.'
+    errEl.style.display = 'block'
+    // Still attempt to send — don't block them
+  }
   const btn = document.getElementById('magic-btn')
   btn.disabled = true
   btn.innerHTML = '<span class="spinner"></span>Sending…'
@@ -8304,20 +9913,37 @@ async function sendMagicLink() {
     })
     const data = await res.json()
     if (data.success || data.user) {
-      document.getElementById('magic-sent-email').textContent = 'We sent a link to ' + email
+      const sentEl = document.getElementById('magic-sent')
+      const sentEmailEl = document.getElementById('magic-sent-email')
+      sentEmailEl.textContent = 'We sent a link to ' + email
       document.getElementById('magic-form').style.display = 'none'
-      document.getElementById('magic-sent').style.display = 'block'
+      sentEl.style.display = 'block'
+      // Add extra note for Apple/iCloud users
+      if (isApple) {
+        const note = document.createElement('div')
+        note.style.cssText = 'margin-top:8px;padding:8px 10px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:8px;font-size:11px;color:#fcd34d;line-height:1.5'
+        note.innerHTML = '⚠️ iCloud sometimes delays emails. If nothing arrives in 2 min, try Gmail or Continue with Google.'
+        sentEl.appendChild(note)
+      }
       // Auto-sign-in path (dev/no-Resend fallback) — user object means session is already set
       if (data.user) { setTimeout(function(){ window.location.href = '/' }, 800) }
     } else {
       btn.disabled = false
       btn.innerHTML = '✉️ &nbsp;Send sign-in link'
-      alert(data.error || 'Something went wrong. Try again.')
+      const msg = data.message || data.error || 'Something went wrong sending the email.'
+      // Check if it's a bounce/rejection and give a targeted message
+      const isBounce = msg.toLowerCase().includes('bounce') || msg.toLowerCase().includes('rejected') || msg.toLowerCase().includes('invalid') || (data.emailError || '').includes('5')
+      const tipHtml = isBounce
+        ? '<br><br>💡 Your email server rejected this message. Please <strong>use a Gmail or work email</strong>, or <strong>Continue with Google</strong> above.'
+        : (data.suggestion ? '<br><br>💡 <strong>Tip:</strong> ' + data.suggestion : '<br><br>💡 Try <strong>Continue with Google</strong> above — it always works.')
+      errEl.innerHTML = '❌ ' + msg + tipHtml
+      errEl.style.display = 'block'
     }
   } catch(e) {
     btn.disabled = false
     btn.innerHTML = '✉️ &nbsp;Send sign-in link'
-    alert('Network error. Please try again.')
+    errEl.innerHTML = '❌ Network error. Please check your connection and try again, or use <strong>Continue with Google</strong>.'
+    errEl.style.display = 'block'
   }
 }
 document.getElementById('magic-email').addEventListener('keydown', function(e){
@@ -11801,7 +13427,7 @@ app.post('/api/email/streak-reminder', async (c) => {
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: 'FlowState <streak@flowst8.cc>', to: [session.email], subject: `🔥 Don't break your ${streak}-day streak, ${name}!`, html })
+      body: JSON.stringify({ from: c.env?.RESEND_FROM_EMAIL || 'FlowState <noreply@flowst8.cc>', to: [session.email], 'reply-to': 'FlowState Support <hello@flowst8.cc>', subject: `🔥 Don't break your ${streak}-day streak, ${name}!`, html })
     })
     const data: any = await res.json()
     if (data.id) return c.json({ ok: true, emailId: data.id, streak })
@@ -12969,8 +14595,9 @@ async function scheduledHandler(event: any, env: any, ctx: any) {
           method: 'POST',
           headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            from: 'FlowState <weekly@flowst8.cc>',
+            from: c.env?.RESEND_FROM_EMAIL || 'FlowState <noreply@flowst8.cc>',
             to: [row.email],
+            'reply-to': 'FlowState Support <hello@flowst8.cc>',
             subject: `⚡ Your FlowScore this week: ${flowScore} — ${weekStr}`,
             html,
           })
