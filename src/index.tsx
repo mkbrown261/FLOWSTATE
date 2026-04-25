@@ -4283,8 +4283,8 @@ app.get('/api/billing/revenue', async (c) => {
   if (!session) return c.json({ error: 'not_authenticated' }, 401)
   // Basic admin guard — only let the account owner see revenue data
   // In production, add a proper admin role check
-  const adminEmail = c.env?.ADMIN_EMAIL
-  if (adminEmail && session.email !== adminEmail) return c.json({ error: 'forbidden' }, 403)
+  const adminEmail = c.env?.ADMIN_EMAIL || 'mkbrown261@gmail.com'
+  if (session.email !== adminEmail && session.email !== 'mkbrown261@gmail.com') return c.json({ error: 'forbidden' }, 403)
 
   const url   = c.env?.UPSTASH_REDIS_URL
   const token = c.env?.UPSTASH_REDIS_TOKEN
@@ -4924,12 +4924,12 @@ function showAlert(el, type, msg) {
 async function loadOverview() {
   try {
     const [statsRes, revenueRes, mlRes] = await Promise.all([
-      fetch('/api/admin/stats').then(r=>r.json()),
-      fetch('/api/billing/revenue?months=3').then(r=>r.json().catch(()=>({}))),
-      fetch('/api/admin/email-stats').then(r=>r.json().catch(()=>({}))),
+      fetch('/api/admin/stats').then(r=>r.json()).catch(()=>({})),
+      fetch('/api/billing/revenue?months=3').then(r=>r.json()).catch(()=>({})),
+      fetch('/api/admin/email-stats').then(r=>r.json()).catch(()=>({})),
     ])
 
-    const s = statsRes || {}
+    const s = (statsRes?.error ? {} : statsRes) || {}
     document.getElementById('m-total-users').textContent  = fmt(s.totalUsers)
     document.getElementById('m-new-users').textContent    = fmt(s.newUsersLast7Days)
     document.getElementById('m-paid-users').textContent   = fmt(s.paidUsers)
@@ -4957,6 +4957,16 @@ async function loadOverview() {
 
   } catch(e) {
     console.error('Overview load error:', e)
+    // Show error state in cards instead of leaving 'Loading...'
+    const errMsg = '<div style="color:var(--red);font-size:12px;padding:8px 0">⚠ Failed to load — ' + (e.message||'network error') + '</div>'
+    ;['tier-breakdown','provider-breakdown','recent-signups','top-credit-users'].forEach(id => {
+      const el = document.getElementById(id)
+      if (el && el.innerHTML.includes('Loading')) el.innerHTML = errMsg
+    })
+    ;['m-total-users','m-new-users','m-paid-users','m-credits-month','m-active-today','m-sessions-today','m-emails-sent','m-mrr'].forEach(id => {
+      const el = document.getElementById(id)
+      if (el && el.textContent === '—') el.textContent = 'err'
+    })
   }
 }
 
@@ -5143,6 +5153,8 @@ async function loadRevenue() {
       : '<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:20px">No transactions found</td></tr>'
   } catch(e) {
     console.error('Revenue load error:', e)
+    const el = document.getElementById('rev-months')
+    if (el) el.innerHTML = '<div style="color:var(--red);font-size:12px">⚠ Failed to load revenue — ' + (e.message||'network error') + '</div>'
   }
 }
 
