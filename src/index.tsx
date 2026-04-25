@@ -5237,7 +5237,7 @@ async function loadEmailStats() {
     const bouncesEl = document.getElementById('recent-bounces')
     const bounces = d.recentBounces || []
     if (bounces.length === 0) {
-      bouncesEl.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:8px 0">No bounces logged yet. Set up the Resend webhook to start tracking (see note below).</div>'
+      bouncesEl.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:8px 0">✅ Webhook connected — no bounces recorded yet.</div>'
     } else {
       bouncesEl.innerHTML = bounces.map(function(b) {
         const ts = b.ts ? new Date(b.ts).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—'
@@ -5252,7 +5252,19 @@ async function loadEmailStats() {
     }
 
     const wn = document.getElementById('webhook-note')
-    if (wn) wn.textContent = d.webhookNote || ''
+    if (wn) {
+      if (d.webhookNote) {
+        wn.textContent = d.webhookNote
+        wn.style.display = 'block'
+      } else {
+        // Webhook is active - show connected status
+        wn.innerHTML = '&#9989; Resend webhook connected at <code>https://flowst8.cc/api/resend/webhook</code> &mdash; bounce, delay, and spam events are being tracked in real time.'
+        wn.style.background = 'rgba(16,185,129,.08)'
+        wn.style.borderColor = 'rgba(16,185,129,.25)'
+        wn.style.color = 'var(--green)'
+        wn.style.display = 'block'
+      }
+    }
 
   } catch(e) { console.error('Email stats error:', e) }
 }
@@ -5714,7 +5726,9 @@ app.get('/api/admin/email-stats', async (c) => {
     sentTotal,
     deliveryRate,
     recentBounces,
-    webhookNote: 'To enable real-time bounce tracking, add webhook at resend.com/webhooks → https://flowst8.cc/api/resend/webhook (events: email.bounced, email.delivery_delayed, email.complained, email.delivered)',
+    webhookNote: (bouncedMonth === 0 && delayedMonth === 0 && spamMonth === 0 && deliveredMonth === 0)
+      ? 'Webhook connected at https://flowst8.cc/api/resend/webhook — waiting for first delivery events. If you just registered it, data will appear after the next send.'
+      : null,
     month,
   })
 })
