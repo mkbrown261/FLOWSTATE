@@ -3829,7 +3829,9 @@ app.get('/api/auth/magic-link/verify', async (c) => {
       const session = { name: data.name, email: data.email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
       setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
       if (c.env?.DB) {
-        try { await upsertUser(c.env.DB, data.email, data.name, '', 'magic_link') } catch (_) {}
+        try { await upsertUser(c.env.DB, data.email, data.name, '', 'magic_link') } catch (dbErr: any) {
+          console.error('[magic-link verify] D1 upsert failed:', dbErr?.message)
+        }
       }
       return c.html(magicLinkSuccessPage(data.name))
     } catch (err: any) {
@@ -3845,7 +3847,9 @@ app.get('/api/auth/magic-link/verify', async (c) => {
       const session = { name: data.name, email: data.email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
       setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
       if (c.env?.DB) {
-        try { await upsertUser(c.env.DB, data.email, data.name, '', 'magic_link') } catch (_) {}
+        try { await upsertUser(c.env.DB, data.email, data.name, '', 'magic_link') } catch (dbErr: any) {
+          console.error('[magic-link verify legacy] D1 upsert failed:', dbErr?.message)
+        }
       }
       return c.html(magicLinkSuccessPage(data.name))
     } catch { return c.html(authErrorPage('Invalid token. Please <a href="/" style="color:#a855f7">request a new sign-in link</a>.')) }
@@ -10007,6 +10011,11 @@ app.get('/', async (c) => {
         realTier = (results[0] || results[1] || 'free') as string
       } catch { realTier = 'free' }
     }
+  }
+
+  // Lazy-register user in D1 on every authenticated page load (catches users who slipped through verify)
+  if (session?.email && c.env?.DB) {
+    upsertUser(c.env.DB, session.email, session.name || session.email.split('@')[0], session.picture || '', session.provider || 'magic_link').catch(() => {})
   }
 
   const userJson     = session     ? JSON.stringify({ name: session.name, email: session.email, picture: session.picture, role: session.role || 'member', tier: realTier, provider: session.provider }) : 'null'
