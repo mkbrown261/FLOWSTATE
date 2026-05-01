@@ -13,8 +13,9 @@ import {
   declareClawbotSession, declareClawbotSystemPrompt, declareWalkthrough,
   declareCoinLedgerEntry, declareClawFlowPromo,
   declareAudioGeneration, declareAudioProject, declareAudioArrangementSuggestion,
+  declareAppGenIntent,
   MODEL_REGISTRY, IMAGE_MODEL_REGISTRY, VIDEO_MODEL_REGISTRY, CREDENTIAL_TABLE,
-  type SessionIntent, type BehaviorData, type AudioAiTool,
+  type SessionIntent, type BehaviorData, type AudioAiTool, type AppTemplate,
 } from './intent-layer'
 
 type Bindings = {
@@ -300,16 +301,17 @@ app.post('/api/chat/stream', async (c) => {
   if (!apiKey) return c.text(getDemoResponse(message, spec.name), 200, { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel, 'X-Routing-Reason': intent.reasoning })
   const systemMsg = systemOverride || intent.systemPrompt
   const allMessages = [...history.slice(-10), { role: 'user', content: message }]
+  const maxTok = (intent.taskType === 'code' || intent.taskType === 'app_gen') ? 8192 : 2048
   try {
     if (spec.provider === 'anthropic') {
-      const res = await fetch(spec.apiEndpoint, { method: 'POST', headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, body: JSON.stringify({ model: spec.apiModel, max_tokens: 2048, system: systemMsg, messages: allMessages, stream: true }) })
+      const res = await fetch(spec.apiEndpoint, { method: 'POST', headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, body: JSON.stringify({ model: spec.apiModel, max_tokens: maxTok, system: systemMsg, messages: allMessages, stream: true }) })
       return new Response(await extractAnthropicStream(res), { headers: { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel } })
     }
     if (spec.provider === 'google') {
-      const res = await fetch(spec.apiEndpoint + '?key=' + apiKey + '&alt=sse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system_instruction: { parts: [{ text: systemMsg }] }, contents: allMessages.map((m: any) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig: { maxOutputTokens: 2048 } }) })
+      const res = await fetch(spec.apiEndpoint + '?key=' + apiKey + '&alt=sse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system_instruction: { parts: [{ text: systemMsg }] }, contents: allMessages.map((m: any) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig: { maxOutputTokens: maxTok } }) })
       return new Response(await extractGeminiStream(res), { headers: { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel } })
     }
-    const res = await fetch(spec.apiEndpoint, { method: 'POST', headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: spec.apiModel, messages: [{ role: 'system', content: systemMsg }, ...allMessages], stream: true, max_tokens: 2048 }) })
+    const res = await fetch(spec.apiEndpoint, { method: 'POST', headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: spec.apiModel, messages: [{ role: 'system', content: systemMsg }, ...allMessages], stream: true, max_tokens: maxTok }) })
     return new Response(await extractOpenAIStream(res), { headers: { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel, 'X-Routing-Reason': intent.reasoning } })
   } catch (err: any) { return c.text('[Error: ' + err.message + '] ' + getDemoResponse(message, spec.name), 200, { 'Content-Type': 'text/plain' }) }
 })
@@ -369,6 +371,62 @@ app.post('/api/generate/video', async (c) => {
   const apiKey = (c.env as any)?.[spec.envKey]
   if (!apiKey) return c.json({ error: spec.name + ' API key not configured (' + spec.envKey + ')', demo: true, message: 'Demo: Would generate ' + duration + 's video with ' + spec.name + ': "' + prompt.slice(0, 60) + '"' })
   return c.json({ queued: true, model: spec.name, prompt, message: 'Video generation queued. This typically takes 1-3 minutes.' })
+})
+
+// ─── App Generation ─────────────────────────────────────────────────────────
+app.post('/api/generate/app', async (c) => {
+  const { prompt, template = 'react_app', model = 'claude-3-7-sonnet' } = await c.req.json()
+  if (!prompt || prompt.trim().length < 10) return c.json({ error: 'Prompt too short. Describe what you want to build.' }, 400)
+  const intent = declareAppGenIntent({ prompt, template: template as AppTemplate, model })
+  const apiKey = (c.env as any)?.[intent.envKey]
+  if (!apiKey) {
+    return c.json({
+      demo: true,
+      output: `=== ARCHITECTURE SUMMARY ===\nDemo mode — add ${intent.envKey} to unlock real generation.\n\nThis would generate a complete ${template.replace(/_/g,' ')} from your prompt:\n"${prompt.slice(0,120)}"\n\n=== FILE: src/App.tsx ===\n// Full implementation would appear here with:\n// - Complete TypeScript types\n// - All imports and dependencies\n// - Working business logic\n// - Error handling\n// - Responsive styling\n// Add ${intent.envKey} in Settings to generate real code.\n=== END FILE ===\n\n=== SETUP ===\n1. Add ${intent.envKey} in FlowState Settings\n2. Re-run the generation\n3. Copy files to your project\n=== END SETUP ===`,
+      model: intent.model,
+      template,
+    })
+  }
+  try {
+    let rawOutput = ''
+    if (intent.provider === 'anthropic') {
+      const res = await fetch(intent.apiEndpoint, {
+        method: 'POST',
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: intent.apiModel, max_tokens: intent.maxTokens, system: intent.systemPrompt, messages: [{ role: 'user', content: intent.userPrompt }] }),
+      })
+      const data: any = await res.json()
+      rawOutput = data.content?.[0]?.text || data.error?.message || 'No output generated.'
+    } else if (intent.provider === 'google') {
+      const res = await fetch(intent.apiEndpoint.replace('streamGenerateContent', 'generateContent') + '?key=' + apiKey, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ system_instruction: { parts: [{ text: intent.systemPrompt }] }, contents: [{ role: 'user', parts: [{ text: intent.userPrompt }] }], generationConfig: { maxOutputTokens: intent.maxTokens } }),
+      })
+      const data: any = await res.json()
+      rawOutput = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No output generated.'
+    } else {
+      const res = await fetch(intent.apiEndpoint, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: intent.apiModel, max_tokens: intent.maxTokens, messages: [{ role: 'system', content: intent.systemPrompt }, { role: 'user', content: intent.userPrompt }] }),
+      })
+      const data: any = await res.json()
+      rawOutput = data.choices?.[0]?.message?.content || 'No output generated.'
+    }
+    // Parse files from output
+    const files: Array<{ path: string; content: string }> = []
+    const fileRegex = /=== FILE: (.+?) ===[\s\S]*?\n([\s\S]*?)=== END FILE ===/g
+    let match
+    while ((match = fileRegex.exec(rawOutput)) !== null) {
+      files.push({ path: match[1].trim(), content: match[2].trim() })
+    }
+    const setupMatch = /=== SETUP ===[\s\S]*?\n([\s\S]*?)=== END SETUP ===/g.exec(rawOutput)
+    const setup = setupMatch ? setupMatch[1].trim() : ''
+    return c.json({ output: rawOutput, files, setup, model: intent.model, template, fileCount: files.length })
+  } catch (err: any) {
+    return c.json({ error: 'Generation failed: ' + err.message }, 500)
+  }
 })
 
 // ─── Session Context + Intent ─────────────────────────────────────────────────
@@ -1125,6 +1183,37 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:rgba
 .gen-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:11px;margin-top:13px}
 .gen-img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:11px;border:1px solid var(--border);cursor:pointer;transition:.2s}
 .gen-img:hover{border-color:var(--accent);transform:scale(1.02)}
+.appgen-wrap{display:flex;flex-direction:column;gap:14px}
+.appgen-controls{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:4px}
+.appgen-pmt{width:100%;background:var(--bg-card);border:1px solid var(--border);border-radius:11px;padding:12px 15px;color:var(--text-p);font-size:14px;font-family:inherit;resize:vertical;min-height:110px;outline:none;box-sizing:border-box}
+.appgen-pmt:focus{border-color:var(--accent)}
+.appgen-output{background:#0a0a14;border:1px solid var(--border);border-radius:13px;overflow:hidden;display:none;flex-direction:column}
+.appgen-output.visible{display:flex}
+.appgen-toolbar{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(168,85,247,.07);border-bottom:1px solid var(--border);flex-shrink:0}
+.appgen-toolbar-left{display:flex;align-items:center;gap:10px;font-size:12px;font-weight:700;color:var(--accent)}
+.appgen-toolbar-right{display:flex;gap:8px}
+.appgen-tab-btn{padding:4px 12px;border-radius:8px;font-size:11px;font-weight:700;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;transition:.15s}
+.appgen-tab-btn.active{background:rgba(168,85,247,.15);border-color:var(--accent);color:var(--accent)}
+.appgen-file-tree{width:200px;flex-shrink:0;border-right:1px solid var(--border);padding:10px 8px;overflow-y:auto;max-height:480px;display:none}
+.appgen-file-tree.visible{display:block}
+.appgen-file-item{padding:5px 10px;border-radius:7px;font-size:11px;font-family:monospace;color:var(--text-s);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:.15s}
+.appgen-file-item:hover{background:rgba(168,85,247,.1);color:var(--text-p)}
+.appgen-file-item.active{background:rgba(168,85,247,.18);color:var(--accent);font-weight:700}
+.appgen-content{display:flex;flex:1;min-height:0}
+.appgen-code{flex:1;overflow-y:auto;max-height:480px;margin:0;padding:16px;font-size:12px;font-family:monospace;line-height:1.6;color:#e2e8f0;white-space:pre-wrap;word-break:break-word;background:transparent}
+.appgen-raw{flex:1;overflow-y:auto;max-height:480px;padding:16px;font-size:12px;font-family:monospace;line-height:1.6;color:#94a3b8;white-space:pre-wrap;word-break:break-word}
+.appgen-setup{padding:16px;font-size:13px;line-height:1.7;color:var(--text-p);overflow-y:auto;max-height:480px}
+.appgen-setup ol{padding-left:20px;margin:0}
+.appgen-setup li{margin-bottom:6px}
+.appgen-stats{display:flex;gap:14px;font-size:11px;color:var(--text-s);padding:8px 14px;border-top:1px solid var(--border);flex-shrink:0}
+.appgen-stat{display:flex;align-items:center;gap:5px}
+.appgen-stat span{color:var(--accent);font-weight:700}
+.appgen-spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(168,85,247,.3);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.appgen-copy-btn{padding:4px 11px;border-radius:7px;font-size:11px;font-weight:700;border:1px solid var(--border);background:rgba(168,85,247,.08);color:var(--text-s);cursor:pointer;transition:.15s}
+.appgen-copy-btn:hover{border-color:var(--accent);color:var(--accent)}
+.appgen-dl-btn{padding:4px 11px;border-radius:7px;font-size:11px;font-weight:700;border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.08);color:#10b981;cursor:pointer;transition:.15s}
+.appgen-dl-btn:hover{background:rgba(16,185,129,.15)}
 .tip-bub{position:fixed;bottom:76px;right:18px;max-width:290px;background:var(--bg-panel);border:1px solid var(--border-h);border-radius:14px;padding:14px;box-shadow:0 8px 30px rgba(0,0,0,.4);z-index:1000;animation:slideR .3s ease}
 .tip-hd{display:flex;align-items:center;gap:7px;margin-bottom:7px}
 .tip-emoji{font-size:18px}
@@ -1544,7 +1633,67 @@ em{color:var(--accent);font-style:italic}
 
 <!-- GENERATE TAB -->
 <div class="tab-pane" id="tab-pane-generate" style="display:none">
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+  <!-- App Code Generator -->
+  <div class="gen-panel" style="margin-bottom:16px">
+    <div class="gen-title"><i class="fas fa-code" style="color:var(--accent)"></i> App Code Generator <span style="font-size:10px;font-weight:600;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;padding:2px 8px;border-radius:20px;margin-left:6px">NEW</span></div>
+    <p style="font-size:12px;color:var(--text-s);margin:0 0 12px">Describe any app, tool, dashboard, or API. FlowState AI generates complete, production-ready code with all files, imports, and setup instructions.</p>
+    <div class="appgen-controls">
+      <div>
+        <label style="font-size:11px;color:var(--text-s);font-weight:600;display:block;margin-bottom:5px">Template</label>
+        <select class="fs-sel" id="appgen-template" style="width:100%">
+          <option value="react_app">&#x269B; React App (TypeScript + Vite)</option>
+          <option value="landing_page">&#x1F3A8; Landing Page (HTML + CSS + JS)</option>
+          <option value="dashboard">&#x1F4CA; Dashboard (React + mock data)</option>
+          <option value="rest_api">&#x1F527; REST API (Node + Express + Zod)</option>
+          <option value="fullstack">&#x26A1; Full-Stack (Next.js 14 App Router)</option>
+          <option value="cli_tool">&#x1F4BB; CLI Tool (Node + TypeScript)</option>
+          <option value="saas_starter">&#x1F680; SaaS Starter (Next.js + Auth + DB)</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--text-s);font-weight:600;display:block;margin-bottom:5px">AI Model</label>
+        <select class="fs-sel" id="appgen-model" style="width:100%">
+          <option value="claude-3-7-sonnet">Claude 3.7 Sonnet (Best for code)</option>
+          <option value="gpt-4o">GPT-4o (OpenAI)</option>
+          <option value="deepseek-r1">DeepSeek R1 (Reasoning)</option>
+          <option value="gemini-2-flash">Gemini 2.0 Flash (Fast)</option>
+        </select>
+      </div>
+    </div>
+    <textarea class="appgen-pmt" id="appgen-prompt" placeholder="Describe what you want to build...&#10;&#10;Examples:&#10;&#8226; A task manager app with drag-and-drop, local storage, and dark mode&#10;&#8226; A REST API for a blog with posts, comments, auth, and rate limiting&#10;&#8226; A SaaS dashboard with user analytics, billing page, and team management"></textarea>
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="btn-gen" id="btn-gen-app" style="flex:1"><i class="fas fa-code-branch"></i>&nbsp; Generate Complete App</button>
+      <span style="font-size:11px;color:var(--text-s)">~8,000 token budget</span>
+    </div>
+  </div>
+
+  <!-- App Output -->
+  <div class="appgen-output" id="appgen-output">
+    <div class="appgen-toolbar">
+      <div class="appgen-toolbar-left">
+        <i class="fas fa-folder-open"></i>
+        <span id="appgen-output-title">Generated App</span>
+        <span id="appgen-file-count" style="color:var(--text-s);font-weight:400"></span>
+      </div>
+      <div class="appgen-toolbar-right">
+        <button class="appgen-tab-btn active" id="appgen-view-files" onclick="appgenSwitchView('files')">Files</button>
+        <button class="appgen-tab-btn" id="appgen-view-raw" onclick="appgenSwitchView('raw')">Raw</button>
+        <button class="appgen-tab-btn" id="appgen-view-setup" onclick="appgenSwitchView('setup')">Setup</button>
+        <button class="appgen-copy-btn" id="appgen-copy-btn" onclick="appgenCopyAll()"><i class="fas fa-copy"></i> Copy All</button>
+        <button class="appgen-dl-btn" id="appgen-dl-btn" onclick="appgenDownload()"><i class="fas fa-download"></i> Download</button>
+      </div>
+    </div>
+    <div class="appgen-content">
+      <div class="appgen-file-tree" id="appgen-file-tree"></div>
+      <pre class="appgen-code" id="appgen-code-view"></pre>
+      <div class="appgen-raw" id="appgen-raw-view" style="display:none"></div>
+      <div class="appgen-setup" id="appgen-setup-view" style="display:none"></div>
+    </div>
+    <div class="appgen-stats" id="appgen-stats"></div>
+  </div>
+
+  <!-- Image + Video row -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
     <div class="gen-panel">
       <div class="gen-title"><i class="fas fa-image" style="color:var(--accent)"></i> Image Generation</div>
       <select class="fs-sel" id="img-model-sel" style="width:100%;margin-bottom:10px">

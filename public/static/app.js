@@ -260,6 +260,7 @@ function initTimer() {
   document.getElementById('btn-refresh-team').addEventListener('click', buildTeam);
   document.getElementById('btn-gen-img').addEventListener('click', generateImage);
   document.getElementById('btn-gen-vid').addEventListener('click', generateVideo);
+  document.getElementById('btn-gen-app').addEventListener('click', generateApp);
   document.querySelectorAll('.s-chip').forEach(c => c.addEventListener('click', () => toggleSound(c.dataset.sound)));
 }
 
@@ -1114,6 +1115,121 @@ async function generateVideo() {
     document.getElementById('vid-result').innerHTML = d.queued ? `<i class="fas fa-clock" style="color:var(--warn)"></i> ${d.message||'Video queued for generation.'}` : (d.videoUrl ? `<video src="${d.videoUrl}" controls style="width:100%;border-radius:11px"></video>` : `<span style="color:var(--danger)">${d.error||'Generation failed'}</span>`);
   } catch(e) { notify('Video generation error','error'); }
   finally { btn.disabled=false; btn.innerHTML='<i class="fas fa-film"></i>&nbsp; Generate Video'; }
+}
+
+// ── App Generator ─────────────────────────────────────────────────────────
+let _appGenData = { raw: '', files: [], setup: '', currentFile: 0, view: 'files' };
+
+async function generateApp() {
+  const prompt   = document.getElementById('appgen-prompt').value.trim();
+  const template = document.getElementById('appgen-template').value;
+  const model    = document.getElementById('appgen-model').value;
+  if (!prompt || prompt.length < 10) { notify('Describe what you want to build (at least 10 characters)','error'); return; }
+  const btn = document.getElementById('btn-gen-app');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="appgen-spinner"></span> Generating — this may take 30-60s...';
+  const output = document.getElementById('appgen-output');
+  output.classList.remove('visible');
+  try {
+    const r = await fetch('/api/generate/app', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, template, model }),
+    });
+    const d = await r.json();
+    if (d.error) { notify(d.error, 'error'); return; }
+    _appGenData = { raw: d.output || '', files: d.files || [], setup: d.setup || '', currentFile: 0, view: 'files' };
+    appgenRenderOutput(template, model, d.demo);
+  } catch(e) {
+    notify('App generation error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-code-branch"></i>&nbsp; Generate Complete App';
+  }
+}
+
+function appgenRenderOutput(template, model, isDemo) {
+  const output = document.getElementById('appgen-output');
+  const title  = document.getElementById('appgen-output-title');
+  const count  = document.getElementById('appgen-file-count');
+  const stats  = document.getElementById('appgen-stats');
+  const files  = _appGenData.files;
+  title.textContent = template.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()) + (isDemo ? ' (Demo)' : '');
+  count.textContent = files.length ? ' · ' + files.length + ' file' + (files.length===1?'':'s') : '';
+  const totalLines = files.reduce((n,f) => n + f.content.split('\n').length, 0);
+  const totalChars = _appGenData.raw.length;
+  stats.innerHTML = [
+    `<div class="appgen-stat"><i class="fas fa-file-code"></i> <span>${files.length}</span> files</div>`,
+    `<div class="appgen-stat"><i class="fas fa-list-ol"></i> <span>${totalLines.toLocaleString()}</span> lines</div>`,
+    `<div class="appgen-stat"><i class="fas fa-font"></i> <span>${(totalChars/1000).toFixed(1)}k</span> chars</div>`,
+    `<div class="appgen-stat"><i class="fas fa-robot"></i> <span>${model.replace('claude-3-7-sonnet','Claude 3.7').replace('gpt-4o','GPT-4o').replace('deepseek-r1','DeepSeek R1').replace('gemini-2-flash','Gemini 2.0')}</span></div>`,
+  ].join('');
+  // Build file tree
+  const tree = document.getElementById('appgen-file-tree');
+  if (files.length > 0) {
+    tree.classList.add('visible');
+    tree.innerHTML = files.map((f, i) =>
+      `<div class="appgen-file-item${i===0?' active':''}" onclick="appgenSelectFile(${i})" title="${escHtml(f.path)}">${escHtml(f.path)}</div>`
+    ).join('');
+  } else {
+    tree.classList.remove('visible');
+  }
+  appgenSwitchView('files');
+  output.classList.add('visible');
+  output.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function appgenSelectFile(idx) {
+  const files = _appGenData.files;
+  if (!files[idx]) return;
+  _appGenData.currentFile = idx;
+  document.querySelectorAll('.appgen-file-item').forEach((el,i) => el.classList.toggle('active', i===idx));
+  const codeView = document.getElementById('appgen-code-view');
+  codeView.textContent = files[idx].content;
+}
+
+function appgenSwitchView(view) {
+  _appGenData.view = view;
+  document.getElementById('appgen-view-files').classList.toggle('active', view==='files');
+  document.getElementById('appgen-view-raw').classList.toggle('active', view==='raw');
+  document.getElementById('appgen-view-setup').classList.toggle('active', view==='setup');
+  const codeView  = document.getElementById('appgen-code-view');
+  const rawView   = document.getElementById('appgen-raw-view');
+  const setupView = document.getElementById('appgen-setup-view');
+  const fileTree  = document.getElementById('appgen-file-tree');
+  codeView.style.display  = view==='files'  ? 'block' : 'none';
+  rawView.style.display   = view==='raw'    ? 'block' : 'none';
+  setupView.style.display = view==='setup'  ? 'block' : 'none';
+  fileTree.style.display  = (view==='files' && _appGenData.files.length > 0) ? 'block' : 'none';
+  if (view==='files') {
+    const f = _appGenData.files[_appGenData.currentFile];
+    codeView.textContent = f ? f.content : _appGenData.raw;
+  } else if (view==='raw') {
+    rawView.textContent = _appGenData.raw;
+  } else if (view==='setup') {
+    const setupText = _appGenData.setup || 'No setup instructions found. Check the Raw tab for full output.';
+    setupView.innerHTML = '<ol>' + setupText.split('\n').filter(l=>l.trim()).map(l => {
+      const clean = l.replace(/^\d+\.\s*/, '');
+      return `<li>${escHtml(clean)}</li>`;
+    }).join('') + '</ol>';
+  }
+}
+
+function appgenCopyAll() {
+  const text = _appGenData.view === 'files'
+    ? (_appGenData.files[_appGenData.currentFile]?.content || _appGenData.raw)
+    : _appGenData.raw;
+  navigator.clipboard.writeText(text).then(() => notify('Copied to clipboard ✓', 'success')).catch(() => notify('Copy failed','error'));
+}
+
+function appgenDownload() {
+  if (!_appGenData.raw) return;
+  const blob = new Blob([_appGenData.raw], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'generated-app.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
