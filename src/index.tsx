@@ -28,9 +28,8 @@ import {
   declareClawbotSession, declareClawbotSystemPrompt, declareWalkthrough,
   declareCoinLedgerEntry, declareClawFlowPromo,
   declareAudioGeneration, declareAudioProject, declareAudioArrangementSuggestion,
-  declareAppGenIntent,
   MODEL_REGISTRY, IMAGE_MODEL_REGISTRY, VIDEO_MODEL_REGISTRY, CREDENTIAL_TABLE,
-  type SessionIntent, type BehaviorData, type AudioAiTool, type AppTemplate,
+  type SessionIntent, type BehaviorData, type AudioAiTool,
 } from './intent-layer'
 import {
   resolveAIExecution,
@@ -1862,8 +1861,9 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
    - clamp() for fluid typography
 9. The FSDS CSS is AUTO-INJECTED into HTML — do NOT redefine :root variables or re-import Google Fonts.
 10. NEW page request → completely fresh file. Different layout, different component arrangement. Never clone existing structure.
-11. EDIT request → return the COMPLETE modified file. Reproduce the ENTIRE file with ONLY the requested changes applied.
-12. MULTI-FILE for complex apps (150+ lines): separate index.html + styles.css + app.js. React: index.html + App.jsx + components/*.jsx
+11. EDIT request → SURGICAL CHANGES ONLY. Return ONLY the files that changed. Do NOT rewrite or return files that weren't affected. Do NOT restructure, reorganize, or rename anything that wasn't explicitly asked for. Reproduce the entire changed file with ONLY the requested change applied — zero other modifications.
+12. FRESH BUILD → AI decides the best stack and libraries for the job. If the user says "Three.js", use Three.js. If they describe something that needs a physics engine, use one. Never force a generic stack — match the tool to the task.
+13. MULTI-FILE for complex apps (150+ lines): separate index.html + styles.css + app.js. React: index.html + App.jsx + components/*.jsx
 13. INTERACTIVITY CHECKLIST — before finalizing, verify:
     ✅ Navigation links work (scroll-to-section or href)
     ✅ All buttons have click handlers
@@ -1885,8 +1885,20 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
     return { role: m.role, content: m.content }
   })
 
+  // ── Detect edit vs fresh build ───────────────────────────────────────────
+  const isEditRequest = Object.keys(generatedFiles).length > 0 &&
+    /\b(change|fix|update|edit|modify|add|remove|delete|replace|rename|move|make|adjust|tweak|swap|turn|set|convert|increase|decrease|bigger|smaller|color|colour|font|size|margin|padding|spacing|button|text|label|icon|style|dark|light|header|footer|nav|sidebar|mobile|responsive|center|align|bold|italic|underline|hover|click|animate|slide|fade|bounce|transition|shadow|border|rounded|gradient|background|image|logo|title|heading|subtitle|caption|placeholder)\b/i.test(lowerPrompt) &&
+    !/\b(new page|new view|new screen|build|create|make a|generate|from scratch)\b/i.test(lowerPrompt)
+
+  // ── Estimate output size for big-write warning ─────────────────────────
+  const existingFileSizes = Object.values(generatedFiles).reduce((sum: number, c: any) => sum + String(c).length, 0)
+  const isLargeBuild = !isEditRequest && (prompt.length > 200 || /\b(full.?stack|saas|dashboard|complete|entire|whole|all pages|three\.?js|threejs|canvas|webgl|animation|particle|shader|3d|physics|game engine)\b/i.test(lowerPrompt))
+  const isLargeEdit = isEditRequest && existingFileSizes > 8000
+
   const currentUserMsg = isNewPageRequest
-    ? `Task: ${prompt}\n\n[NEW page — blank canvas, no copying from existing HTML files]`
+    ? `Task: ${prompt}\n\n[NEW page — blank canvas, do not copy existing HTML layout]`
+    : isEditRequest
+    ? `SURGICAL EDIT TASK: ${prompt}\n\nINSTRUCTION: You are making a targeted change. Return ONLY the files that need to change. Do not touch unrelated files. Do not restructure, rename, or rewrite sections that weren't mentioned. Apply the minimum change needed to accomplish the task.`
     : `Task: ${prompt}`
 
   // ── FIX 7: JSON prefill for Claude — forces clean JSON output ─────────────
@@ -2210,9 +2222,42 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
         }))
         await new Promise(r => setTimeout(r, 40))
 
-        sseWrite(controller, 'narrate', JSON.stringify({
-          msg: `🎯 Analyzing prompt and planning ${appType} architecture…`, type: 'planning'
-        }))
+        // Detect libraries/tech mentioned in prompt for narration
+        const usesThreeJS = /three\.?js|threejs|webgl|3d scene|3d model/i.test(prompt)
+        const usesD3 = /\bd3\.?js\b|data viz|force graph/i.test(prompt)
+        const usesChartJS = /chart\.?js|bar chart|pie chart|line chart/i.test(prompt)
+        const usesCanvas = /\bcanvas\b|particle|sprite|pixel/i.test(prompt)
+        const usesAnimation = /gsap|framer.?motion|lottie|spring|animate/i.test(prompt)
+        const techHints: string[] = []
+        if (usesThreeJS) techHints.push('Three.js 3D')
+        if (usesD3) techHints.push('D3.js')
+        if (usesChartJS) techHints.push('Chart.js')
+        if (usesCanvas) techHints.push('Canvas API')
+        if (usesAnimation) techHints.push('animations')
+
+        if (isEditRequest) {
+          sseWrite(controller, 'narrate', JSON.stringify({
+            msg: `🔍 Diagnosing what needs to change…`, type: 'thinking'
+          }))
+          await new Promise(r => setTimeout(r, 30))
+          sseWrite(controller, 'narrate', JSON.stringify({
+            msg: isLargeEdit
+              ? `✏️ Applying targeted edit to ${Object.keys(generatedFiles).length} existing file${Object.keys(generatedFiles).length > 1 ? 's' : ''} — large project, give it a second…`
+              : `✏️ Applying surgical edit — only changing what you asked for…`,
+            type: 'planning'
+          }))
+        } else {
+          if (isLargeBuild) {
+            sseWrite(controller, 'narrate', JSON.stringify({
+              msg: `⚠️ Large build detected — this might take 15–30 seconds. Don’t close the tab.`, type: 'info'
+            }))
+            await new Promise(r => setTimeout(r, 30))
+          }
+          const techMsg = techHints.length ? ` Using ${techHints.join(', ')}.` : ''
+          sseWrite(controller, 'narrate', JSON.stringify({
+            msg: `🎯 Analyzing and planning ${appType} architecture…${techMsg}`, type: 'planning'
+          }))
+        }
 
         // ── Call model ───────────────────────────────────────────────────
         let rawResponse = ''
@@ -3418,61 +3463,6 @@ app.get('/api/generate/video/status/:jobId', async (c) => {
     const videoUrl = Array.isArray(output) ? output[0] : output
     return c.json({ status: data.status, videoUrl: videoUrl || null, error: data.error || null, progress: data.logs || null })
   } catch (err: any) { return c.json({ error: err.message }, 500) }
-})
-
-// ─── App Generation ─────────────────────────────────────────────────────────
-app.post('/api/generate/app', async (c) => {
-  const { prompt, template = 'react_app', model = 'claude-3-7-sonnet' } = await c.req.json()
-  if (!prompt || prompt.trim().length < 10) return c.json({ error: 'Prompt too short. Describe what you want to build.' }, 400)
-  const intent = declareAppGenIntent({ prompt, template: template as AppTemplate, model })
-  // Resolve API key: prefer OpenRouter for most, direct for Google
-  const apiKey = intent.provider === 'google'
-    ? (c.env as any)?.GOOGLE_AI_KEY
-    : ((c.env as any)?.OPENROUTER_API_KEY || (c.env as any)?.[intent.envKey])
-  if (!apiKey) {
-    return c.json({
-      demo: true,
-      output: `=== ARCHITECTURE SUMMARY ===\nDemo mode — add OPENROUTER_API_KEY or ${intent.envKey} to unlock real generation.\n\nThis would generate a complete ${template.replace(/_/g,' ')} from:\n"${prompt.slice(0,120)}"\n\n=== FILE: src/App.tsx ===\n// Full implementation would appear here (all files, all imports, working logic)\n// Add API key in Settings → Credentials to generate real code.\n=== END FILE ===\n\n=== SETUP ===\n1. Add OPENROUTER_API_KEY in Settings\n2. Re-run the generation\n3. Copy files to your project\n=== END SETUP ===`,
-      model: intent.model,
-      template,
-    })
-  }
-  try {
-    let rawOutput = ''
-    if (intent.provider === 'google') {
-      const endpoint = intent.apiEndpoint.replace('streamGenerateContent','generateContent')
-      const res = await fetch(endpoint + '?key=' + apiKey, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ system_instruction: { parts: [{ text: intent.systemPrompt }] }, contents: [{ role: 'user', parts: [{ text: intent.userPrompt }] }], generationConfig: { maxOutputTokens: intent.maxTokens } }),
-      })
-      const data: any = await res.json()
-      rawOutput = data.candidates?.[0]?.content?.parts?.[0]?.text || JSON.stringify(data)
-    } else {
-      // OpenRouter (handles Anthropic, OpenAI, DeepSeek, etc.)
-      const orModel = intent.provider === 'anthropic' ? 'anthropic/claude-3.5-sonnet'
-        : intent.provider === 'openai' ? 'openai/gpt-4o'
-        : intent.provider === 'deepseek' ? 'deepseek/deepseek-r1'
-        : 'anthropic/claude-3.5-sonnet'
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://flowstate-67g.pages.dev', 'X-Title': 'FlowState App Generator' },
-        body: JSON.stringify({ model: orModel, max_tokens: intent.maxTokens, messages: [{ role: 'system', content: intent.systemPrompt }, { role: 'user', content: intent.userPrompt }] }),
-      })
-      const data: any = await res.json()
-      rawOutput = data.choices?.[0]?.message?.content || data.error?.message || 'No output generated.'
-    }
-    const files: Array<{ path: string; content: string }> = []
-    const fileRegex = /=== FILE: (.+?) ===[\s\S]*?\n([\s\S]*?)=== END FILE ===/g
-    let match
-    while ((match = fileRegex.exec(rawOutput)) !== null) {
-      files.push({ path: match[1].trim(), content: match[2].trim() })
-    }
-    const setupMatch = /=== SETUP ===[\s\S]*?\n([\s\S]*?)=== END SETUP ===/g.exec(rawOutput)
-    const setup = setupMatch ? setupMatch[1].trim() : ''
-    return c.json({ output: rawOutput, files, setup, model: intent.model, template, fileCount: files.length })
-  } catch (err: any) {
-    return c.json({ error: 'Generation failed: ' + err.message }, 500)
-  }
 })
 
 // ─── Session Context + Intent ─────────────────────────────────────────────────
@@ -9380,7 +9370,6 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .legal{font-size:11px;color:var(--legal);line-height:1.5;margin-top:4px}
 .legal a{color:var(--legal-a);text-decoration:underline}
 .spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:8px}
-@keyframes spin{to{transform:rotate(360deg)}}
 
 </style>
 </head>
@@ -10100,32 +10089,6 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .gen-i2v-right{display:flex;flex-direction:column;gap:10px}
 .gen-img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:11px;border:1px solid var(--border);cursor:pointer;transition:.2s}
 .gen-img:hover{border-color:var(--accent);transform:scale(1.02)}
-.appgen-output{background:#0a0a14;border:1px solid var(--border);border-radius:13px;overflow:hidden;display:none;flex-direction:column;margin-top:12px}
-.appgen-output.visible{display:flex}
-.appgen-toolbar{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(168,85,247,.07);border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap;gap:8px}
-.appgen-toolbar-left{display:flex;align-items:center;gap:10px;font-size:12px;font-weight:700;color:var(--accent)}
-.appgen-toolbar-right{display:flex;gap:6px;flex-wrap:wrap}
-.appgen-tab-btn{padding:4px 12px;border-radius:8px;font-size:11px;font-weight:700;border:1px solid var(--border);background:transparent;color:var(--text-s);cursor:pointer;transition:.15s}
-.appgen-tab-btn.active{background:rgba(168,85,247,.15);border-color:var(--accent);color:var(--accent)}
-.appgen-file-tree{width:190px;flex-shrink:0;border-right:1px solid var(--border);padding:10px 8px;overflow-y:auto;max-height:440px}
-.appgen-file-item{padding:5px 10px;border-radius:7px;font-size:11px;font-family:monospace;color:var(--text-s);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:.15s}
-.appgen-file-item:hover{background:rgba(168,85,247,.1);color:var(--text-p)}
-.appgen-file-item.active{background:rgba(168,85,247,.18);color:var(--accent);font-weight:700}
-.appgen-content{display:flex;flex:1;min-height:0}
-.appgen-code{flex:1;overflow-y:auto;max-height:440px;margin:0;padding:16px;font-size:12px;font-family:monospace;line-height:1.6;color:#e2e8f0;white-space:pre-wrap;word-break:break-word;background:transparent}
-.appgen-raw{flex:1;overflow-y:auto;max-height:440px;padding:16px;font-size:12px;font-family:monospace;line-height:1.6;color:#94a3b8;white-space:pre-wrap;word-break:break-word}
-.appgen-setup{padding:16px;font-size:13px;line-height:1.7;color:var(--text-p);overflow-y:auto;max-height:440px}
-.appgen-setup ol{padding-left:20px;margin:0}
-.appgen-setup li{margin-bottom:6px}
-.appgen-stats{display:flex;gap:14px;font-size:11px;color:var(--text-s);padding:8px 14px;border-top:1px solid var(--border);flex-shrink:0;flex-wrap:wrap}
-.appgen-stat{display:flex;align-items:center;gap:5px}
-.appgen-stat span{color:var(--accent);font-weight:700}
-.appgen-spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(168,85,247,.3);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;margin-right:8px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.appgen-copy-btn{padding:4px 11px;border-radius:7px;font-size:11px;font-weight:700;border:1px solid var(--border);background:rgba(168,85,247,.08);color:var(--text-s);cursor:pointer;transition:.15s}
-.appgen-copy-btn:hover{border-color:var(--accent);color:var(--accent)}
-.appgen-dl-btn{padding:4px 11px;border-radius:7px;font-size:11px;font-weight:700;border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.08);color:#10b981;cursor:pointer;transition:.15s}
-.appgen-dl-btn:hover{background:rgba(16,185,129,.15)}
 .tip-bub{position:fixed;bottom:76px;right:18px;max-width:290px;background:var(--bg-panel);border:1px solid var(--border-h);border-radius:14px;padding:14px;box-shadow:0 8px 30px rgba(0,0,0,.4);z-index:1000;animation:slideR .3s ease}
 .tip-hd{display:flex;align-items:center;gap:7px;margin-bottom:7px}
 .tip-emoji{font-size:18px}
@@ -10185,7 +10148,6 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 @keyframes slideR{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:translateX(0)}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
 @keyframes pulse{0%,100%{opacity:.6;transform:scale(1)}50%{opacity:1;transform:scale(1.5)}}
-@keyframes spin{to{transform:rotate(360deg)}}
 .modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99998;backdrop-filter:blur(8px);padding:14px}
 .modal-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:18px;padding:28px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto}
 .modal-card.modal-wide{max-width:900px}
@@ -10799,7 +10761,6 @@ em{color:var(--accent);font-style:italic}
     <button class="gen-subtab-btn"        id="gsub-filetools" onclick="switchGenSub('filetools')"><i class="fas fa-folder-open"></i> File Tools</button>
     <button class="gen-subtab-btn"        id="gsub-higgsfield" onclick="switchGenSub('higgsfield')" style="background:linear-gradient(135deg,rgba(0,212,255,.12),rgba(0,255,163,.10));border-color:rgba(0,212,255,.3);color:#00d4ff"><i class="fas fa-film"></i> ✦ Higgsfield AI</button>
     <button class="gen-subtab-btn"        id="gsub-code"       onclick="switchGenSub('code')" style="background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(168,85,247,.10));border-color:rgba(16,185,129,.3);color:#10b981"><i class="fas fa-code"></i> ✦ AI Code</button>
-    <button class="gen-subtab-btn"        id="gsub-appgen"     onclick="switchGenSub('appgen')" style="background:linear-gradient(135deg,rgba(168,85,247,.14),rgba(236,72,153,.10));border-color:rgba(168,85,247,.4);color:#a855f7;font-weight:800"><i class="fas fa-rocket"></i> ⚡ App Generator</button>
   </div>
 
   <!-- ── Body: generator area + sidebar ──────────────────── -->
@@ -12014,62 +11975,6 @@ em{color:var(--accent);font-style:italic}
     </div><!-- /code-workspace -->
   </div><!-- /gen-pane-code -->
 
-  </div><!-- /gen-body-wrap -->
-
-    <!-- ══════════════════════════ APP GENERATOR ═══════════════════════ -->
-    <div class="gen-sub-pane" id="gen-pane-appgen" style="padding:20px">
-      <div class="gen-panel" style="margin-bottom:16px">
-        <div class="gen-title"><i class="fas fa-rocket" style="color:var(--accent)"></i> App Code Generator <span style="font-size:10px;font-weight:700;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;padding:2px 9px;border-radius:20px;margin-left:8px">NEW</span></div>
-        <p style="font-size:12px;color:var(--text-s);margin:0 0 14px">Describe any app, tool, dashboard, or API. No login needed — uses your API keys directly. Gets an 8,000 token budget to output complete, production-ready code.</p>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-          <div>
-            <label style="font-size:11px;color:var(--text-s);font-weight:700;display:block;margin-bottom:5px">Template</label>
-            <select class="fs-sel" id="appgen-template" style="width:100%">
-              <option value="react_app">&#x269B; React App (TypeScript + Vite)</option>
-              <option value="landing_page">&#x1F3A8; Landing Page (HTML + CSS + JS)</option>
-              <option value="dashboard">&#x1F4CA; Dashboard (React + mock data)</option>
-              <option value="rest_api">&#x1F527; REST API (Node.js + Express + Zod)</option>
-              <option value="fullstack">&#x26A1; Full-Stack (Next.js 14 App Router)</option>
-              <option value="cli_tool">&#x1F4BB; CLI Tool (Node.js + TypeScript)</option>
-              <option value="saas_starter">&#x1F680; SaaS Starter (Next.js + Auth + DB)</option>
-            </select>
-          </div>
-          <div>
-            <label style="font-size:11px;color:var(--text-s);font-weight:700;display:block;margin-bottom:5px">AI Model</label>
-            <select class="fs-sel" id="appgen-model" style="width:100%">
-              <option value="claude-3-7-sonnet">Claude 3.7 Sonnet (Best for code)</option>
-              <option value="gpt-4o">GPT-4o (OpenAI)</option>
-              <option value="deepseek-r1">DeepSeek R1 (Reasoning)</option>
-              <option value="gemini-2-flash">Gemini 2.0 Flash (Fast)</option>
-            </select>
-          </div>
-        </div>
-        <textarea class="gen-pmt" id="appgen-prompt" placeholder="Describe what you want to build...&#10;&#10;Examples:&#10;&#8226; A task manager with drag-and-drop, local storage, dark mode, and tag filtering&#10;&#8226; A REST API for a blog: posts, comments, JWT auth, rate limiting&#10;&#8226; A SaaS dashboard with user analytics, billing page, and team management" style="min-height:120px"></textarea>
-        <div style="display:flex;align-items:center;gap:12px">
-          <button class="btn-gen" id="btn-gen-app" style="flex:1"><i class="fas fa-code-branch"></i>&nbsp; Generate Complete App</button>
-          <span style="font-size:11px;color:var(--text-s);white-space:nowrap">~8,000 token budget</span>
-        </div>
-      </div>
-      <div class="appgen-output" id="appgen-output">
-        <div class="appgen-toolbar">
-          <div class="appgen-toolbar-left"><i class="fas fa-folder-open"></i><span id="appgen-output-title">Generated App</span><span id="appgen-file-count" style="color:var(--text-s);font-weight:400"></span></div>
-          <div class="appgen-toolbar-right">
-            <button class="appgen-tab-btn active" id="appgen-view-files" onclick="appgenSwitchView('files')">Files</button>
-            <button class="appgen-tab-btn" id="appgen-view-raw" onclick="appgenSwitchView('raw')">Raw</button>
-            <button class="appgen-tab-btn" id="appgen-view-setup" onclick="appgenSwitchView('setup')">Setup</button>
-            <button class="appgen-copy-btn" onclick="appgenCopyAll()"><i class="fas fa-copy"></i> Copy</button>
-            <button class="appgen-dl-btn" onclick="appgenDownload()"><i class="fas fa-download"></i> Download</button>
-          </div>
-        </div>
-        <div class="appgen-content">
-          <div class="appgen-file-tree" id="appgen-file-tree"></div>
-          <pre class="appgen-code" id="appgen-code-view"></pre>
-          <div class="appgen-raw" id="appgen-raw-view" style="display:none"></div>
-          <div class="appgen-setup" id="appgen-setup-view" style="display:none"></div>
-        </div>
-        <div class="appgen-stats" id="appgen-stats"></div>
-      </div>
-    </div>
   </div><!-- /gen-body-wrap -->
 </div><!-- /tab-pane-generate -->
 

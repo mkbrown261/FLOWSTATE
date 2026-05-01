@@ -12,7 +12,7 @@
 
 export type SessionPhase = 'focus' | 'short_break' | 'long_break' | 'idle';
 export type ModelProvider = 'openai' | 'anthropic' | 'google' | 'xai' | 'mistral' | 'deepseek' | 'meta';
-export type TaskCapability = 'code' | 'creative' | 'analysis' | 'quick' | 'vision' | 'reasoning' | 'realtime' | 'long_form' | 'math' | 'app_gen';
+export type TaskCapability = 'code' | 'creative' | 'analysis' | 'quick' | 'vision' | 'reasoning' | 'realtime' | 'long_form' | 'math';
 export type ImageProvider = 'dalle3' | 'dalle4' | 'gpt-image' | 'imagen3' | 'imagen4' | 'sd3' | 'flux_pro' | 'flux_dev' | 'flux_schnell' | 'ideogram2' | 'recraft' | 'seedream';
 export type VideoProvider = 'veo2' | 'veo3' | 'kling16' | 'kling21' | 'runway_gen4' | 'runway_gen4t' | 'pika20' | 'hailuo' | 'sora' | 'minimax' | 'minimax_live' | 'luma' | 'hunyuan' | 'ltx';
 export type PremiumTier = 'free' | 'pro' | 'team' | 'clawflow' | 'enterprise' | 'personal_pro' | 'team_starter' | 'team_growth';
@@ -206,7 +206,6 @@ export interface SessionIntent {
 }
 
 const ROUTING_RULES: Array<{ pattern: RegExp; capability: TaskCapability; preferredModel: string; reason: string }> = [
-  { pattern: /\b(build|create|generate|make).{0,30}(app|application|website|dashboard|api|saas|tool|platform|fullstack|full.?stack|landing page|react app|next\.?js|node server|rest api|cli tool)\b/i, capability: 'app_gen', preferredModel: 'claude-3-7-sonnet', reason: 'Claude 3.7 best for large structured code generation' },
   { pattern: /\b(code|function|bug|debug|script|algorithm|implement|refactor|error|fix|typescript|javascript|python)\b/i, capability: 'code', preferredModel: 'claude-3-7-sonnet', reason: 'Claude leads on complex code reasoning' },
   { pattern: /\b(math|equation|calcul|integral|derivative|proof|statistic|formula|algebra)\b/i, capability: 'math', preferredModel: 'deepseek-r1', reason: 'DeepSeek R1 tops math benchmarks' },
   { pattern: /\b(analyze|research|compare|evaluate|deep.?dive|comprehensive|explain why|critique)\b/i, capability: 'analysis', preferredModel: 'claude-3-7-sonnet', reason: 'Claude 200K context for deep analysis' },
@@ -250,7 +249,6 @@ function buildSystemPrompt(capability: TaskCapability): string {
     analysis: ' Use headers and bullets for long responses. Cite reasoning.',
     creative: ' Match the user tone and energy. Be imaginative and specific.',
     realtime: ' Note that you have access to live web data. Be current and cite context.',
-    app_gen: ' You are a senior full-stack engineer and architect. CRITICAL RULES: (1) Output COMPLETE, production-ready code — never truncate, never use placeholders like "// TODO" or "...rest of implementation". (2) Every file must be fully implemented. (3) Include all imports, types, interfaces, error handling, and edge cases. (4) Use modern best practices: TypeScript strict mode, proper async/await, input validation. (5) Structure output as: first a brief architecture summary, then each file delimited by === FILE: path/to/file.ext === headers. (6) Make it actually work — someone should be able to copy-paste and run it.',
   };
   return base + (extensions[capability] || '');
 }
@@ -1441,83 +1439,5 @@ export function declareAudioArrangementSuggestion(style: string, bpm: number, ke
     chordProgression: (progressions[s] ?? progressions['pop']) + ` in ${key} at ${bpm} BPM`,
     suggestedTracks: trackSets[s] ?? trackSets['pop'],
     productionTips: tips[s] ?? tips['pop'],
-  };
-}
-
-// ─── App Generation Intent ────────────────────────────────────────────────────
-
-export type AppTemplate =
-  | 'react_app'
-  | 'landing_page'
-  | 'dashboard'
-  | 'rest_api'
-  | 'fullstack'
-  | 'cli_tool'
-  | 'saas_starter';
-
-export interface AppGenRequest {
-  prompt: string;
-  template: AppTemplate;
-  model: string;
-}
-
-export interface AppGenIntent {
-  model: string;
-  maxTokens: number;
-  systemPrompt: string;
-  userPrompt: string;
-  envKey: string;
-  provider: ModelProvider;
-  apiEndpoint: string;
-  apiModel: string;
-}
-
-const APP_TEMPLATE_GUIDES: Record<AppTemplate, string> = {
-  react_app: `Stack: React 18 + TypeScript + Vite. Include: main.tsx entry, App.tsx root, component files, types.ts, basic CSS module or Tailwind classes. State management with useState/useReducer (no Redux unless essential). Functional components only.`,
-  landing_page: `Stack: HTML5 + CSS3 + vanilla TypeScript (compiled). Single index.html with embedded or linked styles. Sections: hero, features, pricing, CTA, footer. Mobile-responsive with CSS Grid/Flexbox. No frameworks — must run by opening the HTML file.`,
-  dashboard: `Stack: React 18 + TypeScript + Vite. Include: sidebar nav, header with user info, main content area with stat cards, a chart placeholder (use CSS bars if no chart lib), data table, and a settings panel. Mock data in a separate data.ts file.`,
-  rest_api: `Stack: Node.js + TypeScript + Express 5. Include: server.ts entry, routes/ directory with route files, middleware/ for auth+validation+error handling, types.ts, .env.example. Use Zod for request validation. Include health check endpoint and proper HTTP status codes.`,
-  fullstack: `Stack: Next.js 14 App Router + TypeScript + Tailwind CSS. Include: app/layout.tsx, app/page.tsx, app/api/ routes, components/ directory, lib/ for utilities, types.ts, next.config.ts, tailwind.config.ts. Use Server Components where appropriate, Client Components where needed.`,
-  cli_tool: `Stack: Node.js + TypeScript. Include: src/index.ts entry (#!/usr/bin/env node), src/commands/ directory, src/utils/, package.json with bin field, tsconfig.json. Use commander or yargs for arg parsing. Include --help and --version flags.`,
-  saas_starter: `Stack: Next.js 14 + TypeScript + Tailwind + Prisma + NextAuth.js. Include: auth setup, database schema (SQLite for dev), protected routes middleware, billing placeholder, dashboard layout, landing page, API routes. Full auth flow: sign in, sign up, session management.`,
-};
-
-export function declareAppGenIntent(req: AppGenRequest): AppGenIntent {
-  const spec = MODEL_REGISTRY[req.model] ?? MODEL_REGISTRY['claude-3-7-sonnet'];
-  const templateGuide = APP_TEMPLATE_GUIDES[req.template];
-
-  const systemPrompt = buildSystemPrompt('app_gen');
-
-  const userPrompt = `Build the following application:
-
-DESCRIPTION: ${req.prompt}
-
-TEMPLATE REQUIREMENTS:
-${templateGuide}
-
-MANDATORY OUTPUT FORMAT:
-1. Start with a 3-5 line architecture summary.
-2. Then output every file using this exact delimiter format:
-
-=== FILE: <relative/path/to/file> ===
-<complete file contents>
-=== END FILE ===
-
-3. After all files, output a SETUP section:
-=== SETUP ===
-<numbered install + run instructions>
-=== END SETUP ===
-
-Do not truncate any file. Do not use placeholder comments. Write every line.`;
-
-  return {
-    model: spec.id,
-    maxTokens: 8192,
-    systemPrompt,
-    userPrompt,
-    envKey: spec.envKey,
-    provider: spec.provider,
-    apiEndpoint: spec.apiEndpoint,
-    apiModel: spec.apiModel,
   };
 }
