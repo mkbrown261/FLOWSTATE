@@ -1516,6 +1516,10 @@ function setupAmbientChips() {
     <i class="fas fa-chevron-down" style="font-size:9px;color:var(--text-m);margin-left:1px"></i>
   </div>
   <div class="u-dropdown" id="u-dropdown">
+    <div style="padding:10px 12px 6px;border-bottom:1px solid var(--border);margin-bottom:4px">
+      <div style="font-size:12px;font-weight:700;color:var(--text-p);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(FS_USER.name||'')}</div>
+      <div style="font-size:10px;color:var(--text-m);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(FS_USER.email||'')}</div>
+    </div>
     <button class="u-drop-item" id="u-drop-avatar-btn">
       <i class="fas fa-camera"></i> Change Profile Picture
     </button>
@@ -1529,12 +1533,19 @@ function setupAmbientChips() {
       </div>
     </div>
     <div class="u-drop-divider"></div>
+    <button class="u-drop-item" onclick="openMyProjects()">
+      <i class="fas fa-folder-open"></i> My Projects
+    </button>
     <button class="u-drop-item" onclick="switchToFocusAndStart()">
       <i class="fas fa-play-circle"></i> Start Timer
     </button>
     <div class="u-drop-divider"></div>
     <button class="u-drop-item" onclick="openSettingsModal()">
       <i class="fas fa-gear"></i> Settings
+    </button>
+    <div class="u-drop-divider"></div>
+    <button class="u-drop-item" onclick="window.location.href='/api/auth/signout'" style="color:var(--red)">
+      <i class="fas fa-sign-out-alt"></i> Sign Out
     </button>
   </div>
 </div>`;
@@ -1552,17 +1563,7 @@ function setupAmbientChips() {
       if (file) uploadAvatarFile(file);
     });
 
-    // Close dropdown when clicking outside — but NOT when interacting with file picker
-    document.addEventListener('click', function(e) {
-      const wrap = document.getElementById('u-wrap');
-      const fileInput = document.getElementById('u-avatar-file-input');
-      // Ignore clicks that are part of the file-picker flow
-      if (fileInput && (e.target === fileInput)) return;
-      if (wrap && !wrap.contains(e.target)) {
-        const dd = document.getElementById('u-dropdown');
-        if (dd) { dd.style.opacity='0'; dd.style.visibility='hidden'; dd.style.transform='translateY(-4px)'; }
-      }
-    }, { capture: true });
+    // Dropdown is shown/hidden purely via CSS :hover on .u-wrap — no inline style overrides needed.
 
     // FlowScore badge
     setTimeout(()=>{
@@ -11277,6 +11278,7 @@ async function _codeRunBuild(prompt) {
   const TYPE_ICONS = {
     thinking: '🧠', planning: '🎯', building: '🏗️', writing: '✍️', parsing: '📐',
     retry: '🔄', file_complete: '✅', complete: '🎉', error: '⚠️', info: 'ℹ️',
+    tool: '🔧', step: '▶', toolresult: '↳',
   };
 
   const addNarrateLine = (msg, type = 'info') => {
@@ -11307,6 +11309,66 @@ async function _codeRunBuild(prompt) {
     }
     chatList.scrollTop = chatList.scrollHeight;
     narrateSteps.push({ type, msg });
+  };
+
+  // ── Tool-call badge renderer ───────────────────────────────────────────────
+  // Renders a distinct pill row for event:tool — shows which tool fired,
+  // its purpose, and the truncated input. Transparent, named, intentional.
+  const addToolLine = (tool, purpose, input) => {
+    if (!narrateBubble) return;
+    narrateBubble.querySelector('.ai-thinking-row')?.remove();
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:4px 0;animation:fsds-fadeIn .2s both;';
+    const purposeHtml = purpose
+      ? `<span style="color:#9ca3af;font-size:10px;margin-left:6px">${_escapeHtml(purpose)}</span>`
+      : '';
+    const inputHtml = input
+      ? `<div style="margin-top:2px;font-size:10px;color:#6b7280;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px">${_escapeHtml(input)}</div>`
+      : '';
+    row.innerHTML = `
+      <span style="flex-shrink:0;font-size:11px;margin-top:2px">🔧</span>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
+          <span style="background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.3);border-radius:5px;padding:1px 7px;font-size:10px;font-weight:700;color:#c084fc;letter-spacing:.4px">TOOL</span>
+          <span style="font-size:12px;font-weight:600;color:#e2e8f0">${_escapeHtml(tool)}</span>
+          ${purposeHtml}
+        </div>
+        ${inputHtml}
+      </div>`;
+    narrateBubble.appendChild(row);
+    chatList.scrollTop = chatList.scrollHeight;
+    narrateSteps.push({ type: 'tool', msg: `TOOL: ${tool} — ${purpose || ''}` });
+  };
+
+  // ── Numbered execution step renderer ─────────────────────────────────────
+  // Renders a STEP N badge row for event:step — makes the build plan play
+  // out in real time so the user sees exactly what the agent is doing.
+  const addStepLine = (num, label, detail) => {
+    if (!narrateBubble) return;
+    narrateBubble.querySelector('.ai-thinking-row')?.remove();
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:4px 0;animation:fsds-fadeIn .2s both;';
+    const detailHtml = detail
+      ? `<div style="font-size:10px;color:#6b7280;margin-top:2px;line-height:1.5">${_escapeHtml(detail)}</div>`
+      : '';
+    row.innerHTML = `
+      <span style="flex-shrink:0;background:rgba(16,185,129,.15);border:1px solid rgba(16,185,129,.3);border-radius:4px;padding:1px 6px;font-size:10px;font-weight:800;color:#6ee7b7;white-space:nowrap;margin-top:2px">STEP ${num}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;color:#d1d5db;font-weight:500;line-height:1.5">${_escapeHtml(label)}</div>
+        ${detailHtml}
+      </div>`;
+    narrateBubble.appendChild(row);
+    // Keep live cursor going
+    let cursor = narrateBubble.querySelector('.ai-live-cursor');
+    if (!cursor) {
+      cursor = document.createElement('div');
+      cursor.className = 'ai-live-cursor';
+      cursor.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0 0;';
+      cursor.innerHTML = '<span style="display:inline-block;width:8px;height:14px;background:var(--accent,#a855f7);border-radius:2px;animation:code-blink 1s step-end infinite;vertical-align:middle;opacity:.8"></span>';
+      narrateBubble.appendChild(cursor);
+    }
+    chatList.scrollTop = chatList.scrollHeight;
+    narrateSteps.push({ type: 'step', msg: `STEP ${num}: ${label}` });
   };
 
   const files = [];
@@ -11364,6 +11426,48 @@ async function _codeRunBuild(prompt) {
             try {
               const n = JSON.parse(eventData);
               if (n.msg) addNarrateLine(n.msg, n.type || 'info');
+            } catch {}
+
+          } else if (eventName === 'thinking') {
+            // ── Live reasoning block — model's internal thinking ──────────
+            // Shows a collapsible "Reasoning" section with what the AI thought
+            // before writing code. Makes the thinking feel real and transparent.
+            try {
+              const t = JSON.parse(eventData);
+              if (t.preview && narrateBubble) {
+                narrateBubble.querySelector('.ai-thinking-row')?.remove();
+                const thinkId = 'think-' + Date.now();
+                const row = document.createElement('div');
+                row.style.cssText = 'margin:4px 0;animation:fsds-fadeIn .25s both;';
+                row.innerHTML = `
+                  <div style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:5px 8px;border-radius:7px;background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.2);" onclick="this.parentElement.querySelector('.think-body').style.display=this.parentElement.querySelector('.think-body').style.display==='none'?'block':'none';this.querySelector('.think-chevron').style.transform=this.parentElement.querySelector('.think-body').style.display==='none'?'rotate(0deg)':'rotate(180deg)'">
+                    <span style="font-size:10px">🧠</span>
+                    <span style="font-size:10px;font-weight:700;color:#c084fc;letter-spacing:.4px">REASONING</span>
+                    <span style="font-size:10px;color:#9ca3af;flex:1">${_escapeHtml(t.preview.slice(0, 80))}${t.preview.length > 80 ? '…' : ''}</span>
+                    <span class="think-chevron" style="font-size:9px;color:#9ca3af;transition:transform .2s;transform:rotate(180deg)">▾</span>
+                  </div>
+                  <div class="think-body" style="display:block;padding:8px 10px;font-size:10px;color:#9ca3af;line-height:1.6;font-family:var(--font-mono,'monospace');background:rgba(0,0,0,.2);border:1px solid rgba(168,85,247,.1);border-top:none;border-radius:0 0 7px 7px;max-height:180px;overflow-y:auto;white-space:pre-wrap;word-break:break-word">${_escapeHtml(t.full || t.preview)}</div>`;
+                narrateBubble.appendChild(row);
+                chatList.scrollTop = chatList.scrollHeight;
+              }
+            } catch {}
+
+
+            // ── Tool-call transparency ────────────────────────────────────
+            // Shows which model/tool fired, what it's doing, and the input —
+            // senior-engineer pair-programming visibility into the build.
+            try {
+              const t = JSON.parse(eventData);
+              if (t.tool) addToolLine(t.tool, t.purpose || '', t.input || '');
+            } catch {}
+
+          } else if (eventName === 'step') {
+            // ── Numbered execution step ───────────────────────────────────
+            // Shows STEP N: <action> so the user sees the execution plan
+            // playing out live — not just a spinner.
+            try {
+              const s = JSON.parse(eventData);
+              if (s.label) addStepLine(s.num || '?', s.label, s.detail || '');
             } catch {}
 
           } else if (eventName === 'file') {
@@ -11447,14 +11551,21 @@ async function _codeRunBuild(prompt) {
     _codeState.conversationHistory.push({ role: 'assistant', content: `${summary} Files: ${filesSummary}` });
     if (_codeState.conversationHistory.length > 20) _codeState.conversationHistory = _codeState.conversationHistory.slice(-20);
 
-    // Auto-preview
+    // Auto-preview — build srcdoc immediately, then switch view
     const hasHtml = files.some(f => f.path.endsWith('.html'));
-    if (hasHtml) {
+    const hasRenderable = hasHtml || files.some(f =>
+      f.path.endsWith('.jsx') || f.path.endsWith('.tsx') ||
+      f.path.endsWith('.js')  || f.path.endsWith('.css')
+    );
+    if (hasRenderable) {
+      // Pre-build the srcdoc before showing the preview pane
+      // so there's no blank flash when we switch views
       _codeUpdatePreview();
       const toggle = document.getElementById('code-view-toggle');
       if (toggle) toggle.style.display = 'flex';
-      // Switch to preview after short delay so editor flash is visible
-      setTimeout(() => codeSetView('preview'), 600);
+      // Switch to preview — codeSetView will skip _codeUpdatePreview
+      // because srcdoc is already set above
+      setTimeout(() => codeSetView('preview'), 400);
     }
 
     // Show action buttons
@@ -11538,6 +11649,14 @@ function _escapeHtml(str) {
 }
 
 // ── Session management ────────────────────────────────────────────────────────
+function openMyProjects() {
+  switchTab('generate');
+  setTimeout(() => {
+    switchGenSub('code');
+    setTimeout(() => codeLoadProjectsList(), 100);
+  }, 150);
+}
+
 function codeNewSession() {
   if (_codeState.projectStarted) {
     if (!confirm('Start a new session? This clears the AI\'s memory of the current project. Files stay visible.')) return;
@@ -11861,7 +11980,12 @@ function codeSetView(view) {
       openBrowserBtn.href = _codeState.previewUrl;
       openBrowserBtn.style.display = 'flex';
     }
-    _codeUpdatePreview();
+    // Only call _codeUpdatePreview if the frame doesn't already have content
+    // (avoids blank flash from redundant srcdoc reassignment)
+    const _previewFrame = document.getElementById('code-preview-frame');
+    if (!_previewFrame || !_previewFrame.srcdoc) {
+      _codeUpdatePreview();
+    }
   } else {
     if (editorWrap)  editorWrap.style.display  = '';
     if (previewWrap) previewWrap.style.display = 'none';
@@ -11889,24 +12013,24 @@ function codeSetViewport(size) {
   if (size === 'mobile') {
     viewport.style.width = '375px';
     viewport.style.height = '812px';
-    viewport.style.boxShadow = '0 0 0 1px rgba(255,255,255,.1), 0 8px 32px rgba(0,0,0,.6)';
+    viewport.style.boxShadow = '0 0 0 1px rgba(0,0,0,.15), 0 8px 32px rgba(0,0,0,.25)';
     viewport.style.borderRadius = '20px';
     viewport.style.overflow = 'hidden';
-    if (previewWrap) previewWrap.style.padding = '16px';
+    if (previewWrap) { previewWrap.style.padding = '16px'; previewWrap.style.background = '#e8e8e8'; }
   } else if (size === 'tablet') {
     viewport.style.width = '768px';
     viewport.style.height = '100%';
-    viewport.style.boxShadow = '0 0 0 1px rgba(255,255,255,.1)';
+    viewport.style.boxShadow = '0 0 0 1px rgba(0,0,0,.1)';
     viewport.style.borderRadius = '8px';
     viewport.style.overflow = 'hidden';
-    if (previewWrap) previewWrap.style.padding = '8px';
+    if (previewWrap) { previewWrap.style.padding = '8px'; previewWrap.style.background = '#f0f0f0'; }
   } else {
     viewport.style.width = '100%';
     viewport.style.height = '100%';
     viewport.style.boxShadow = 'none';
     viewport.style.borderRadius = '0';
     viewport.style.overflow = 'hidden';
-    if (previewWrap) previewWrap.style.padding = '0';
+    if (previewWrap) { previewWrap.style.padding = '0'; previewWrap.style.background = '#fff'; }
   }
 }
 
@@ -11940,8 +12064,9 @@ async function codePublishPreview() {
       codeLog(`✅ Live at: ${absUrl}`, 'success');
       notify('Live preview ready! 🌐', 'success');
 
-      // Switch iframe to live URL immediately if in preview mode
-      if (_codeState.currentView === 'preview') _codeUpdatePreview();
+      // DO NOT switch the iframe to the R2 URL — srcdoc preview is already
+      // rendering correctly. Only update the open-in-browser links.
+      // Switching to frame.src here causes a blank flash while R2 propagates.
 
       // Show result panel
       const resultEl   = document.getElementById('code-preview-result');
@@ -12151,29 +12276,22 @@ async function codeLoadProject(id) {
 }
 
 // ── Live Preview ──────────────────────────────────────────────────────────────
-// Priority: if we have a live R2 URL, point the iframe at it directly.
-// This gives real multi-page navigation, correct relative paths, and CDN fonts.
-// Falls back to srcdoc for the instant first-render before publish completes.
+// Always uses srcdoc to render the generated files inline in the iframe.
+// This avoids race conditions with R2 propagation and ensures instant display.
+// The R2/live URL is used only for the open-in-browser / copy-URL buttons.
 function _codeUpdatePreview() {
   const frame = document.getElementById('code-preview-frame');
   if (!frame) return;
 
-  // ── Strategy 0: Use live R2 URL if available (best quality) ──────────────
-  if (_codeState.previewUrl) {
-    // Add cache-bust so updates always show after republish
-    const bust = `?v=${Date.now()}`;
-    const url  = _codeState.previewUrl.split('?')[0] + bust;
-    // Remove sandbox restriction on same-origin R2 previews so CDN scripts and links work
-    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox');
-    if (frame.src !== url) frame.src = url;
-    return;
-  }
+  // ── Always build srcdoc from generated files for the in-app preview ───────
+  // Never set frame.src — srcdoc is the only reliable way to preview
+  // generated HTML that references external CDN scripts (esm.sh, etc.)
 
-  // ── Fallback: srcdoc for instant preview before publish completes ─────────
   const files = _codeState.generatedFiles;
   const paths = Object.keys(files);
+  if (!paths.length) return; // nothing to preview yet
 
-  const htmlFiles = paths.filter(p => p.endsWith('.html'));
+  const htmlFiles = paths.filter(p => p.endsWith('.html') || p.endsWith('.htm'));
   const cssFiles  = paths.filter(p => p.endsWith('.css'));
   const jsFiles   = paths.filter(p => p.endsWith('.js') || p.endsWith('.jsx'));
   const tsFiles   = paths.filter(p => p.endsWith('.ts') || p.endsWith('.tsx'));
@@ -12181,9 +12299,12 @@ function _codeUpdatePreview() {
   let srcdoc = '';
 
   if (htmlFiles.length > 0) {
-    // Prefer index.html as entry point
+    // Prefer index.html as entry point, fall back to first HTML file
     const mainHtml = htmlFiles.find(p => p === 'index.html' || p.endsWith('/index.html')) || htmlFiles[0];
-    let html = files[mainHtml].content;
+    // Safe access — guard against missing content
+    const htmlEntry = files[mainHtml];
+    if (!htmlEntry || !htmlEntry.content) return;
+    let html = htmlEntry.content;
 
     // Inline CSS: replace <link> refs or inject before </head>
     cssFiles.forEach(cssPath => {
@@ -12215,9 +12336,11 @@ function _codeUpdatePreview() {
 
     srcdoc = html;
 
-  } else if (tsFiles.length > 0 || jsFiles.some(p => files[p].content.includes('import React') || files[p].content.includes('from "react"') || files[p].content.includes("from 'react'"))) {
+  } else if (tsFiles.length > 0 || jsFiles.some(p => (files[p]?.content || '').includes('import React') || (files[p]?.content || '').includes('from "react"') || (files[p]?.content || '').includes("from 'react'"))) {
+    // React / TypeScript — rewrite imports to CDN and strip TS types
     const mainFile = tsFiles[0] || jsFiles[0];
     let componentCode = files[mainFile]?.content || '';
+    if (!componentCode) return;
 
     componentCode = componentCode
       .replace(/import\s+React.*from\s+['"]react['"]/g, "import React from 'https://esm.sh/react@18'")
@@ -12249,7 +12372,9 @@ if(typeof App!=='undefined'){import{createRoot}from'https://esm.sh/react-dom@18/
   }
 
   if (srcdoc) {
-    // Allow all necessary features for srcdoc previews including CDN scripts
+    // CRITICAL: remove frame.src before setting srcdoc.
+    // If src is set (even to ''), the browser ignores srcdoc entirely.
+    frame.removeAttribute('src');
     frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-top-navigation-by-user-activation');
     frame.srcdoc = srcdoc;
   }

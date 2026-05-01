@@ -28,6 +28,7 @@ import {
   declareClawbotSession, declareClawbotSystemPrompt, declareWalkthrough,
   declareCoinLedgerEntry, declareClawFlowPromo,
   declareAudioGeneration, declareAudioProject, declareAudioArrangementSuggestion,
+  declareCodeAgentSystemPrompt,
   MODEL_REGISTRY, IMAGE_MODEL_REGISTRY, VIDEO_MODEL_REGISTRY, CREDENTIAL_TABLE,
   type SessionIntent, type BehaviorData, type AudioAiTool,
 } from './intent-layer'
@@ -1329,35 +1330,57 @@ app.post('/api/github/ai-code', async (c) => {
     ? fileTree.filter((f: any) => f.type === 'blob').map((f: any) => f.path).slice(0, 150).join('\n')
     : Object.keys(generatedFiles).join('\n')
 
-  // ── FIX 6: Smart context ordering ─────────────────────────────────────────
-  // Active file goes first (full content for HTML up to 1200 chars, full for CSS/JS).
-  // Remaining files: HTML capped at 500 chars, CSS/JS at 2500 chars.
-  // For new-page requests: suppress ALL HTML content entirely.
+  // ── Smart context ordering — upgraded limits ──────────────────────────────
+  // Active file: full content always (no cap on edits — model MUST see the whole file)
+  // Non-active HTML: 4000 chars (was 500)
+  // CSS / JS: 8000 chars (was 2500)
+  // New-page requests: suppress HTML to force fresh layout (unchanged)
   const buildFileContext = () => {
     const entries = Object.entries(generatedFiles) as [string, any][]
     if (!entries.length) return ''
 
-    // Put active file first, then remaining files (most recent last 5)
+    // Active file first, then up to 8 most-recent other files (was 5)
     const sorted = activeFile && generatedFiles[activeFile]
-      ? [[activeFile, generatedFiles[activeFile]], ...entries.filter(([p]) => p !== activeFile).slice(-5)]
-      : entries.slice(-6)
+      ? [[activeFile, generatedFiles[activeFile]], ...entries.filter(([p]) => p !== activeFile).slice(-8)]
+      : entries.slice(-8)
 
     return sorted.map(([path, content]: [string, any]) => {
-      const isHtml = path.endsWith('.html') || path.endsWith('.htm')
+      const isHtml  = path.endsWith('.html') || path.endsWith('.htm')
+      const isCss   = path.endsWith('.css')
+      const isJs    = path.endsWith('.js') || path.endsWith('.jsx') || path.endsWith('.ts') || path.endsWith('.tsx')
       const isActive = path === activeFile
 
       if (isHtml && isNewPageRequest) {
         return `\n### FILE: ${path}\n[HTML omitted — NEW page: build a completely fresh layout]`
       }
       if (isHtml) {
-        // Active HTML file: send more context so edits are accurate
-        const cap = isActive ? 1200 : 500
-        const preview = String(content).slice(0, cap)
-        const omitNote = String(content).length > cap ? '\n... [remaining HTML omitted — modify only what was asked]' : ''
+        const raw = String(content)
+        // Active HTML file on an edit: send FULL file — no cap
+        // This is the #1 reason edits were weak: model couldn't see the whole file
+        if (isActive && isEditRequest) {
+          return `\n### FILE: ${path} ← CURRENTLY OPEN (full file — read carefully before editing)\n\`\`\`html\n${raw}\n\`\`\``
+        }
+        // Active HTML on a fresh build: 4000 chars is enough to understand structure
+        const cap = isActive ? 4000 : 4000
+        const preview = raw.slice(0, cap)
+        const omitNote = raw.length > cap ? `\n... [+${raw.length - cap} chars omitted — structure understood]` : ''
         return `\n### FILE: ${path}${isActive ? ' ← CURRENTLY OPEN' : ''}\n\`\`\`html\n${preview}${omitNote}\n\`\`\``
       }
-      // CSS / JS: send in full up to 2500 chars
-      return `\n### FILE: ${path}\n\`\`\`\n${String(content).slice(0, 2500)}\n\`\`\``
+      // CSS: send up to 8000 chars (was 2500)
+      if (isCss) {
+        const raw = String(content)
+        const omitNote = raw.length > 8000 ? `\n... [+${raw.length - 8000} chars omitted]` : ''
+        return `\n### FILE: ${path}\n\`\`\`css\n${raw.slice(0, 8000)}${omitNote}\n\`\`\``
+      }
+      // JS/TS: send up to 8000 chars (was 2500)
+      if (isJs) {
+        const raw = String(content)
+        const omitNote = raw.length > 8000 ? `\n... [+${raw.length - 8000} chars omitted]` : ''
+        return `\n### FILE: ${path}\n\`\`\`js\n${raw.slice(0, 8000)}${omitNote}\n\`\`\``
+      }
+      // Other files: 4000 chars
+      const raw = String(content)
+      return `\n### FILE: ${path}\n\`\`\`\n${raw.slice(0, 4000)}\n\`\`\``
     }).join('')
   }
   const generatedContext = buildFileContext()
@@ -1734,142 +1757,53 @@ ${isTerminal ? `@keyframes fsds-scanline { 0%{background-position:0 0}100%{backg
   }
   const AI_CODE_CREDIT_COST = MODEL_CREDIT_COSTS[agent] ?? 120
 
-  // ── System prompt — Genspark-level engineer ───────────────────────────────
-  const systemPrompt = `You are FlowState AI — a world-class full-stack software engineer and product designer. You are the AI developer behind thousands of shipped, production-ready web applications. You have deep expertise in HTML, CSS, JavaScript, React, and UI/UX design. Your code is clean, functional, and beautiful. You think like a product manager, design like a Figma expert, and code like a 10x engineer.
+  // ── System prompt — FlowState AI Code Agent (Intent Layer driven) ───────────
+  // declareCodeAgentSystemPrompt() in intent-layer.ts owns all agent behavior.
+  // This endpoint executes. It does not decide.
+  const isEditRequest = conversationHistory.length > 0 && Object.keys(generatedFiles).length > 0
+  const agentPlan = declareCodeAgentSystemPrompt({
+    prompt,
+    repo,
+    fileTree: fileList,
+    generatedFiles: generatedContext,
+    activeFile,
+    stylePreset,
+    agent,
+    isEdit: isEditRequest,
+    isNewPage: isNewPageRequest,
+    language,
+  })
 
-Your outputs are ALWAYS:
-- Visually stunning — every element is polished, spacing is perfect, typography hierarchy is clear
-- Fully functional — every button clicks, every form submits, every modal opens, every tab switches
-- Production-ready — realistic data, proper error states, loading states, empty states
-- Mobile-first responsive — works perfectly on phone, tablet, and desktop
-- Unique and creative — never generic, always domain-appropriate and distinctive
-
-You NEVER produce:
-- Skeleton apps with empty placeholder content
-- Dead buttons or non-functional UI
-- Lorem ipsum or placeholder text
-- Generic blue/white Bootstrap-looking designs
-- Truncated or incomplete code
-
-${isPlain ? '' : `══════════════════════════════════════════════════
-DESIGN SYSTEM — FSDS (FlowState Design System)
-══════════════════════════════════════════════════
-A CSS scaffold with design tokens, component classes, and Google Fonts is AUTO-INJECTED into every HTML file at render time. You do NOT need to write it — just USE its classes and CSS variables.
-
-ACTIVE PRESET: ${preset.label}
+  // ── Inject FSDS preset hints into the agent system prompt ────────────────
+  // The agent system prompt covers architecture + behavior.
+  // FSDS preset-specific CSS overrides are appended here so the agent
+  // knows EXACTLY which CSS tokens are active for this generation.
+  const fsdsPresetBlock = isPlain ? '' : `
+════════════════════════════════════════
+FSDS ACTIVE PRESET DETAIL: ${preset.label}
+════════════════════════════════════════
 ${preset.promptHint}
-
-${isAiDecides ? `COLOR SELECTION — MANDATORY (first thing you do):
-Override ONLY these CSS variables in a <style> block inside your HTML/CSS, choosing colors that fit the app's domain:
+${preset.cssOverride ? `\nCSS TOKEN OVERRIDES ACTIVE:\n:root {\n${preset.cssOverride}\n}` : ''}
+${isAiDecides ? `\nCOLOR SELECTION REQUIRED:
+Override in your output's <style> block:
   :root {
-    --accent: [primary accent hex];
-    --accent-bright: [lighter version];
+    --accent: [domain-appropriate primary hex — NOT purple #a855f7];
+    --accent-bright: [lighter variant];
     --accent-dim: rgba(..., .15);
     --border: rgba(..., .15);
     --border-accent: rgba(..., .4);
     --shadow-glow: 0 0 24px rgba(..., .4);
     --grad-brand: linear-gradient(135deg, [accent], [complementary]);
   }
-Be bold and domain-specific. Finance→gold/teal. Fitness→lime/orange. Gaming→neon cyan/magenta. Never purple (#a855f7).
-` : ''}
-AVAILABLE CSS VARIABLES (injected, use directly):
-  Surfaces: --bg, --surface-1, --surface-2, --surface-3
-  Text: --text-primary, --text-secondary, --text-muted
-  Accents: --accent, --accent-bright, --accent-dim, --green, --cyan, --pink, --amber, --red
-  Borders: --border, --border-accent, --border-subtle
-  Gradients: --grad-brand, --grad-cyber, --grad-success
-  Shadows: --shadow-sm, --shadow-md, --shadow-lg, --shadow-glow
-  Radii: --radius-sm(6px), --radius-md(10px), --radius-lg(16px), --radius-xl(24px), --radius-full(999px)
-  Fonts: --font-display('Plus Jakarta Sans'), --font-body('Inter'), --font-mono('JetBrains Mono')
+Finance→gold/teal. Fitness→lime/orange. Gaming→cyan/magenta. Social→coral/blue.` : ''}
+${isReact ? `\nREACT MODE:
+- Import: https://esm.sh/react@18 | https://esm.sh/react-dom@18/client
+- index.html: <div id="root"> + <script type="module" src="App.jsx">
+- Separate .jsx files per component under components/` : ''}
+${!isPlain && !isReact && !language ? 'OUTPUT FORMAT: Separate index.html + styles.css + app.js files' : ''}
+${language ? `TARGET LANGUAGE: ${language}` : ''}`
 
-AVAILABLE COMPONENT CLASSES (use directly in HTML, no CSS needed):
-  .fs-container / .fs-container-sm / .fs-grid-2 / .fs-grid-3 / .fs-stack / .fs-cluster
-  .fs-card / .fs-card-elevated (hover+shadow+fadeUp animation built in)
-  .fs-btn .fs-btn-primary / .fs-btn-ghost / .fs-btn-danger / .fs-btn-sm / .fs-btn-lg
-  .fs-input (styled text, textarea, select)
-  .fs-badge .fs-badge-purple/green/cyan/amber/red
-  .fs-nav .fs-nav-logo .fs-nav-links .fs-nav-link .fs-nav-link.active
-  .fs-metric .fs-metric-value .fs-metric-label
-  .fs-gradient-text / .fs-gradient-text-cyber
-  .fs-divider / .fs-section / .fs-section-sm / .fs-skeleton
-  Animations: fsds-fadeUp, fsds-fadeIn, fsds-slideIn, fsds-pulse-glow, fsds-shimmer
-
-TYPOGRAPHY: use var(--font-display) for headings, var(--font-body) for body — fonts already loaded.
-
-DESIGN RULES:
-✅ Realistic content (names, numbers, copy that fits the app domain)
-✅ Hover states on every interactive element
-✅ Gradient text on hero headings: class="fs-gradient-text"
-✅ Lucide icons: <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script> + lucide.createIcons()
-✅ Real images: https://picsum.photos/{w}/{h}?random={n} or https://source.unsplash.com/{w}x{h}/?{keyword}
-✅ Chart.js for data: https://cdn.jsdelivr.net/npm/chart.js (import if dashboard/analytics)
-✅ Stagger animations: animation-delay: 0.05s, 0.1s, 0.15s on repeated cards
-❌ No white backgrounds in dark presets
-❌ No hardcoded hex colors — use CSS variables
-❌ No unstyled buttons or inputs
-❌ No lorem ipsum
-❌ No table-based layouts
-❌ No box-shadow:none on elevated elements
-
-${isReact ? `REACT MODE:
-- Import React: https://esm.sh/react@18 | ReactDOM: https://esm.sh/react-dom@18/client
-- index.html mounts: <div id="root"></div> + <script type="module" src="App.jsx"></script>
-- Separate .jsx files per major component under components/
-- Use hooks: useState, useEffect, useCallback, useMemo
-` : ''}══════════════════════════════════════════════════`}
-
-${repo ? `REPO: ${repo}` : 'STANDALONE PROJECT'}
-${!isPlain && !isReact && !language ? 'OUTPUT: Separate HTML + CSS + JS files' : ''}
-${language ? `LANGUAGE: ${language}` : ''}
-${fileList ? `\nFILE STRUCTURE:\n${fileList}` : ''}
-${generatedContext ? `\nCURRENT FILES:${generatedContext}` : ''}
-
-OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
-1. Respond ONLY with a raw JSON object. NO prose before or after. NO markdown fences. NO explanations. Pure JSON starting with { and ending with }.
-2. Exact JSON shape: {"message":"2-3 sentence human description of what you built and why it's awesome","files":[{"path":"index.html","content":"FULL COMPLETE FILE CONTENT"},{"path":"styles.css","content":"FULL COMPLETE FILE CONTENT"}]}
-3. FILE NAMING — always lowercase, hyphen-separated, correct extension:
-   - Main HTML: ALWAYS "index.html" — never "generated.html", "output.html", "app.html", "page.html"
-   - Styles: "styles.css" or "app.css" (never "style.css" or "main.css")
-   - Scripts: "app.js" or "main.js" (never "script.js" or "code.js")
-   - React components: "App.jsx", "components/Header.jsx", etc.
-   - No spaces, no uppercase, no special characters except hyphens and dots
-4. COMPLETE — every single file must be 100% complete and syntactically correct. NEVER truncate with "// rest of code...", "// TODO", "// ...", or any placeholder comments. Every tag must close. Every brace must match.
-5. FUNCTIONAL — build a real working application, not a mockup:
-   - Buttons must DO something (navigate, submit, toggle, animate)
-   - Forms must have proper validation feedback
-   - Modals/drawers must open AND close
-   - Tabs/accordions must switch correctly
-   - Navigation must scroll to sections or navigate pages
-   - Data displays must update dynamically where applicable
-6. REALISTIC & RICH content — populate with domain-appropriate data:
-   - Use real-sounding names (not "John Doe" — use "Marcus Reid", "Aisha Chen", "Tobias Werner")
-   - Real metrics (not "1,234" — use "48,293 active users", "$127,840 MRR")
-   - Real copy that fits the product (taglines, descriptions, CTAs)
-   - Real images from https://picsum.photos/400/300?random=1 (vary the number)
-   - ZERO lorem ipsum — EVER
-7. VISUAL QUALITY — make it look like a $50,000 design agency built it:
-   - Varied card sizes and layouts (not a boring uniform grid)
-   - Hero sections with gradient text, bold typography, and a compelling CTA
-   - Micro-interactions: hover effects, subtle transforms, smooth transitions
-   - Depth via layered shadows and glassmorphism effects
-   - Data visualizations (Chart.js charts) for any dashboard/analytics request
-   - Progress bars, sparklines, badges, status indicators
-8. MOBILE RESPONSIVE — every layout must work perfectly on 375px to 1440px:
-   - Hamburger menu on mobile
-   - Single-column on mobile, multi-column on desktop
-   - Touch-friendly tap targets (min 44px)
-   - clamp() for fluid typography
-9. The FSDS CSS is AUTO-INJECTED into HTML — do NOT redefine :root variables or re-import Google Fonts.
-10. NEW page request → completely fresh file. Different layout, different component arrangement. Never clone existing structure.
-11. EDIT request → return the COMPLETE modified file. Reproduce the ENTIRE file with ONLY the requested changes applied.
-12. MULTI-FILE for complex apps (150+ lines): separate index.html + styles.css + app.js. React: index.html + App.jsx + components/*.jsx
-13. INTERACTIVITY CHECKLIST — before finalizing, verify:
-    ✅ Navigation links work (scroll-to-section or href)
-    ✅ All buttons have click handlers
-    ✅ Forms have submit handlers with user feedback
-    ✅ Any modals/overlays have close handlers
-    ✅ Dynamic data renders correctly (no empty arrays, no undefined)
-    ✅ No console errors from undefined variables or missing elements`
+  const systemPrompt = agentPlan.systemPrompt + fsdsPresetBlock
 
   // ── Build history (FIX: smarter truncation) ───────────────────────────────
   const historySlice = isNewPageRequest
@@ -2056,44 +1990,124 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
     return FSDS_BASE_CSS + '\n' + html
   }
 
-  // ── Helper: call model (no streaming — collect full response) ─────────────
-  const callModelFull = async (userMsgOverride?: string): Promise<string> => {
+  // ── Thinking token budgets ────────────────────────────────────────────────
+  // Sonnet/Opus get a real thinking budget — this is what makes them FEEL different.
+  // Haiku skips thinking (too slow/expensive for a light model).
+  // Budget = tokens reserved for internal reasoning before the JSON output.
+  const THINKING_BUDGETS: Record<string, number> = {
+    'claude-opus-4':    12000,  // deep thinking for the most complex builds
+    'claude-sonnet-4':   8000,  // solid reasoning budget for standard builds
+    'claude':            8000,
+    'claude-haiku-4':       0,  // no thinking — Haiku is speed-optimized
+    'gemini-2-5-pro':   12000,  // Gemini 2.5 Pro thinking budget
+    'gemini-2-5-flash':  8000,  // Gemini 2.5 Flash thinking budget
+    'gemini':               0,  // Gemini 2.0 Flash — no thinking support
+    'deepseek-r1':          0,  // R1 has built-in chain-of-thought — no extra budget needed
+    'o3':                   0,  // o3 has built-in reasoning — no extra budget needed
+    'o4-mini':              0,  // same
+  }
+  const thinkingBudget = THINKING_BUDGETS[agent] ?? 0
+  const useThinking = thinkingBudget > 0
+
+  // Temperature: 0.35 for all models (was 0.1 — too cold, produced average output)
+  // Exception: o3/o4-mini don't support temperature (they use reasoning natively)
+  const isReasoningModel = agent === 'o3' || agent === 'o4-mini'
+  const TEMPERATURE = isReasoningModel ? undefined : 0.35
+
+  // ── Helper: call model with thinking tokens where supported ───────────────
+  // Returns { text, thinkingText } so thinking can be streamed to UI separately
+  const callModelFull = async (userMsgOverride?: string, onThinking?: (t: string) => void): Promise<string> => {
     const effectiveUserMsg = userMsgOverride || currentUserMsg
+
     // ── Gemini direct ────────────────────────────────────────────────────
     if ((agent === 'gemini' || agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash') && (c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY)) {
       const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
       const geminiModelMap: Record<string,string> = {
-        'gemini': 'gemini-2.0-flash', 'gemini-2-5-pro': 'gemini-2.5-pro-preview-05-06', 'gemini-2-5-flash': 'gemini-2.5-flash-preview-04-17',
+        'gemini': 'gemini-2.0-flash',
+        'gemini-2-5-pro': 'gemini-2.5-pro-preview-05-06',
+        'gemini-2-5-flash': 'gemini-2.5-flash-preview-04-17',
       }
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModelMap[agent] || 'gemini-2.0-flash'}:generateContent?key=${geminiKey}`, {
+      const geminiModel = geminiModelMap[agent] || 'gemini-2.0-flash'
+      const supportsGeminiThinking = agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash'
+
+      const geminiBody: any = {
+        contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyMessages.map((m:any)=>`[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')}\n\n[USER]: ${effectiveUserMsg}\n\nRespond with ONLY a raw JSON object starting with {. No markdown fences, no prose.` }] }],
+        generationConfig: {
+          temperature: TEMPERATURE ?? 0.35,
+          maxOutputTokens: maxTokens,
+          responseMimeType: 'application/json',
+        }
+      }
+      // Enable Gemini thinking budget for 2.5 Pro/Flash
+      if (supportsGeminiThinking && thinkingBudget > 0) {
+        geminiBody.generationConfig.thinkingConfig = { thinkingBudget }
+      }
+
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyMessages.map((m:any)=>`[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')}\n\n[USER]: ${effectiveUserMsg}\n\nRespond with ONLY a raw JSON object starting with {. No markdown fences, no prose.` }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: maxTokens, responseMimeType: 'application/json' }
-        })
+        body: JSON.stringify(geminiBody)
       })
       const d: any = await r.json()
-      return d?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+      // Extract thinking text (Gemini returns it as a separate part with thought=true)
+      const parts = d?.candidates?.[0]?.content?.parts || []
+      const thinkingPart = parts.find((p: any) => p.thought === true)
+      const textPart = parts.find((p: any) => !p.thought)
+      if (thinkingPart?.text && onThinking) onThinking(thinkingPart.text)
+      return textPart?.text || parts?.[0]?.text || ''
     }
 
-    // ── Claude direct Anthropic ──────────────────────────────────────────
+    // ── Claude direct Anthropic (with extended thinking) ─────────────────
     if (isClaudeAgent && c.env?.ANTHROPIC_API_KEY) {
       const claudeModelMap: Record<string,string> = {
-        'claude': 'claude-3-5-sonnet-20241022', 'claude-opus-4': 'claude-opus-4-5-20251101',
-        'claude-sonnet-4': 'claude-sonnet-4-5-20251101', 'claude-haiku-4': 'claude-haiku-4-5-20251101',
+        'claude': 'claude-sonnet-4-5-20251101',
+        'claude-opus-4': 'claude-opus-4-5-20251101',
+        'claude-sonnet-4': 'claude-sonnet-4-5-20251101',
+        'claude-haiku-4': 'claude-haiku-4-5-20251101',
       }
+      const claudeModel = claudeModelMap[agent] || 'claude-sonnet-4-5-20251101'
+
+      // Extended thinking: Claude needs budget_tokens > 1024 to enable it.
+      // When thinking is ON: disable prefill (incompatible with extended thinking) and raise temperature to 1
+      // (Anthropic requires temperature=1 when using extended thinking)
+      const claudeBody: any = {
+        model: claudeModel,
+        max_tokens: useThinking ? maxTokens + thinkingBudget : maxTokens,
+        system: systemPrompt,
+        temperature: useThinking ? 1 : (TEMPERATURE ?? 0.35),
+        messages: useThinking
+          // With thinking: no prefill — thinking blocks come before the JSON
+          ? [...historyMessages, { role: 'user', content: effectiveUserMsg }]
+          // Without thinking (Haiku): use prefill for clean JSON
+          : [...historyMessages, { role: 'user', content: effectiveUserMsg }, { role: 'assistant', content: '{"message":"' }],
+        stream: false,
+      }
+      if (useThinking) {
+        claudeBody.thinking = { type: 'enabled', budget_tokens: thinkingBudget }
+      }
+
       const r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': c.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: claudeModelMap[agent] || 'claude-sonnet-4-5-20251101',
-          max_tokens: maxTokens, system: systemPrompt,
-          messages: [...historyMessages, { role: 'user', content: effectiveUserMsg }, { role: 'assistant', content: '{"message":"' }],
-          stream: false,
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': c.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          ...(useThinking ? { 'anthropic-beta': 'interleaved-thinking-2025-05-14' } : {}),
+        },
+        body: JSON.stringify(claudeBody)
       })
       const d: any = await r.json()
-      return '{"' + (d?.content?.[0]?.text || '')
+      // Extract thinking blocks and text blocks from response
+      const contentBlocks = d?.content || []
+      let thinkingText = ''
+      let responseText = ''
+      for (const block of contentBlocks) {
+        if (block.type === 'thinking') thinkingText += block.thinking || ''
+        else if (block.type === 'text') responseText += block.text || ''
+      }
+      if (thinkingText && onThinking) onThinking(thinkingText)
+      // Without thinking: prefill reconstruction
+      if (!useThinking) return '{"message":"' + responseText
+      return responseText
     }
 
     // ── OpenRouter fallback ──────────────────────────────────────────────
@@ -2103,18 +2117,14 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
     const isClaudeModel  = orModelId.includes('anthropic') || orModelId.includes('claude')
     const isOpenAIModel  = orModelId.includes('openai') || orModelId.includes('gpt') || orModelId.includes('/o3') || orModelId.includes('/o4')
     // json_object mode: works reliably for OpenAI models only.
-    // Gemini and Claude on OpenRouter often ignore or reject it — use prompt engineering instead.
     const useJsonFormat = isOpenAIModel
 
-    // For Gemini via OpenRouter: force JSON output via message injection
-    // (Gemini ignores response_format but respects a trailing instruction)
+    // Force JSON output for Gemini via instruction injection
     const jsonForceMsg = isGeminiModel
       ? `\n\nCRITICAL INSTRUCTION: Your response MUST be ONLY a raw JSON object. Start your response with { and end with }. Do NOT use markdown code fences (\`\`\`). Do NOT write any text before or after the JSON. The JSON must have exactly this shape: {"message":"...","files":[{"path":"...","content":"..."}]}`
-      : isClaudeModel
-      ? '' // Claude uses prefill below
       : ''
 
-    // For Claude via OpenRouter: use assistant prefill to force JSON start
+    // Claude via OpenRouter: use assistant prefill; thinking not available on OR for Claude
     const orMessages = isClaudeModel
       ? [
           { role: 'system', content: systemPrompt },
@@ -2131,10 +2141,16 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
     const orBody: any = {
       model: orModelId,
       messages: orMessages,
-      temperature: 0.1,
       max_tokens: maxTokens,
     }
+    // Only set temperature when the model supports it (not o3/o4-mini)
+    if (TEMPERATURE !== undefined) orBody.temperature = TEMPERATURE
     if (useJsonFormat) orBody.response_format = { type: 'json_object' }
+
+    // Gemini 2.5 via OpenRouter: enable thinking via provider params
+    if (isGeminiModel && thinkingBudget > 0) {
+      orBody.provider = { order: ['Google'], data: { generationConfig: { thinkingConfig: { thinkingBudget } } } }
+    }
 
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -2148,7 +2164,7 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
     const d: any = await r.json()
     if (d.error) throw new Error(d.error.message || JSON.stringify(d.error))
     const rawContent = d?.choices?.[0]?.message?.content || ''
-    // Claude prefill: reconstruct the full JSON (we injected '{"message":"' as assistant start)
+    // Claude prefill reconstruction
     return isClaudeModel ? '{"message":"' + rawContent : rawContent
   }
 
@@ -2196,34 +2212,96 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
 
   // ── SSE stream with rich live narration ───────────────────────────────────
   // Events:
-  //   narrate  { msg, type } — human-readable step-by-step status
-  //   file     { path, content, index, total } — each file as processed
+  //   narrate  { msg, type }                      — human-readable status
+  //   tool     { tool, purpose, input }            — tool call transparency
+  //   step     { num, label, detail }              — numbered execution steps
+  //   file     { path, content, index, total }     — each file as processed
   //   done     { ok, message, files, creditsUsed } — final payload
-  //   error    { error } — fatal error (no credits charged)
+  //   error    { error }                           — fatal error (no credits charged)
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        // ── Phase 1: Planning narration ──────────────────────────────────
-        sseWrite(controller, 'narrate', JSON.stringify({
-          msg: `🧠 Activating ${modelDisplayName}…`, type: 'thinking'
+        // ── Phase 1: Agent Preamble — structured live thinking stream ────
+        // These events come from declareCodeAgentSystemPrompt() in intent-layer.ts.
+        // They show the user exactly what context was read and what the plan is
+        // BEFORE the LLM is called — transparent, engineering-level reasoning.
+        for (const ev of agentPlan.preambleEvents) {
+          sseWrite(controller, 'narrate', JSON.stringify({ msg: ev.msg, type: ev.type }))
+          await new Promise(r => setTimeout(r, 35))
+        }
+
+        // ── STEP 1: Announce which model is executing (tool transparency) ──
+        sseWrite(controller, 'tool', JSON.stringify({
+          tool: modelDisplayName,
+          purpose: `Code generation · ${appType} · ${stylePreset} preset`,
+          input: prompt.slice(0, 120) + (prompt.length > 120 ? '…' : ''),
         }))
         await new Promise(r => setTimeout(r, 40))
+
+        // ── STEP 2: Intent classification + architecture plan ─────────────
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 1,
+          label: `Analyze — classifying intent as ${isEditRequest ? 'EDIT' : isNewPageRequest ? 'NEW PAGE' : 'BUILD'}`,
+          detail: `Prompt: "${prompt.slice(0, 80)}${prompt.length > 80 ? '…' : ''}"`,
+        }))
+        await new Promise(r => setTimeout(r, 30))
+
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 2,
+          label: `Architect — planning ${appType} structure and file layout`,
+          detail: `Stack: ${language || 'HTML + CSS + JS'} · Preset: ${stylePreset} · Model: ${modelDisplayName}`,
+        }))
+        await new Promise(r => setTimeout(r, 30))
 
         sseWrite(controller, 'narrate', JSON.stringify({
           msg: `🎯 Analyzing prompt and planning ${appType} architecture…`, type: 'planning'
         }))
 
-        // ── Call model ───────────────────────────────────────────────────
+        // ── STEP 3: Model call ────────────────────────────────────────────
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 3,
+          label: `Execute — calling ${modelDisplayName}${useThinking ? ` with ${thinkingBudget.toLocaleString()} token reasoning budget` : ''} to generate code`,
+          detail: `Context: ${fileList ? fileList.split('\n').filter(Boolean).length + ' repo files indexed' : 'standalone project'} · max tokens: ${maxTokens}${useThinking ? ` + ${thinkingBudget} thinking` : ''}`,
+        }))
+        await new Promise(r => setTimeout(r, 30))
+
+        if (useThinking) {
+          sseWrite(controller, 'narrate', JSON.stringify({
+            msg: `🧠 ${modelDisplayName} is reasoning deeply — thinking budget: ${thinkingBudget.toLocaleString()} tokens…`, type: 'thinking'
+          }))
+        }
+
+        // ── Call model — wire thinking tokens to live UI stream ──────────
         let rawResponse = ''
+        let thinkingOutput = ''
         try {
-          rawResponse = await callModelFull()
+          rawResponse = await callModelFull(undefined, (thinkingText: string) => {
+            // Stream thinking output to UI as a collapsible reasoning block
+            thinkingOutput = thinkingText
+            if (thinkingText.trim()) {
+              // Emit a summary of what the model thought about (first 400 chars)
+              const preview = thinkingText.slice(0, 400).replace(/\n+/g, ' ').trim()
+              sseWrite(controller, 'thinking', JSON.stringify({
+                preview: preview + (thinkingText.length > 400 ? '…' : ''),
+                full: thinkingText,
+                tokens: Math.round(thinkingText.length / 4), // rough token estimate
+              }))
+            }
+          })
         } catch (callErr: any) {
           sseWrite(controller, 'error', JSON.stringify({ error: callErr.message }))
           controller.close()
           return
         }
 
-        // ── Phase 2: Parse response ──────────────────────────────────────
+        // ── STEP 4: Parse + validate response ────────────────────────────
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 4,
+          label: 'Validate — parsing JSON response and checking file structure',
+          detail: `Response size: ${(new TextEncoder().encode(rawResponse).length / 1024).toFixed(1)}KB`,
+        }))
+        await new Promise(r => setTimeout(r, 20))
+
         sseWrite(controller, 'narrate', JSON.stringify({
           msg: '📐 Processing response and validating output structure…', type: 'parsing'
         }))
@@ -2265,6 +2343,14 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
         const rawFiles = parsed.files || []
         const processedFiles: Array<{ path: string; content: string }> = []
 
+        // ── STEP 5: Write files ───────────────────────────────────────────
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 5,
+          label: `Write — rendering ${rawFiles.length} file${rawFiles.length > 1 ? 's' : ''} to editor`,
+          detail: rawFiles.map((f: any) => f.path || 'unnamed').join(' · '),
+        }))
+        await new Promise(r => setTimeout(r, 20))
+
         sseWrite(controller, 'narrate', JSON.stringify({
           msg: `✍️ Writing ${rawFiles.length} file${rawFiles.length > 1 ? 's' : ''} — rendering to editor…`, type: 'writing'
         }))
@@ -2303,6 +2389,17 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
           controller.close()
           return
         }
+
+        // ── STEP 6: FSDS injection + validation complete ─────────────────
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 6,
+          label: 'Validate — FSDS scaffold injected, interactivity check complete',
+          detail: processedFiles.map(f => {
+            const lines = f.content.split('\n').length
+            const kb = (new TextEncoder().encode(f.content).length / 1024).toFixed(1)
+            return `${f.path} (${lines} lines, ${kb}KB)`
+          }).join(' · '),
+        }))
 
         // ── SUCCESS: commit credits ──────────────────────────────────────
         await commitCredits(c, session.email, AI_CODE_CREDIT_COST)
@@ -11832,9 +11929,9 @@ em{color:var(--accent);font-style:italic}
         </div>
 
         <!-- Live preview iframe (hidden until preview mode) -->
-        <div id="code-preview-wrap" style="display:none;flex:1;overflow:auto;background:#1a1a2e;align-items:flex-start;justify-content:center;padding:0">
+        <div id="code-preview-wrap" style="display:none;flex:1;overflow:auto;background:#fff;align-items:flex-start;justify-content:center;padding:0">
           <div id="code-preview-viewport" style="width:100%;height:100%;transition:width 0.2s ease;background:#fff;margin:0 auto">
-            <iframe id="code-preview-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+            <iframe id="code-preview-frame"
               style="width:100%;height:100%;border:none;background:#fff"></iframe>
           </div>
         </div>
