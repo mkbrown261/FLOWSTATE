@@ -3,5 +3,27 @@
   "name": "flowstate",
   "compatibility_date": "2024-01-01",
   "compatibility_flags": ["nodejs_compat"],
-  "pages_build_output_dir": "./dist"
+  "pages_build_output_dir": "./dist",
+
+  // ─── D1 Database — Permanent source of truth ───────────────────────────────
+  // users, subscriptions, transactions, desktop_tokens, coin_ledger,
+  // projects (264pro + audio), ai_outputs, tasks, sessions
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "flowstate-production",
+      "database_id": "d0af41ae-0ab4-46bc-adeb-943e3c975b67"
+    }
+  ],
+
+  // ─── R2 Storage — User files, AI outputs, exports ──────────────────────────
+  // 264 Pro: project files, AI upscale/denoise exports, generated images/videos
+  // FlowState Audio: project saves (.fsa), AI-generated audio, stems, exports
+  "r2_buckets": [
+    {
+      "binding": "R2",
+      "bucket_name": "flowstate-assets"
+    }
+  ],
+
 }
