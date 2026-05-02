@@ -11650,11 +11650,7 @@ function _escapeHtml(str) {
 
 // ── Session management ────────────────────────────────────────────────────────
 function openMyProjects() {
-  switchTab('generate');
-  setTimeout(() => {
-    switchGenSub('code');
-    setTimeout(() => codeLoadProjectsList(), 100);
-  }, 150);
+  openMyProjectsModal();
 }
 
 function codeNewSession() {
@@ -12170,37 +12166,174 @@ async function _codeSaveProject() {
   } catch(e) { /* silent — persistence is a bonus, not required */ }
 }
 
-async function codeLoadProjectsList() {
-  const listEl = document.getElementById('code-projects-list');
-  if (listEl) listEl.innerHTML = '<div class="code-file-empty">Loading…</div>';
-  const panel = document.getElementById('code-projects-panel');
-  if (panel) panel.style.display = 'block';
+// ── My Projects Modal ─────────────────────────────────────────────────────────
+// Full-screen project manager — shows all saved projects as cards.
+// User can open, rename, or delete any project. Opening restores all files.
+
+function openMyProjectsModal() {
+  // Remove any existing modal
+  document.getElementById('my-projects-modal')?.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'my-projects-modal';
+  modal.style.cssText = `
+    position:fixed;inset:0;z-index:100000;
+    background:rgba(0,0,0,.75);backdrop-filter:blur(6px);
+    display:flex;align-items:center;justify-content:center;
+    animation:fsds-fadeIn .18s both;
+  `;
+  modal.innerHTML = `
+    <div style="
+      width:min(900px,94vw);max-height:88vh;
+      background:#0e0e1a;border:1px solid rgba(255,255,255,.1);
+      border-radius:18px;display:flex;flex-direction:column;overflow:hidden;
+      box-shadow:0 24px 80px rgba(0,0,0,.7);
+    ">
+      <!-- Header -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:20px 24px 16px;border-bottom:1px solid rgba(255,255,255,.07);flex-shrink:0">
+        <div>
+          <div style="font-size:18px;font-weight:800;color:#f0f0f0;font-family:var(--font-display,'Plus Jakarta Sans',sans-serif)">My Projects</div>
+          <div style="font-size:12px;color:#666;margin-top:2px">Click a project to restore it in the AI Code workspace</div>
+        </div>
+        <button onclick="document.getElementById('my-projects-modal')?.remove()" style="
+          background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
+          border-radius:8px;color:#aaa;cursor:pointer;padding:6px 12px;font-size:13px;
+          transition:all .15s;
+        " onmouseover="this.style.background='rgba(255,255,255,.1)'" onmouseout="this.style.background='rgba(255,255,255,.06)'">✕ Close</button>
+      </div>
+      <!-- Body -->
+      <div id="my-projects-body" style="flex:1;overflow-y:auto;padding:20px 24px;">
+        <div style="display:flex;align-items:center;justify-content:center;padding:60px 0;gap:10px;color:#555;font-size:13px">
+          <i class="fas fa-spinner fa-spin"></i> Loading your projects…
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Close on backdrop click
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  document.body.appendChild(modal);
+
+  // Load projects
+  _loadMyProjectsIntoModal();
+}
+
+async function _loadMyProjectsIntoModal() {
+  const body = document.getElementById('my-projects-body');
+  if (!body) return;
 
   try {
     const r = await fetch('/api/code/projects', { credentials: 'include' });
     const d = await r.json();
     const projects = d.projects || [];
 
-    if (!listEl) return;
     if (!projects.length) {
-      listEl.innerHTML = '<div class="code-file-empty">No saved projects yet</div>';
+      body.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 0;gap:12px;color:#555">
+          <div style="font-size:40px">📂</div>
+          <div style="font-size:15px;font-weight:700;color:#777">No saved projects yet</div>
+          <div style="font-size:12px;color:#555;text-align:center;max-width:300px">Build something in the AI Code workspace and it'll automatically save here.</div>
+        </div>`;
       return;
     }
 
-    listEl.innerHTML = '';
+    // Grid of project cards
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;';
+
     projects.forEach(p => {
-      const btn = document.createElement('button');
-      btn.className = 'code-file-item';
-      const date = p.updated_at ? new Date(p.updated_at).toLocaleDateString() : '';
-      btn.innerHTML = `<i class="fas fa-folder" style="color:#f59e0b"></i>
-        <span style="flex:1;overflow:hidden;text-overflow:ellipsis">${escHtml(p.name || 'Untitled')}</span>
-        <span style="font-size:9px;color:var(--text-m);flex-shrink:0">${date}</span>`;
-      btn.onclick = () => codeLoadProject(p.id);
-      listEl.appendChild(btn);
+      const updatedAt = p.updated_at ? new Date(p.updated_at) : null;
+      const dateStr = updatedAt ? updatedAt.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '';
+      const timeStr = updatedAt ? updatedAt.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' }) : '';
+
+      const card = document.createElement('div');
+      card.style.cssText = `
+        background:#131320;border:1px solid rgba(255,255,255,.08);border-radius:14px;
+        padding:18px;cursor:pointer;transition:all .18s;position:relative;
+        display:flex;flex-direction:column;gap:10px;
+      `;
+      card.onmouseover = () => { card.style.borderColor = 'rgba(168,85,247,.5)'; card.style.transform = 'translateY(-2px)'; card.style.boxShadow = '0 8px 32px rgba(168,85,247,.15)'; };
+      card.onmouseout  = () => { card.style.borderColor = 'rgba(255,255,255,.08)'; card.style.transform = ''; card.style.boxShadow = ''; };
+
+      card.innerHTML = `
+        <!-- Icon + delete -->
+        <div style="display:flex;align-items:flex-start;justify-content:space-between">
+          <div style="width:42px;height:42px;border-radius:10px;background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.25);display:flex;align-items:center;justify-content:center;font-size:20px">⚡</div>
+          <button class="mp-delete-btn" data-id="${p.id}" onclick="event.stopPropagation();_deleteMyProject('${p.id}',this)" style="
+            background:transparent;border:none;color:#555;cursor:pointer;padding:4px 6px;border-radius:6px;font-size:11px;
+            transition:all .15s;
+          " onmouseover="this.style.color='#ef4444';this.style.background='rgba(239,68,68,.1)'" onmouseout="this.style.color='#555';this.style.background='transparent'" title="Delete project">
+            <i class="fas fa-trash"></i>
+          </button>
+        </div>
+        <!-- Name -->
+        <div style="font-size:14px;font-weight:700;color:#e2e8f0;line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${escHtml(p.name || 'Untitled Project')}</div>
+        <!-- Meta -->
+        <div style="margin-top:auto;display:flex;flex-direction:column;gap:3px">
+          <div style="font-size:10px;color:#555;display:flex;align-items:center;gap:5px">
+            <i class="fas fa-clock" style="font-size:9px"></i>
+            <span>${dateStr}${timeStr ? ' · ' + timeStr : ''}</span>
+          </div>
+          ${p.preview_id ? `<div style="font-size:10px;color:#00d4ff;display:flex;align-items:center;gap:5px"><i class="fas fa-globe" style="font-size:9px"></i> Live preview available</div>` : ''}
+        </div>
+        <!-- Open button -->
+        <button onclick="event.stopPropagation();_openProjectFromModal('${p.id}')" style="
+          width:100%;padding:8px;border-radius:8px;
+          background:linear-gradient(135deg,rgba(168,85,247,.2),rgba(168,85,247,.1));
+          border:1px solid rgba(168,85,247,.35);color:#c084fc;
+          font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;
+        " onmouseover="this.style.background='linear-gradient(135deg,rgba(168,85,247,.35),rgba(168,85,247,.2))'" onmouseout="this.style.background='linear-gradient(135deg,rgba(168,85,247,.2),rgba(168,85,247,.1))'">
+          <i class="fas fa-folder-open" style="margin-right:5px"></i>Open Project
+        </button>
+      `;
+
+      // Clicking anywhere on card (not buttons) opens it
+      card.addEventListener('click', () => _openProjectFromModal(p.id));
+      grid.appendChild(card);
     });
+
+    body.innerHTML = '';
+    body.appendChild(grid);
+
   } catch(e) {
-    if (listEl) listEl.innerHTML = '<div class="code-file-empty">Failed to load</div>';
+    body.innerHTML = `<div style="text-align:center;padding:60px 0;color:#555;font-size:13px">Failed to load projects. Check your connection.</div>`;
   }
+}
+
+async function _openProjectFromModal(id) {
+  // Close modal first
+  document.getElementById('my-projects-modal')?.remove();
+  // Switch to AI Code tab
+  switchTab('generate');
+  setTimeout(() => {
+    switchGenSub('code');
+    setTimeout(() => codeLoadProject(id), 150);
+  }, 150);
+}
+
+async function _deleteMyProject(id, btnEl) {
+  if (!confirm('Delete this project? This cannot be undone.')) return;
+  try {
+    const r = await fetch(`/api/code/project/${id}`, { method: 'DELETE', credentials: 'include' });
+    const d = await r.json();
+    if (d.ok) {
+      // Remove the card from the grid
+      btnEl?.closest('div[style*="border-radius:14px"]')?.remove();
+      notify('Project deleted', 'success');
+      // If grid is now empty, reload to show empty state
+      const grid = document.querySelector('#my-projects-body > div');
+      if (grid && !grid.children.length) _loadMyProjectsIntoModal();
+    } else {
+      notify('Delete failed', 'error');
+    }
+  } catch {
+    notify('Delete failed', 'error');
+  }
+}
+
+// Keep old codeLoadProjectsList wired (used by sidebar "Saved" button) but now opens modal
+async function codeLoadProjectsList() {
+  openMyProjectsModal();
 }
 
 async function codeLoadProject(id) {
@@ -12641,4 +12774,5 @@ async function _clawLogProject({ deployUrl = '' } = {}) {
     // Silent — non-critical
   }
 }
+
 
