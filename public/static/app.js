@@ -12247,6 +12247,7 @@ async function _loadMyProjectsIntoModal() {
       const timeStr = updatedAt ? updatedAt.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' }) : '';
 
       const card = document.createElement('div');
+      card.setAttribute('data-project-id', p.id);
       card.style.cssText = `
         background:#131320;border:1px solid rgba(255,255,255,.08);border-radius:14px;
         padding:18px;cursor:pointer;transition:all .18s;position:relative;
@@ -12317,8 +12318,9 @@ async function _deleteMyProject(id, btnEl) {
     const r = await fetch(`/api/code/project/${id}`, { method: 'DELETE', credentials: 'include' });
     const d = await r.json();
     if (d.ok) {
-      // Remove the card from the grid
-      btnEl?.closest('div[style*="border-radius:14px"]')?.remove();
+      // Remove the card using data-project-id — reliable regardless of style string
+      const card = document.querySelector(`[data-project-id="${id}"]`);
+      card?.remove();
       notify('Project deleted', 'success');
       // If grid is now empty, reload to show empty state
       const grid = document.querySelector('#my-projects-body > div');
