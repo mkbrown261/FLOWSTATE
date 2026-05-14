@@ -11059,18 +11059,49 @@ async function codeOpenFile(path) {
   } catch(e) { codeLog('Error loading file', 'error'); }
 }
 
-function _codeRenderCode(content, path) {
+function _codeRenderCode(content, path, showDiff) {
   const editor = document.getElementById('code-editor-wrap');
   const actions = document.getElementById('code-toolbar-actions');
   if (actions) actions.style.display = 'flex';
   if (!editor) return;
-  // Simple syntax highlight by escaping HTML then colorizing keywords
-  const escaped = content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  editor.innerHTML = `<div class="code-content">${escaped}</div>`;
+
+  // Fix 6: diff highlight — compare against previous content for this file
+  const prevContent = _codeState._prevFileContent?.[path] || null;
+  let htmlLines;
+
+  if (showDiff && prevContent && prevContent !== content) {
+    // Build line-level diff: highlight changed/added lines with a green gutter
+    const newLines  = content.split('\n');
+    const prevLines = prevContent.split('\n');
+    const prevSet   = new Set(prevLines);
+    htmlLines = newLines.map((line, i) => {
+      const escaped = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const isNew   = !prevSet.has(line);
+      const style   = isNew ? 'background:rgba(16,185,129,.08);border-left:3px solid #10b981;padding-left:5px;' : 'padding-left:8px;';
+      return `<div style="${style}white-space:pre-wrap;word-break:break-all;line-height:1.6;font-size:12px;font-family:var(--font-mono,'Fira Code','monospace')">${escaped || ' '}</div>`;
+    });
+    // Auto-clear diff highlight after 4 seconds
+    setTimeout(() => {
+      if (_codeState.activeFile === path) _codeRenderCode(content, path, false);
+    }, 4000);
+  } else {
+    const escaped = content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    htmlLines = [`<div style="white-space:pre-wrap;word-break:break-all;line-height:1.6;font-size:12px;font-family:var(--font-mono,'Fira Code','monospace');padding-left:8px">${escaped}</div>`];
+  }
+
+  editor.innerHTML = `<div class="code-content" style="padding:12px 0">${htmlLines.join('')}</div>`;
+
+  // Store current content as previous for next diff
+  if (!_codeState._prevFileContent) _codeState._prevFileContent = {};
+  _codeState._prevFileContent[path] = content;
+
   _codeSetActiveBadge(path);
-  // Highlight active file in tree
+  // Highlight active file in tree + tabs
   document.querySelectorAll('.code-file-item').forEach(el => {
-    el.classList.toggle('active', el.textContent.trim().includes(path.split('/').pop()));
+    el.classList.toggle('active', el.dataset.path === path || el.textContent.trim().includes(path.split('/').pop()));
+  });
+  document.querySelectorAll('.code-file-tab').forEach(el => {
+    el.classList.toggle('active', el.dataset.path === path);
   });
 }
 
@@ -11244,6 +11275,10 @@ async function _codeRunBuild(prompt) {
   const stylePreset = document.getElementById('code-style-preset')?.value || 'ai-decides';
 
   _codeState.generating = true;
+  // Snapshot current files before generation so diff can compare
+  const prevGeneratedFiles = Object.keys(_codeState.generatedFiles).length
+    ? JSON.parse(JSON.stringify(_codeState.generatedFiles))
+    : null;
   const btn = document.getElementById('btn-code-generate');
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Building…'; }
 
@@ -11486,11 +11521,21 @@ async function _codeRunBuild(prompt) {
                 if (isFirst || (isHtml && !_codeState.activeFile)) {
                   _codeState.activeFile = f.path;
                   _codeState.activeFileContent = f.content;
-                  _codeRenderCode(f.content, f.path);
+                  // showDiff=true for edit requests so changed lines glow green
+                  const isEditFile = !!prevGeneratedFiles?.[f.path];
+                  _codeRenderCode(f.content, f.path, isEditFile);
                   // Show code view immediately
                   const toggle = document.getElementById('code-view-toggle');
                   if (toggle) toggle.style.display = 'flex';
                   codeSetView('code');
+                }
+                // Fix 3: auto-refresh preview on every file event
+                if (_codeState.currentView === 'preview') {
+                  _codeUpdatePreview();
+                } else if (isHtml) {
+                  // Prime srcdoc silently so switching to preview is instant
+                  const frame = document.getElementById('code-preview-frame');
+                  if (frame && typeof _codeBuildPreviewDoc === 'function') frame.srcdoc = _codeBuildPreviewDoc();
                 }
               }
             } catch {}
@@ -12414,6 +12459,46 @@ async function codeLoadProject(id) {
 // Always uses srcdoc to render the generated files inline in the iframe.
 // This avoids race conditions with R2 propagation and ensures instant display.
 // The R2/live URL is used only for the open-in-browser / copy-URL buttons.
+// Helper: build preview srcdoc from current generated files (without setting it)
+function _codeBuildPreviewDoc() {
+  const files = _codeState.generatedFiles;
+  const paths = Object.keys(files);
+  if (!paths.length) return '';
+  const htmlFiles = paths.filter(p => p.endsWith('.html') || p.endsWith('.htm'));
+  const cssFiles  = paths.filter(p => p.endsWith('.css'));
+  const jsFiles   = paths.filter(p => p.endsWith('.js') || p.endsWith('.jsx'));
+  if (!htmlFiles.length) return '';
+  const mainHtml = htmlFiles.find(p => p === 'index.html' || p.endsWith('/index.html')) || htmlFiles[0];
+  const htmlEntry = files[mainHtml];
+  if (!htmlEntry?.content) return '';
+  let html = htmlEntry.content;
+  cssFiles.forEach(cssPath => {
+    const fname = cssPath.split('/').pop();
+    const cssContent = files[cssPath]?.content || '';
+    if (!cssContent) return;
+    const escaped = fname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const linked = new RegExp('<link[^>]*href=["'][^"']*' + escaped + '["'][^>]*>', 'gi');
+    if (linked.test(html)) {
+      html = html.replace(new RegExp('<link[^>]*href=["'][^"']*' + escaped + '["'][^>]*>', 'gi'), '<style>' + cssContent + '</style>');
+    } else {
+      html = html.includes('</head>') ? html.replace('</head>', '<style>' + cssContent + '</style>\n</head>') : html + '<style>' + cssContent + '</style>';
+    }
+  });
+  jsFiles.forEach(jsPath => {
+    const fname = jsPath.split('/').pop();
+    const jsContent = files[jsPath]?.content || '';
+    if (!jsContent) return;
+    const escaped = fname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const srcRef = new RegExp('<script[^>]*src=["'][^"']*' + escaped + '["'][^>]*><\/script>', 'gi');
+    if (srcRef.test(html)) {
+      html = html.replace(new RegExp('<script[^>]*src=["'][^"']*' + escaped + '["'][^>]*><\/script>', 'gi'), '<script>' + jsContent + '</script>');
+    } else {
+      html = html.includes('</body>') ? html.replace('</body>', '<script>' + jsContent + '</script>\n</body>') : html + '<script>' + jsContent + '</script>';
+    }
+  });
+  return html;
+}
+
 function _codeUpdatePreview() {
   const frame = document.getElementById('code-preview-frame');
   if (!frame) return;
@@ -12511,25 +12596,85 @@ if(typeof App!=='undefined'){import{createRoot}from'https://esm.sh/react-dom@18/
     // If src is set (even to ''), the browser ignores srcdoc entirely.
     frame.removeAttribute('src');
     frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-top-navigation-by-user-activation');
+    // Fix 5: inject console error interceptor into preview — pipes errors back to narration panel
+    const errorInterceptor = `
+<script>
+(function(){
+  const _origError = console.error.bind(console);
+  const _origWarn  = console.warn.bind(console);
+  function _relay(type, args) {
+    try {
+      window.parent.postMessage({ type: 'preview_console', level: type, msg: Array.from(args).map(String).join(' ') }, '*');
+    } catch(e) {}
+  }
+  console.error = function() { _relay('error', arguments); _origError.apply(console, arguments); };
+  console.warn  = function() { _relay('warn',  arguments); _origWarn.apply(console, arguments); };
+  window.addEventListener('error', function(e) {
+    window.parent.postMessage({ type: 'preview_console', level: 'error', msg: (e.message || 'Unknown error') + (e.filename ? ' (line ' + e.lineno + ')' : '') }, '*');
+  });
+  window.addEventListener('unhandledrejection', function(e) {
+    window.parent.postMessage({ type: 'preview_console', level: 'error', msg: 'Unhandled promise rejection: ' + (e.reason?.message || String(e.reason)) }, '*');
+  });
+})();
+</script>`;
+    srcdoc = srcdoc.includes('<head>') ? srcdoc.replace('<head>', '<head>' + errorInterceptor) : errorInterceptor + srcdoc;
     frame.srcdoc = srcdoc;
   }
 }
 
+// Fix 5: Listen for preview console messages and show in narration panel
+if (typeof window !== 'undefined') {
+  window.addEventListener('message', function(e) {
+    if (!e.data || e.data.type !== 'preview_console') return;
+    const level = e.data.level;
+    const msg   = e.data.msg || '';
+    if (!msg.trim()) return;
+    // Only show errors and actionable warnings, not noise
+    if (level === 'error') {
+      const chatList = document.getElementById('code-chat-list');
+      if (!chatList) return;
+      // Debounce: don't spam the same error
+      const lastErr = chatList.dataset.lastPreviewErr;
+      if (lastErr === msg) return;
+      chatList.dataset.lastPreviewErr = msg;
+      const row = document.createElement('div');
+      row.style.cssText = 'margin:4px 0 0;padding:7px 10px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:8px;font-size:11px;color:#fca5a5;animation:fsds-fadeIn .2s both;display:flex;align-items:flex-start;gap:7px;';
+      row.innerHTML = '<span style="flex-shrink:0;font-size:12px">⚠️</span><div><strong style="display:block;font-weight:700;margin-bottom:2px">Preview error detected</strong><span style="color:#f87171;font-family:monospace;font-size:10px;word-break:break-all">' + _escapeHtml(msg.slice(0, 300)) + '</span></div>';
+      chatList.appendChild(row);
+      chatList.scrollTop = chatList.scrollHeight;
+    }
+  });
+}
+
 // ── File panel ─────────────────────────────────────────────────────────────────
 function _codeAddFileToPanel(path) {
+  // ── Sidebar list ────────────────────────────────────────────────────────────
   const list = document.getElementById('code-gen-file-list');
-  if (!list) return;
-  // Remove empty message
-  const empty = list.querySelector('.code-file-empty');
-  if (empty) empty.remove();
-  // Remove duplicate
-  list.querySelectorAll('.code-file-item').forEach(el => { if (el.dataset.path === path) el.remove(); });
-  const btn = document.createElement('button');
-  btn.className = 'code-file-item ai-generated';
-  btn.dataset.path = path;
-  btn.onclick = () => _codeOpenGeneratedFile(path);
-  btn.innerHTML = `<i class="${_codeFileIcon(path)}"></i><span style="overflow:hidden;text-overflow:ellipsis;flex:1">${escHtml(path)}</span>`;
-  list.insertBefore(btn, list.firstChild);
+  if (list) {
+    const empty = list.querySelector('.code-file-empty');
+    if (empty) empty.remove();
+    list.querySelectorAll('.code-file-item').forEach(el => { if (el.dataset.path === path) el.remove(); });
+    const btn = document.createElement('button');
+    btn.className = 'code-file-item ai-generated';
+    btn.dataset.path = path;
+    btn.onclick = () => _codeOpenGeneratedFile(path);
+    btn.innerHTML = `<i class="${_codeFileIcon(path)}"></i><span style="overflow:hidden;text-overflow:ellipsis;flex:1">${escHtml(path)}</span>`;
+    list.insertBefore(btn, list.firstChild);
+  }
+  // ── Tab bar ─────────────────────────────────────────────────────────────────
+  const tabBar = document.getElementById('code-file-tabs');
+  if (tabBar) {
+    tabBar.style.display = 'flex';
+    // Remove duplicate tab
+    tabBar.querySelectorAll('.code-file-tab').forEach(el => { if (el.dataset.path === path) el.remove(); });
+    const tab = document.createElement('button');
+    tab.className = 'code-file-tab';
+    tab.dataset.path = path;
+    const shortName = path.split('/').pop();
+    tab.onclick = () => _codeOpenGeneratedFile(path);
+    tab.innerHTML = `<i class="${_codeFileIcon(path)}"></i>${escHtml(shortName)}`;
+    tabBar.appendChild(tab);
+  }
 }
 
 function _codeOpenGeneratedFile(path) {
@@ -12539,6 +12684,10 @@ function _codeOpenGeneratedFile(path) {
   _codeState.activeFileContent = fd.content;
   _codeState.activeFileSha = fd.sha || null;
   _codeRenderCode(fd.content, path);
+  // Mark active tab
+  document.querySelectorAll('.code-file-tab').forEach(t => t.classList.toggle('active', t.dataset.path === path));
+  // Mark active sidebar item
+  document.querySelectorAll('#code-gen-file-list .code-file-item').forEach(t => t.classList.toggle('active', t.dataset.path === path));
   // Switch to code view when clicking a file
   codeSetView('code');
 }

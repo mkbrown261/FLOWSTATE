@@ -1917,6 +1917,33 @@ ${language ? `TARGET LANGUAGE: ${language}` : ''}`
     return full
   }
 
+  // ── Delimited text parser (new primary format) ─────────────────────────
+  // Parses the === FILE: path === ... === END FILE === format
+  // Falls back to JSON parser if no delimiters found
+  function extractDelimited(raw: string): { message?: string; files?: Array<{ path: string; content: string }> } | null {
+    if (!raw?.trim()) return null
+    const fileRegex = /={3} FILE: ([^\n]+?) ={3}[\r\n]([\s\S]*?)={3} END FILE ={3}/g
+    const files: Array<{ path: string; content: string }> = []
+    let match
+    while ((match = fileRegex.exec(raw)) !== null) {
+      const path = match[1].trim()
+      const content = match[2].replace(/\r\n/g, '\n').replace(/^\n|\n$/g, '')
+      if (path && content) files.push({ path, content })
+    }
+    if (!files.length) return null
+    // Extract message from === MESSAGE === block if present
+    const msgMatch = raw.match(/={3} MESSAGE ===[\r\n]([\s\S]*?)(?:={3}|$)/)
+    const message = msgMatch ? msgMatch[1].trim() : ''
+    return { message, files }
+  }
+
+  // Combined extractor: try delimited first, fall back to JSON
+  function extractOutput(raw: string): { message?: string; files?: Array<{ path: string; content: string }> } | null {
+    const delimited = extractDelimited(raw)
+    if (delimited?.files?.length) return delimited
+    return extractJSON(raw)
+  }
+
   // ── FIX 2 + FIX 5: Robust JSON extraction with auto-retry ─────────────────
   function extractJSON(raw: string): { message?: string; files?: Array<{ path: string; content: string }> } | null {
     if (!raw?.trim()) return null
@@ -2031,11 +2058,10 @@ ${language ? `TARGET LANGUAGE: ${language}` : ''}`
       const supportsGeminiThinking = agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash'
 
       const geminiBody: any = {
-        contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyMessages.map((m:any)=>`[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')}\n\n[USER]: ${effectiveUserMsg}\n\nRespond with ONLY a raw JSON object starting with {. No markdown fences, no prose.` }] }],
+        contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyMessages.map((m:any)=>`[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')}\n\n[USER]: ${effectiveUserMsg}` }] }],
         generationConfig: {
           temperature: TEMPERATURE ?? 0.35,
           maxOutputTokens: maxTokens,
-          responseMimeType: 'application/json',
         }
       }
       // Enable Gemini thinking budget for 2.5 Pro/Flash
@@ -2105,8 +2131,6 @@ ${language ? `TARGET LANGUAGE: ${language}` : ''}`
         else if (block.type === 'text') responseText += block.text || ''
       }
       if (thinkingText && onThinking) onThinking(thinkingText)
-      // Without thinking: prefill reconstruction
-      if (!useThinking) return '{"message":"' + responseText
       return responseText
     }
 
@@ -2116,27 +2140,15 @@ ${language ? `TARGET LANGUAGE: ${language}` : ''}`
     const isGeminiModel  = orModelId.includes('google') || orModelId.includes('gemini')
     const isClaudeModel  = orModelId.includes('anthropic') || orModelId.includes('claude')
     const isOpenAIModel  = orModelId.includes('openai') || orModelId.includes('gpt') || orModelId.includes('/o3') || orModelId.includes('/o4')
-    // json_object mode: works reliably for OpenAI models only.
-    const useJsonFormat = isOpenAIModel
+    // Delimited text format — no json_object mode needed
+    const useJsonFormat = false // kept for type safety
 
-    // Force JSON output for Gemini via instruction injection
-    const jsonForceMsg = isGeminiModel
-      ? `\n\nCRITICAL INSTRUCTION: Your response MUST be ONLY a raw JSON object. Start your response with { and end with }. Do NOT use markdown code fences (\`\`\`). Do NOT write any text before or after the JSON. The JSON must have exactly this shape: {"message":"...","files":[{"path":"...","content":"..."}]}`
-      : ''
-
-    // Claude via OpenRouter: use assistant prefill; thinking not available on OR for Claude
-    const orMessages = isClaudeModel
-      ? [
-          { role: 'system', content: systemPrompt },
-          ...historyMessages,
-          { role: 'user', content: effectiveUserMsg },
-          { role: 'assistant', content: '{"message":"' },
-        ]
-      : [
-          { role: 'system', content: systemPrompt },
-          ...historyMessages,
-          { role: 'user', content: effectiveUserMsg + jsonForceMsg },
-        ]
+    // All models: use delimited text format — no JSON prefill, no forced mime type
+    const orMessages = [
+      { role: 'system', content: systemPrompt },
+      ...historyMessages,
+      { role: 'user', content: effectiveUserMsg },
+    ]
 
     const orBody: any = {
       model: orModelId,
@@ -2145,7 +2157,7 @@ ${language ? `TARGET LANGUAGE: ${language}` : ''}`
     }
     // Only set temperature when the model supports it (not o3/o4-mini)
     if (TEMPERATURE !== undefined) orBody.temperature = TEMPERATURE
-    if (useJsonFormat) orBody.response_format = { type: 'json_object' }
+    // useJsonFormat disabled — using delimited text format
 
     // Gemini 2.5 via OpenRouter: enable thinking via provider params
     if (isGeminiModel && thinkingBudget > 0) {
@@ -2306,17 +2318,16 @@ ${language ? `TARGET LANGUAGE: ${language}` : ''}`
           msg: '📐 Processing response and validating output structure…', type: 'parsing'
         }))
 
-        let parsed = extractJSON(rawResponse)
+        let parsed = extractOutput(rawResponse)
 
         if (!parsed?.files?.length) {
           sseWrite(controller, 'narrate', JSON.stringify({
-            msg: '🔄 Response needs reformatting — retrying with strict JSON mode…', type: 'retry'
+            msg: '🔄 Response needs reformatting — retrying…', type: 'retry'
           }))
-          // On retry: inject a strict repair instruction so the model knows it failed
-          const retryMsg = `${currentUserMsg}\n\nCRITICAL: Your previous response was not valid JSON. Respond with ONLY a raw JSON object. Start with { immediately. No markdown. No prose. No code fences. Shape: {"message":"...","files":[{"path":"index.html","content":"..."}]}`
+          const retryMsg = `${currentUserMsg}\n\nCRITICAL: Output must use the exact delimited format. Start immediately with === MESSAGE === then your files. No prose, no JSON, no markdown.`
           try {
             rawResponse = await callModelFull(retryMsg)
-            parsed = extractJSON(rawResponse)
+            parsed = extractOutput(rawResponse)
           } catch { /* use what we have */ }
         }
 
@@ -3881,10 +3892,17 @@ app.post('/api/auth/magic-link', async (c) => {
 
   } else {
     // ── Fallback: no RESEND_API_KEY — auto-sign-in (dev/demo mode only) ──────
-    const session = { name, email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
+    let savedPictureDemo = ''
+    if (c.env?.DB) {
+      try {
+        const prof = await c.env.DB.prepare(`SELECT avatar_url FROM public_profiles WHERE email=? LIMIT 1`).bind(email).first() as any
+        if (prof?.avatar_url) savedPictureDemo = prof.avatar_url
+      } catch (_) {}
+    }
+    const session = { name, email, picture: savedPictureDemo, provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
     setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
     if (c.env?.DB) {
-      try { await upsertUser(c.env.DB, email, name, '', 'magic_link') } catch (_) {}
+      try { await upsertUser(c.env.DB, email, name, savedPictureDemo, 'magic_link') } catch (_) {}
     }
     return c.json({
       success: true,
@@ -3923,10 +3941,18 @@ app.get('/api/auth/magic-link/verify', async (c) => {
         return c.html(authErrorPage('This sign-in link has expired (15 minutes). <a href="/" style="color:#a855f7">Request a new one</a>.'))
       }
 
-      const session = { name: data.name, email: data.email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
+      // Look up saved avatar from public_profiles before creating session
+      let savedPicture = ''
+      if (c.env?.DB) {
+        try {
+          const prof = await c.env.DB.prepare(`SELECT avatar_url FROM public_profiles WHERE email=? LIMIT 1`).bind(data.email).first() as any
+          if (prof?.avatar_url) savedPicture = prof.avatar_url
+        } catch (_) {}
+      }
+      const session = { name: data.name, email: data.email, picture: savedPicture, provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
       setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
       if (c.env?.DB) {
-        try { await upsertUser(c.env.DB, data.email, data.name, '', 'magic_link') } catch (dbErr: any) {
+        try { await upsertUser(c.env.DB, data.email, data.name, savedPicture, 'magic_link') } catch (dbErr: any) {
           console.error('[magic-link verify] D1 upsert failed:', dbErr?.message)
         }
       }
@@ -3941,10 +3967,18 @@ app.get('/api/auth/magic-link/verify', async (c) => {
     try {
       const data = JSON.parse(atob(decodeURIComponent(token)))
       if (Date.now() > data.exp) return c.html(authErrorPage('This link has expired. Please <a href="/" style="color:#a855f7">request a new sign-in link</a>.'))
-      const session = { name: data.name, email: data.email, picture: '', provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
+      // Look up saved avatar from public_profiles before creating session
+      let savedPictureLegacy = ''
+      if (c.env?.DB) {
+        try {
+          const prof = await c.env.DB.prepare(`SELECT avatar_url FROM public_profiles WHERE email=? LIMIT 1`).bind(data.email).first() as any
+          if (prof?.avatar_url) savedPictureLegacy = prof.avatar_url
+        } catch (_) {}
+      }
+      const session = { name: data.name, email: data.email, picture: savedPictureLegacy, provider: 'magic_link', expiresAt: Date.now() + 7 * 24 * 3600000 }
       setCookie(c, 'fs_session', encodeSession(session), { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 604800, path: '/' })
       if (c.env?.DB) {
-        try { await upsertUser(c.env.DB, data.email, data.name, '', 'magic_link') } catch (dbErr: any) {
+        try { await upsertUser(c.env.DB, data.email, data.name, savedPictureLegacy, 'magic_link') } catch (dbErr: any) {
           console.error('[magic-link verify legacy] D1 upsert failed:', dbErr?.message)
         }
       }
@@ -10017,6 +10051,12 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 .code-toolbar{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-bottom:1px solid var(--border);background:rgba(10,10,20,.5);flex-shrink:0}
 .code-toolbar-left{display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden}
 .code-toolbar-right{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.code-file-tabs{display:flex;align-items:center;overflow-x:auto;background:#0d0d1a;border-bottom:1px solid var(--border);flex-shrink:0;scrollbar-width:none}
+.code-file-tabs::-webkit-scrollbar{display:none}
+.code-file-tab{display:flex;align-items:center;gap:5px;padding:6px 13px;font-size:11px;font-family:var(--font-mono,'monospace');color:var(--text-s);cursor:pointer;border-right:1px solid rgba(255,255,255,.04);white-space:nowrap;transition:.12s;background:transparent;border-top:2px solid transparent;border-bottom:none;flex-shrink:0}
+.code-file-tab:hover{color:var(--text-p);background:rgba(168,85,247,.06)}
+.code-file-tab.active{color:var(--accent);background:rgba(168,85,247,.1);border-top-color:var(--accent)}
+.code-file-tab i{font-size:10px;opacity:.7}
 .code-file-badge{font-size:11px;color:var(--text-s);display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .code-file-badge i{color:var(--accent);flex-shrink:0}
 .code-icon-btn{background:transparent;border:1px solid var(--border);border-radius:7px;padding:5px 9px;font-size:11px;color:var(--text-s);cursor:pointer;transition:.15s;display:flex;align-items:center;gap:5px;white-space:nowrap}
@@ -11876,6 +11916,9 @@ em{color:var(--accent);font-style:italic}
             <button class="code-icon-btn" onclick="codePushToGitHub()" title="Push active file to GitHub" id="btn-code-push" style="display:none"><i class="fab fa-github"></i> Push</button>
           </div>
         </div>
+
+        <!-- File tabs bar (populated dynamically by JS, hidden until files exist) -->
+        <div class="code-file-tabs" id="code-file-tabs" style="display:none"></div>
 
         <!-- Code display -->
         <div class="code-editor-wrap" id="code-editor-wrap">

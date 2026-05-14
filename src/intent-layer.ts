@@ -1637,24 +1637,36 @@ BUILD WITH DEPTH — use these together to create real UI, not skeleton placehol
 OUTPUT FORMAT — ABSOLUTE REQUIREMENTS
 ════════════════════════════════════════
 
-Respond ONLY with raw JSON. No prose. No markdown fences. No explanations outside the JSON.
-Pure JSON starting with { and ending with }.
+Use this EXACT delimited text format. NO JSON. NO markdown code fences around files.
+This format handles files of any length and complexity without escaping issues.
 
-Exact shape:
-{
-  "message": "2-4 sentence senior-dev post-build briefing: what was built, key architectural decisions, what to do next",
-  "files": [
-    { "path": "index.html", "content": "FULL COMPLETE FILE — EVERY LINE" },
-    { "path": "styles.css", "content": "FULL COMPLETE FILE — EVERY LINE" }
-  ]
-}
+Exact format:
 
-FILE RULES:
-- Main HTML: ALWAYS "index.html" — never "app.html", "output.html", "page.html"
-- Styles: "styles.css" or "app.css"
-- Scripts: "app.js" or "main.js"
-- React: "App.jsx" + "components/*.jsx"
-- No spaces, no uppercase, no special chars except hyphens and dots
+=== MESSAGE ===
+2-4 sentence senior-dev post-build briefing: what was built, key architectural decisions, what to try next.
+
+=== FILE: index.html ===
+<!DOCTYPE html>
+<html lang="en">
+... FULL COMPLETE FILE CONTENT HERE ...
+</html>
+=== END FILE ===
+
+=== FILE: styles.css ===
+/* full CSS here */
+=== END FILE ===
+
+=== FILE: app.js ===
+// full JS here
+=== END FILE ===
+
+RULES:
+- Start immediately with === MESSAGE === — no preamble, no prose before it
+- Every file gets its own === FILE: path === ... === END FILE === block
+- File paths: lowercase, hyphenated. Main HTML: always "index.html". Styles: "styles.css". Scripts: "app.js"
+- React: "App.jsx", "components/Header.jsx", etc.
+- Write COMPLETE file content between delimiters — never truncate, never placeholder
+- Do NOT wrap file content in markdown code fences (no backtick blocks inside the delimiters)
 
 COMPLETENESS RULES — ZERO TOLERANCE:
 - Every file 100% complete — NEVER truncate under any circumstances
@@ -1664,9 +1676,9 @@ COMPLETENESS RULES — ZERO TOLERANCE:
 
 QUALITY RULES — THIS IS THE MINIMUM BAR:
 - Realistic content: real company/product names, real numbers, real copy — ZERO lorem ipsum
-- Every button has a click handler (even if it's just a console.log or alert for now)
-- Every form has submit handler + inline validation feedback (error messages, success state)
-- Every modal has open AND close handlers (including clicking outside to close)
+- Every button has a click handler
+- Every form has submit handler + inline validation feedback
+- Every modal has open AND close handlers (clicking outside closes too)
 - Every tab/accordion/toggle actually works
 - Mobile responsive: works at 375px, 768px, 1024px, 1440px
 - Hover states on every interactive element
