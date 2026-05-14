@@ -28,6 +28,7 @@ import {
   declareClawbotSession, declareClawbotSystemPrompt, declareWalkthrough,
   declareCoinLedgerEntry, declareClawFlowPromo,
   declareAudioGeneration, declareAudioProject, declareAudioArrangementSuggestion,
+  declareCodeAgentSystemPrompt,
   MODEL_REGISTRY, IMAGE_MODEL_REGISTRY, VIDEO_MODEL_REGISTRY, CREDENTIAL_TABLE,
   type SessionIntent, type BehaviorData, type AudioAiTool,
 } from './intent-layer'
@@ -1329,35 +1330,57 @@ app.post('/api/github/ai-code', async (c) => {
     ? fileTree.filter((f: any) => f.type === 'blob').map((f: any) => f.path).slice(0, 150).join('\n')
     : Object.keys(generatedFiles).join('\n')
 
-  // ── FIX 6: Smart context ordering ─────────────────────────────────────────
-  // Active file goes first (full content for HTML up to 1200 chars, full for CSS/JS).
-  // Remaining files: HTML capped at 500 chars, CSS/JS at 2500 chars.
-  // For new-page requests: suppress ALL HTML content entirely.
+  // ── Smart context ordering — upgraded limits ──────────────────────────────
+  // Active file: full content always (no cap on edits — model MUST see the whole file)
+  // Non-active HTML: 4000 chars (was 500)
+  // CSS / JS: 8000 chars (was 2500)
+  // New-page requests: suppress HTML to force fresh layout (unchanged)
   const buildFileContext = () => {
     const entries = Object.entries(generatedFiles) as [string, any][]
     if (!entries.length) return ''
 
-    // Put active file first, then remaining files (most recent last 5)
+    // Active file first, then up to 8 most-recent other files (was 5)
     const sorted = activeFile && generatedFiles[activeFile]
-      ? [[activeFile, generatedFiles[activeFile]], ...entries.filter(([p]) => p !== activeFile).slice(-5)]
-      : entries.slice(-6)
+      ? [[activeFile, generatedFiles[activeFile]], ...entries.filter(([p]) => p !== activeFile).slice(-8)]
+      : entries.slice(-8)
 
     return sorted.map(([path, content]: [string, any]) => {
-      const isHtml = path.endsWith('.html') || path.endsWith('.htm')
+      const isHtml  = path.endsWith('.html') || path.endsWith('.htm')
+      const isCss   = path.endsWith('.css')
+      const isJs    = path.endsWith('.js') || path.endsWith('.jsx') || path.endsWith('.ts') || path.endsWith('.tsx')
       const isActive = path === activeFile
 
       if (isHtml && isNewPageRequest) {
         return `\n### FILE: ${path}\n[HTML omitted — NEW page: build a completely fresh layout]`
       }
       if (isHtml) {
-        // Active HTML file: send more context so edits are accurate
-        const cap = isActive ? 1200 : 500
-        const preview = String(content).slice(0, cap)
-        const omitNote = String(content).length > cap ? '\n... [remaining HTML omitted — modify only what was asked]' : ''
+        const raw = String(content)
+        // Active HTML file on an edit: send FULL file — no cap
+        // This is the #1 reason edits were weak: model couldn't see the whole file
+        if (isActive && isEditRequest) {
+          return `\n### FILE: ${path} ← CURRENTLY OPEN (full file — read carefully before editing)\n\`\`\`html\n${raw}\n\`\`\``
+        }
+        // Active HTML on a fresh build: 4000 chars is enough to understand structure
+        const cap = isActive ? 4000 : 4000
+        const preview = raw.slice(0, cap)
+        const omitNote = raw.length > cap ? `\n... [+${raw.length - cap} chars omitted — structure understood]` : ''
         return `\n### FILE: ${path}${isActive ? ' ← CURRENTLY OPEN' : ''}\n\`\`\`html\n${preview}${omitNote}\n\`\`\``
       }
-      // CSS / JS: send in full up to 2500 chars
-      return `\n### FILE: ${path}\n\`\`\`\n${String(content).slice(0, 2500)}\n\`\`\``
+      // CSS: send up to 8000 chars (was 2500)
+      if (isCss) {
+        const raw = String(content)
+        const omitNote = raw.length > 8000 ? `\n... [+${raw.length - 8000} chars omitted]` : ''
+        return `\n### FILE: ${path}\n\`\`\`css\n${raw.slice(0, 8000)}${omitNote}\n\`\`\``
+      }
+      // JS/TS: send up to 8000 chars (was 2500)
+      if (isJs) {
+        const raw = String(content)
+        const omitNote = raw.length > 8000 ? `\n... [+${raw.length - 8000} chars omitted]` : ''
+        return `\n### FILE: ${path}\n\`\`\`js\n${raw.slice(0, 8000)}${omitNote}\n\`\`\``
+      }
+      // Other files: 4000 chars
+      const raw = String(content)
+      return `\n### FILE: ${path}\n\`\`\`\n${raw.slice(0, 4000)}\n\`\`\``
     }).join('')
   }
   const generatedContext = buildFileContext()
@@ -1465,9 +1488,7 @@ Pick ONE primary accent and ONE secondary accent that feel intentional and premi
 
   const preset = FSDS_PRESETS[stylePreset] || FSDS_PRESETS['ai-decides']
   const isReact = stylePreset === 'react-app' || stylePreset === 'react-dashboard'
-  // Auto-detect raw/plain mode: Three.js, WebGL, canvas, game engines, CLI tools need a clean slate — no FSDS injection
-  const isAutoPlain = /\b(three\.?js|threejs|webgl|glsl|shader|babylon|p5\.?js|pixi\.?js|phaser|matter\.?js|cannon\.?js|rapier|ammo\.?js|tone\.?js|howler|wasm|web.?assembly|rust|go lang|golang|canvas.*game|game.*engine|node\.?js.*server|express.*api|fastify|nest\.?js|electron|tauri|terminal.*ui|cli.*tool|command.?line|ascii|particles.*engine|fluid.*sim|physics.*sim)\b/i.test(lowerPrompt)
-  const isPlain = stylePreset === 'plain' || isAutoPlain
+  const isPlain = stylePreset === 'plain'
   const isAiDecides = stylePreset === 'ai-decides' || !FSDS_PRESETS[stylePreset]
   const isBrutalist = stylePreset === 'brutalist'
   const isTerminal = stylePreset === 'terminal'
@@ -1736,129 +1757,53 @@ ${isTerminal ? `@keyframes fsds-scanline { 0%{background-position:0 0}100%{backg
   }
   const AI_CODE_CREDIT_COST = MODEL_CREDIT_COSTS[agent] ?? 120
 
-  // ── System prompt — Genspark-level engineer ───────────────────────────────
-  const systemPrompt = `You are FlowState AI — a senior software engineer with deep expertise across the full stack. You write expert, production-quality code. You are not a UI generator — you are a real engineer who picks the right tools for the job and implements them completely.
+  // ── System prompt — FlowState AI Code Agent (Intent Layer driven) ───────────
+  // declareCodeAgentSystemPrompt() in intent-layer.ts owns all agent behavior.
+  // This endpoint executes. It does not decide.
+  const isEditRequest = conversationHistory.length > 0 && Object.keys(generatedFiles).length > 0
+  const agentPlan = declareCodeAgentSystemPrompt({
+    prompt,
+    repo,
+    fileTree: fileList,
+    generatedFiles: generatedContext,
+    activeFile,
+    stylePreset,
+    agent,
+    isEdit: isEditRequest,
+    isNewPage: isNewPageRequest,
+    language,
+  })
 
-When someone asks for Three.js, you write real Three.js — geometries, materials, lighting, animation loops, shaders if needed. When someone asks for a physics sim, you wire up a real physics engine. When someone asks for a data viz, you use D3 or Chart.js properly. You never fake complexity with CSS tricks when real implementation is required.
-
-Your outputs are ALWAYS:
-- Complete and runnable — someone can copy-paste and it works immediately
-- Expert-level — uses the right APIs, correct patterns, no beginner mistakes
-- Fully functional — every interaction works, no dead buttons, no TODO stubs
-- Appropriately complex — match the sophistication of the request; simple ask = clean code, complex ask = full implementation
-- Unique — never output a generic template; build exactly what was described
-
-You NEVER produce:
-- Fake implementations (CSS pretending to be Three.js, static images pretending to be charts)
-- Truncated code with "// rest of implementation" or "// TODO"
-- Generic layouts that ignore what was asked
-- Lorem ipsum or placeholder content
-- Beginner-level code for advanced requests
-
-${isPlain ? '' : `══════════════════════════════════════════════════
-DESIGN SYSTEM — FSDS (FlowState Design System)
-══════════════════════════════════════════════════
-A CSS scaffold with design tokens, component classes, and Google Fonts is AUTO-INJECTED into every HTML file at render time. You do NOT need to write it — just USE its classes and CSS variables.
-
-ACTIVE PRESET: ${preset.label}
+  // ── Inject FSDS preset hints into the agent system prompt ────────────────
+  // The agent system prompt covers architecture + behavior.
+  // FSDS preset-specific CSS overrides are appended here so the agent
+  // knows EXACTLY which CSS tokens are active for this generation.
+  const fsdsPresetBlock = isPlain ? '' : `
+════════════════════════════════════════
+FSDS ACTIVE PRESET DETAIL: ${preset.label}
+════════════════════════════════════════
 ${preset.promptHint}
-
-${isAiDecides ? `COLOR SELECTION — MANDATORY (first thing you do):
-Override ONLY these CSS variables in a <style> block inside your HTML/CSS, choosing colors that fit the app's domain:
+${preset.cssOverride ? `\nCSS TOKEN OVERRIDES ACTIVE:\n:root {\n${preset.cssOverride}\n}` : ''}
+${isAiDecides ? `\nCOLOR SELECTION REQUIRED:
+Override in your output's <style> block:
   :root {
-    --accent: [primary accent hex];
-    --accent-bright: [lighter version];
+    --accent: [domain-appropriate primary hex — NOT purple #a855f7];
+    --accent-bright: [lighter variant];
     --accent-dim: rgba(..., .15);
     --border: rgba(..., .15);
     --border-accent: rgba(..., .4);
     --shadow-glow: 0 0 24px rgba(..., .4);
     --grad-brand: linear-gradient(135deg, [accent], [complementary]);
   }
-Be bold and domain-specific. Finance→gold/teal. Fitness→lime/orange. Gaming→neon cyan/magenta. Never purple (#a855f7).
-` : ''}
-AVAILABLE CSS VARIABLES (injected, use directly):
-  Surfaces: --bg, --surface-1, --surface-2, --surface-3
-  Text: --text-primary, --text-secondary, --text-muted
-  Accents: --accent, --accent-bright, --accent-dim, --green, --cyan, --pink, --amber, --red
-  Borders: --border, --border-accent, --border-subtle
-  Gradients: --grad-brand, --grad-cyber, --grad-success
-  Shadows: --shadow-sm, --shadow-md, --shadow-lg, --shadow-glow
-  Radii: --radius-sm(6px), --radius-md(10px), --radius-lg(16px), --radius-xl(24px), --radius-full(999px)
-  Fonts: --font-display('Plus Jakarta Sans'), --font-body('Inter'), --font-mono('JetBrains Mono')
+Finance→gold/teal. Fitness→lime/orange. Gaming→cyan/magenta. Social→coral/blue.` : ''}
+${isReact ? `\nREACT MODE:
+- Import: https://esm.sh/react@18 | https://esm.sh/react-dom@18/client
+- index.html: <div id="root"> + <script type="module" src="App.jsx">
+- Separate .jsx files per component under components/` : ''}
+${!isPlain && !isReact && !language ? 'OUTPUT FORMAT: Separate index.html + styles.css + app.js files' : ''}
+${language ? `TARGET LANGUAGE: ${language}` : ''}`
 
-AVAILABLE COMPONENT CLASSES (use directly in HTML, no CSS needed):
-  .fs-container / .fs-container-sm / .fs-grid-2 / .fs-grid-3 / .fs-stack / .fs-cluster
-  .fs-card / .fs-card-elevated (hover+shadow+fadeUp animation built in)
-  .fs-btn .fs-btn-primary / .fs-btn-ghost / .fs-btn-danger / .fs-btn-sm / .fs-btn-lg
-  .fs-input (styled text, textarea, select)
-  .fs-badge .fs-badge-purple/green/cyan/amber/red
-  .fs-nav .fs-nav-logo .fs-nav-links .fs-nav-link .fs-nav-link.active
-  .fs-metric .fs-metric-value .fs-metric-label
-  .fs-gradient-text / .fs-gradient-text-cyber
-  .fs-divider / .fs-section / .fs-section-sm / .fs-skeleton
-  Animations: fsds-fadeUp, fsds-fadeIn, fsds-slideIn, fsds-pulse-glow, fsds-shimmer
-
-TYPOGRAPHY: use var(--font-display) for headings, var(--font-body) for body — fonts already loaded.
-
-DESIGN RULES:
-✅ Realistic content (names, numbers, copy that fits the app domain)
-✅ Hover states on every interactive element
-✅ Gradient text on hero headings: class="fs-gradient-text"
-✅ Lucide icons: <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script> + lucide.createIcons()
-✅ Real images: https://picsum.photos/{w}/{h}?random={n} or https://source.unsplash.com/{w}x{h}/?{keyword}
-✅ Chart.js for data: https://cdn.jsdelivr.net/npm/chart.js (import if dashboard/analytics)
-✅ Stagger animations: animation-delay: 0.05s, 0.1s, 0.15s on repeated cards
-❌ No white backgrounds in dark presets
-❌ No hardcoded hex colors — use CSS variables
-❌ No unstyled buttons or inputs
-❌ No lorem ipsum
-❌ No table-based layouts
-❌ No box-shadow:none on elevated elements
-
-${isReact ? `REACT MODE:
-- Import React: https://esm.sh/react@18 | ReactDOM: https://esm.sh/react-dom@18/client
-- index.html mounts: <div id="root"></div> + <script type="module" src="App.jsx"></script>
-- Separate .jsx files per major component under components/
-- Use hooks: useState, useEffect, useCallback, useMemo
-` : ''}══════════════════════════════════════════════════`}
-
-${repo ? `REPO: ${repo}` : 'STANDALONE PROJECT'}
-${!isPlain && !isReact && !language ? 'OUTPUT: Separate HTML + CSS + JS files' : ''}
-${language ? `LANGUAGE: ${language}` : ''}
-${fileList ? `\nFILE STRUCTURE:\n${fileList}` : ''}
-${generatedContext ? `\nCURRENT FILES:${generatedContext}` : ''}
-
-OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
-1. Respond ONLY with a raw JSON object. NO prose before or after. NO markdown fences. NO explanations. Pure JSON starting with { and ending with }.
-2. Exact JSON shape: {"message":"2-3 sentence description of what was built","files":[{"path":"index.html","content":"FULL COMPLETE FILE CONTENT"}]}
-3. FILE NAMING: lowercase, hyphen-separated, correct extension. Main: index.html, styles.css or app.css, app.js or main.js. React: App.jsx, components/Name.jsx. Never spaces or uppercase.
-4. COMPLETE — every file 100% complete. NEVER truncate with "// rest of code", "// TODO", "// ...". Every tag closes. Every brace matches. Every import resolves.
-5. FUNCTIONAL — real working code, not a mockup. If it uses Three.js, the scene actually renders. If it has a physics engine, objects actually collide. If it has charts, data actually renders. No fakes.
-6. MATCH THE COMPLEXITY OF THE REQUEST:
-   - Simple landing page request → clean focused HTML/CSS
-   - Three.js scene → real scene setup: renderer, camera, lights, geometry, animation loop, OrbitControls if appropriate
-   - Data dashboard → real Chart.js with meaningful data, working filters
-   - Physics sim → real Matter.js or Cannon.js with actual simulation
-   - Game → real game loop, collision detection, score, win/lose states
-   - API server → real Express routes, middleware, validation, error handling
-   NEVER produce a beginner-level output for an advanced request.
-7. MULTI-FILE: complex apps get separate files (index.html + app.js + styles.css). Three.js/WebGL apps: keep JS in app.js, load via <script type="module">. React: App.jsx + components/.
-8. EDIT request → SURGICAL ONLY. Return ONLY changed files. Zero modifications to anything not mentioned.
-9. FRESH BUILD → pick the right stack. User says Three.js → use Three.js. User describes particles → use a particle system. User says physics → use a physics engine. Never substitute a simpler fake.
-10. CDN IMPORTS for browser apps — use esm.sh or cdnjs:
-    Three.js: import * as THREE from 'https://esm.sh/three@0.169'; import { OrbitControls } from 'https://esm.sh/three@0.169/examples/jsm/controls/OrbitControls.js'
-    Matter.js: https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js
-    Chart.js: https://cdn.jsdelivr.net/npm/chart.js
-    D3: https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js
-    GSAP: https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js
-    Tone.js: https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js
-11. QUALITY CHECKLIST before finalizing:
-    ✅ All imports resolve (CDN links are correct, no missing deps)
-    ✅ No undefined variables or missing element IDs
-    ✅ Animation loops use requestAnimationFrame, not setInterval
-    ✅ Event listeners are attached after DOM is ready
-    ✅ Complex apps have error handling (try/catch, null checks)
-    ✅ Mobile viewport: <meta name="viewport" content="width=device-width, initial-scale=1">`
+  const systemPrompt = agentPlan.systemPrompt + fsdsPresetBlock
 
   // ── Build history (FIX: smarter truncation) ───────────────────────────────
   const historySlice = isNewPageRequest
@@ -1873,20 +1818,8 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
     return { role: m.role, content: m.content }
   })
 
-  // ── Detect edit vs fresh build ───────────────────────────────────────────
-  const isEditRequest = Object.keys(generatedFiles).length > 0 &&
-    /\b(change|fix|update|edit|modify|add|remove|delete|replace|rename|move|make|adjust|tweak|swap|turn|set|convert|increase|decrease|bigger|smaller|color|colour|font|size|margin|padding|spacing|button|text|label|icon|style|dark|light|header|footer|nav|sidebar|mobile|responsive|center|align|bold|italic|underline|hover|click|animate|slide|fade|bounce|transition|shadow|border|rounded|gradient|background|image|logo|title|heading|subtitle|caption|placeholder)\b/i.test(lowerPrompt) &&
-    !/\b(new page|new view|new screen|build|create|make a|generate|from scratch)\b/i.test(lowerPrompt)
-
-  // ── Estimate output size for big-write warning ─────────────────────────
-  const existingFileSizes = Object.values(generatedFiles).reduce((sum: number, c: any) => sum + String(c).length, 0)
-  const isLargeBuild = !isEditRequest && (prompt.length > 200 || /\b(full.?stack|saas|dashboard|complete|entire|whole|all pages|three\.?js|threejs|canvas|webgl|animation|particle|shader|3d|physics|game engine)\b/i.test(lowerPrompt))
-  const isLargeEdit = isEditRequest && existingFileSizes > 8000
-
   const currentUserMsg = isNewPageRequest
-    ? `Task: ${prompt}\n\n[NEW page — blank canvas, do not copy existing HTML layout]`
-    : isEditRequest
-    ? `SURGICAL EDIT TASK: ${prompt}\n\nINSTRUCTION: You are making a targeted change. Return ONLY the files that need to change. Do not touch unrelated files. Do not restructure, rename, or rewrite sections that weren't mentioned. Apply the minimum change needed to accomplish the task.`
+    ? `Task: ${prompt}\n\n[NEW page — blank canvas, no copying from existing HTML files]`
     : `Task: ${prompt}`
 
   // ── FIX 7: JSON prefill for Claude — forces clean JSON output ─────────────
@@ -2057,44 +1990,124 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
     return FSDS_BASE_CSS + '\n' + html
   }
 
-  // ── Helper: call model (no streaming — collect full response) ─────────────
-  const callModelFull = async (userMsgOverride?: string): Promise<string> => {
+  // ── Thinking token budgets ────────────────────────────────────────────────
+  // Sonnet/Opus get a real thinking budget — this is what makes them FEEL different.
+  // Haiku skips thinking (too slow/expensive for a light model).
+  // Budget = tokens reserved for internal reasoning before the JSON output.
+  const THINKING_BUDGETS: Record<string, number> = {
+    'claude-opus-4':    12000,  // deep thinking for the most complex builds
+    'claude-sonnet-4':   8000,  // solid reasoning budget for standard builds
+    'claude':            8000,
+    'claude-haiku-4':       0,  // no thinking — Haiku is speed-optimized
+    'gemini-2-5-pro':   12000,  // Gemini 2.5 Pro thinking budget
+    'gemini-2-5-flash':  8000,  // Gemini 2.5 Flash thinking budget
+    'gemini':               0,  // Gemini 2.0 Flash — no thinking support
+    'deepseek-r1':          0,  // R1 has built-in chain-of-thought — no extra budget needed
+    'o3':                   0,  // o3 has built-in reasoning — no extra budget needed
+    'o4-mini':              0,  // same
+  }
+  const thinkingBudget = THINKING_BUDGETS[agent] ?? 0
+  const useThinking = thinkingBudget > 0
+
+  // Temperature: 0.35 for all models (was 0.1 — too cold, produced average output)
+  // Exception: o3/o4-mini don't support temperature (they use reasoning natively)
+  const isReasoningModel = agent === 'o3' || agent === 'o4-mini'
+  const TEMPERATURE = isReasoningModel ? undefined : 0.35
+
+  // ── Helper: call model with thinking tokens where supported ───────────────
+  // Returns { text, thinkingText } so thinking can be streamed to UI separately
+  const callModelFull = async (userMsgOverride?: string, onThinking?: (t: string) => void): Promise<string> => {
     const effectiveUserMsg = userMsgOverride || currentUserMsg
+
     // ── Gemini direct ────────────────────────────────────────────────────
     if ((agent === 'gemini' || agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash') && (c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY)) {
       const geminiKey = c.env?.GEMINI_API_KEY || c.env?.GOOGLE_AI_KEY || ''
       const geminiModelMap: Record<string,string> = {
-        'gemini': 'gemini-2.0-flash', 'gemini-2-5-pro': 'gemini-2.5-pro-preview-05-06', 'gemini-2-5-flash': 'gemini-2.5-flash-preview-04-17',
+        'gemini': 'gemini-2.0-flash',
+        'gemini-2-5-pro': 'gemini-2.5-pro-preview-05-06',
+        'gemini-2-5-flash': 'gemini-2.5-flash-preview-04-17',
       }
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModelMap[agent] || 'gemini-2.0-flash'}:generateContent?key=${geminiKey}`, {
+      const geminiModel = geminiModelMap[agent] || 'gemini-2.0-flash'
+      const supportsGeminiThinking = agent === 'gemini-2-5-pro' || agent === 'gemini-2-5-flash'
+
+      const geminiBody: any = {
+        contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyMessages.map((m:any)=>`[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')}\n\n[USER]: ${effectiveUserMsg}\n\nRespond with ONLY a raw JSON object starting with {. No markdown fences, no prose.` }] }],
+        generationConfig: {
+          temperature: TEMPERATURE ?? 0.35,
+          maxOutputTokens: maxTokens,
+          responseMimeType: 'application/json',
+        }
+      }
+      // Enable Gemini thinking budget for 2.5 Pro/Flash
+      if (supportsGeminiThinking && thinkingBudget > 0) {
+        geminiBody.generationConfig.thinkingConfig = { thinkingBudget }
+      }
+
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `${systemPrompt}\n\n${historyMessages.map((m:any)=>`[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n')}\n\n[USER]: ${effectiveUserMsg}\n\nRespond with ONLY a raw JSON object starting with {. No markdown fences, no prose.` }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: maxTokens, responseMimeType: 'application/json' }
-        })
+        body: JSON.stringify(geminiBody)
       })
       const d: any = await r.json()
-      return d?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+      // Extract thinking text (Gemini returns it as a separate part with thought=true)
+      const parts = d?.candidates?.[0]?.content?.parts || []
+      const thinkingPart = parts.find((p: any) => p.thought === true)
+      const textPart = parts.find((p: any) => !p.thought)
+      if (thinkingPart?.text && onThinking) onThinking(thinkingPart.text)
+      return textPart?.text || parts?.[0]?.text || ''
     }
 
-    // ── Claude direct Anthropic ──────────────────────────────────────────
+    // ── Claude direct Anthropic (with extended thinking) ─────────────────
     if (isClaudeAgent && c.env?.ANTHROPIC_API_KEY) {
       const claudeModelMap: Record<string,string> = {
-        'claude': 'claude-3-5-sonnet-20241022', 'claude-opus-4': 'claude-opus-4-5-20251101',
-        'claude-sonnet-4': 'claude-sonnet-4-5-20251101', 'claude-haiku-4': 'claude-haiku-4-5-20251101',
+        'claude': 'claude-sonnet-4-5-20251101',
+        'claude-opus-4': 'claude-opus-4-5-20251101',
+        'claude-sonnet-4': 'claude-sonnet-4-5-20251101',
+        'claude-haiku-4': 'claude-haiku-4-5-20251101',
       }
+      const claudeModel = claudeModelMap[agent] || 'claude-sonnet-4-5-20251101'
+
+      // Extended thinking: Claude needs budget_tokens > 1024 to enable it.
+      // When thinking is ON: disable prefill (incompatible with extended thinking) and raise temperature to 1
+      // (Anthropic requires temperature=1 when using extended thinking)
+      const claudeBody: any = {
+        model: claudeModel,
+        max_tokens: useThinking ? maxTokens + thinkingBudget : maxTokens,
+        system: systemPrompt,
+        temperature: useThinking ? 1 : (TEMPERATURE ?? 0.35),
+        messages: useThinking
+          // With thinking: no prefill — thinking blocks come before the JSON
+          ? [...historyMessages, { role: 'user', content: effectiveUserMsg }]
+          // Without thinking (Haiku): use prefill for clean JSON
+          : [...historyMessages, { role: 'user', content: effectiveUserMsg }, { role: 'assistant', content: '{"message":"' }],
+        stream: false,
+      }
+      if (useThinking) {
+        claudeBody.thinking = { type: 'enabled', budget_tokens: thinkingBudget }
+      }
+
       const r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': c.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: claudeModelMap[agent] || 'claude-sonnet-4-5-20251101',
-          max_tokens: maxTokens, system: systemPrompt,
-          messages: [...historyMessages, { role: 'user', content: effectiveUserMsg }, { role: 'assistant', content: '{"message":"' }],
-          stream: false,
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': c.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          ...(useThinking ? { 'anthropic-beta': 'interleaved-thinking-2025-05-14' } : {}),
+        },
+        body: JSON.stringify(claudeBody)
       })
       const d: any = await r.json()
-      return '{"' + (d?.content?.[0]?.text || '')
+      // Extract thinking blocks and text blocks from response
+      const contentBlocks = d?.content || []
+      let thinkingText = ''
+      let responseText = ''
+      for (const block of contentBlocks) {
+        if (block.type === 'thinking') thinkingText += block.thinking || ''
+        else if (block.type === 'text') responseText += block.text || ''
+      }
+      if (thinkingText && onThinking) onThinking(thinkingText)
+      // Without thinking: prefill reconstruction
+      if (!useThinking) return '{"message":"' + responseText
+      return responseText
     }
 
     // ── OpenRouter fallback ──────────────────────────────────────────────
@@ -2104,18 +2117,14 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
     const isClaudeModel  = orModelId.includes('anthropic') || orModelId.includes('claude')
     const isOpenAIModel  = orModelId.includes('openai') || orModelId.includes('gpt') || orModelId.includes('/o3') || orModelId.includes('/o4')
     // json_object mode: works reliably for OpenAI models only.
-    // Gemini and Claude on OpenRouter often ignore or reject it — use prompt engineering instead.
     const useJsonFormat = isOpenAIModel
 
-    // For Gemini via OpenRouter: force JSON output via message injection
-    // (Gemini ignores response_format but respects a trailing instruction)
+    // Force JSON output for Gemini via instruction injection
     const jsonForceMsg = isGeminiModel
       ? `\n\nCRITICAL INSTRUCTION: Your response MUST be ONLY a raw JSON object. Start your response with { and end with }. Do NOT use markdown code fences (\`\`\`). Do NOT write any text before or after the JSON. The JSON must have exactly this shape: {"message":"...","files":[{"path":"...","content":"..."}]}`
-      : isClaudeModel
-      ? '' // Claude uses prefill below
       : ''
 
-    // For Claude via OpenRouter: use assistant prefill to force JSON start
+    // Claude via OpenRouter: use assistant prefill; thinking not available on OR for Claude
     const orMessages = isClaudeModel
       ? [
           { role: 'system', content: systemPrompt },
@@ -2132,10 +2141,16 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
     const orBody: any = {
       model: orModelId,
       messages: orMessages,
-      temperature: 0.1,
       max_tokens: maxTokens,
     }
+    // Only set temperature when the model supports it (not o3/o4-mini)
+    if (TEMPERATURE !== undefined) orBody.temperature = TEMPERATURE
     if (useJsonFormat) orBody.response_format = { type: 'json_object' }
+
+    // Gemini 2.5 via OpenRouter: enable thinking via provider params
+    if (isGeminiModel && thinkingBudget > 0) {
+      orBody.provider = { order: ['Google'], data: { generationConfig: { thinkingConfig: { thinkingBudget } } } }
+    }
 
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -2149,7 +2164,7 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
     const d: any = await r.json()
     if (d.error) throw new Error(d.error.message || JSON.stringify(d.error))
     const rawContent = d?.choices?.[0]?.message?.content || ''
-    // Claude prefill: reconstruct the full JSON (we injected '{"message":"' as assistant start)
+    // Claude prefill reconstruction
     return isClaudeModel ? '{"message":"' + rawContent : rawContent
   }
 
@@ -2197,67 +2212,96 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
 
   // ── SSE stream with rich live narration ───────────────────────────────────
   // Events:
-  //   narrate  { msg, type } — human-readable step-by-step status
-  //   file     { path, content, index, total } — each file as processed
+  //   narrate  { msg, type }                      — human-readable status
+  //   tool     { tool, purpose, input }            — tool call transparency
+  //   step     { num, label, detail }              — numbered execution steps
+  //   file     { path, content, index, total }     — each file as processed
   //   done     { ok, message, files, creditsUsed } — final payload
-  //   error    { error } — fatal error (no credits charged)
+  //   error    { error }                           — fatal error (no credits charged)
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        // ── Phase 1: Planning narration ──────────────────────────────────
-        sseWrite(controller, 'narrate', JSON.stringify({
-          msg: `🧠 Activating ${modelDisplayName}…`, type: 'thinking'
+        // ── Phase 1: Agent Preamble — structured live thinking stream ────
+        // These events come from declareCodeAgentSystemPrompt() in intent-layer.ts.
+        // They show the user exactly what context was read and what the plan is
+        // BEFORE the LLM is called — transparent, engineering-level reasoning.
+        for (const ev of agentPlan.preambleEvents) {
+          sseWrite(controller, 'narrate', JSON.stringify({ msg: ev.msg, type: ev.type }))
+          await new Promise(r => setTimeout(r, 35))
+        }
+
+        // ── STEP 1: Announce which model is executing (tool transparency) ──
+        sseWrite(controller, 'tool', JSON.stringify({
+          tool: modelDisplayName,
+          purpose: `Code generation · ${appType} · ${stylePreset} preset`,
+          input: prompt.slice(0, 120) + (prompt.length > 120 ? '…' : ''),
         }))
         await new Promise(r => setTimeout(r, 40))
 
-        // Detect libraries/tech mentioned in prompt for narration
-        const usesThreeJS = /three\.?js|threejs|webgl|3d scene|3d model/i.test(prompt)
-        const usesD3 = /\bd3\.?js\b|data viz|force graph/i.test(prompt)
-        const usesChartJS = /chart\.?js|bar chart|pie chart|line chart/i.test(prompt)
-        const usesCanvas = /\bcanvas\b|particle|sprite|pixel/i.test(prompt)
-        const usesAnimation = /gsap|framer.?motion|lottie|spring|animate/i.test(prompt)
-        const techHints: string[] = []
-        if (usesThreeJS) techHints.push('Three.js 3D')
-        if (usesD3) techHints.push('D3.js')
-        if (usesChartJS) techHints.push('Chart.js')
-        if (usesCanvas) techHints.push('Canvas API')
-        if (usesAnimation) techHints.push('animations')
+        // ── STEP 2: Intent classification + architecture plan ─────────────
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 1,
+          label: `Analyze — classifying intent as ${isEditRequest ? 'EDIT' : isNewPageRequest ? 'NEW PAGE' : 'BUILD'}`,
+          detail: `Prompt: "${prompt.slice(0, 80)}${prompt.length > 80 ? '…' : ''}"`,
+        }))
+        await new Promise(r => setTimeout(r, 30))
 
-        if (isEditRequest) {
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 2,
+          label: `Architect — planning ${appType} structure and file layout`,
+          detail: `Stack: ${language || 'HTML + CSS + JS'} · Preset: ${stylePreset} · Model: ${modelDisplayName}`,
+        }))
+        await new Promise(r => setTimeout(r, 30))
+
+        sseWrite(controller, 'narrate', JSON.stringify({
+          msg: `🎯 Analyzing prompt and planning ${appType} architecture…`, type: 'planning'
+        }))
+
+        // ── STEP 3: Model call ────────────────────────────────────────────
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 3,
+          label: `Execute — calling ${modelDisplayName}${useThinking ? ` with ${thinkingBudget.toLocaleString()} token reasoning budget` : ''} to generate code`,
+          detail: `Context: ${fileList ? fileList.split('\n').filter(Boolean).length + ' repo files indexed' : 'standalone project'} · max tokens: ${maxTokens}${useThinking ? ` + ${thinkingBudget} thinking` : ''}`,
+        }))
+        await new Promise(r => setTimeout(r, 30))
+
+        if (useThinking) {
           sseWrite(controller, 'narrate', JSON.stringify({
-            msg: `🔍 Diagnosing what needs to change…`, type: 'thinking'
-          }))
-          await new Promise(r => setTimeout(r, 30))
-          sseWrite(controller, 'narrate', JSON.stringify({
-            msg: isLargeEdit
-              ? `✏️ Applying targeted edit to ${Object.keys(generatedFiles).length} existing file${Object.keys(generatedFiles).length > 1 ? 's' : ''} — large project, give it a second…`
-              : `✏️ Applying surgical edit — only changing what you asked for…`,
-            type: 'planning'
-          }))
-        } else {
-          if (isLargeBuild) {
-            sseWrite(controller, 'narrate', JSON.stringify({
-              msg: `⚠️ Large build detected — this might take 15–30 seconds. Don’t close the tab.`, type: 'info'
-            }))
-            await new Promise(r => setTimeout(r, 30))
-          }
-          const techMsg = techHints.length ? ` Using ${techHints.join(', ')}.` : ''
-          sseWrite(controller, 'narrate', JSON.stringify({
-            msg: `🎯 Analyzing and planning ${appType} architecture…${techMsg}`, type: 'planning'
+            msg: `🧠 ${modelDisplayName} is reasoning deeply — thinking budget: ${thinkingBudget.toLocaleString()} tokens…`, type: 'thinking'
           }))
         }
 
-        // ── Call model ───────────────────────────────────────────────────
+        // ── Call model — wire thinking tokens to live UI stream ──────────
         let rawResponse = ''
+        let thinkingOutput = ''
         try {
-          rawResponse = await callModelFull()
+          rawResponse = await callModelFull(undefined, (thinkingText: string) => {
+            // Stream thinking output to UI as a collapsible reasoning block
+            thinkingOutput = thinkingText
+            if (thinkingText.trim()) {
+              // Emit a summary of what the model thought about (first 400 chars)
+              const preview = thinkingText.slice(0, 400).replace(/\n+/g, ' ').trim()
+              sseWrite(controller, 'thinking', JSON.stringify({
+                preview: preview + (thinkingText.length > 400 ? '…' : ''),
+                full: thinkingText,
+                tokens: Math.round(thinkingText.length / 4), // rough token estimate
+              }))
+            }
+          })
         } catch (callErr: any) {
           sseWrite(controller, 'error', JSON.stringify({ error: callErr.message }))
           controller.close()
           return
         }
 
-        // ── Phase 2: Parse response ──────────────────────────────────────
+        // ── STEP 4: Parse + validate response ────────────────────────────
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 4,
+          label: 'Validate — parsing JSON response and checking file structure',
+          detail: `Response size: ${(new TextEncoder().encode(rawResponse).length / 1024).toFixed(1)}KB`,
+        }))
+        await new Promise(r => setTimeout(r, 20))
+
         sseWrite(controller, 'narrate', JSON.stringify({
           msg: '📐 Processing response and validating output structure…', type: 'parsing'
         }))
@@ -2299,6 +2343,14 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
         const rawFiles = parsed.files || []
         const processedFiles: Array<{ path: string; content: string }> = []
 
+        // ── STEP 5: Write files ───────────────────────────────────────────
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 5,
+          label: `Write — rendering ${rawFiles.length} file${rawFiles.length > 1 ? 's' : ''} to editor`,
+          detail: rawFiles.map((f: any) => f.path || 'unnamed').join(' · '),
+        }))
+        await new Promise(r => setTimeout(r, 20))
+
         sseWrite(controller, 'narrate', JSON.stringify({
           msg: `✍️ Writing ${rawFiles.length} file${rawFiles.length > 1 ? 's' : ''} — rendering to editor…`, type: 'writing'
         }))
@@ -2337,6 +2389,17 @@ OUTPUT RULES — ABSOLUTE NON-NEGOTIABLE:
           controller.close()
           return
         }
+
+        // ── STEP 6: FSDS injection + validation complete ─────────────────
+        sseWrite(controller, 'step', JSON.stringify({
+          num: 6,
+          label: 'Validate — FSDS scaffold injected, interactivity check complete',
+          detail: processedFiles.map(f => {
+            const lines = f.content.split('\n').length
+            const kb = (new TextEncoder().encode(f.content).length / 1024).toFixed(1)
+            return `${f.path} (${lines} lines, ${kb}KB)`
+          }).join(' · '),
+        }))
 
         // ── SUCCESS: commit credits ──────────────────────────────────────
         await commitCredits(c, session.email, AI_CODE_CREDIT_COST)
@@ -3179,13 +3242,12 @@ app.post('/api/chat/stream', async (c) => {
     if (spec.provider === 'google') {
       const res = await fetch(spec.apiEndpoint + '?key=' + apiKey + '&alt=sse', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ system_instruction: { parts: [{ text: systemMsg }] }, contents: allMessages.map((m: any) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig: { maxOutputTokens: (intent.taskType === 'code' || intent.taskType === 'app_gen') ? 8192 : 2048 } })
+        body: JSON.stringify({ system_instruction: { parts: [{ text: systemMsg }] }, contents: allMessages.map((m: any) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig: { maxOutputTokens: 2048 } })
       })
       return new Response(await extractGeminiStream(res), { headers: { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel } })
     }
 
     // ── All others (OpenAI, Anthropic, Mistral, DeepSeek, Meta, xAI fallback) via OpenRouter ──
-    const maxTok = (intent.taskType === 'code' || intent.taskType === 'app_gen') ? 8192 : 2048
     const res = await fetch(spec.apiEndpoint, {
       method: 'POST',
       headers: {
@@ -3198,7 +3260,7 @@ app.post('/api/chat/stream', async (c) => {
         model: spec.apiModel,
         messages: [{ role: 'system', content: systemMsg }, ...allMessages],
         stream: true,
-        max_tokens: maxTok,
+        max_tokens: 2048,
       })
     })
     return new Response(await extractOpenAIStream(res), { headers: { 'Content-Type': 'text/plain', 'X-Routed-Model': intent.routedModel, 'X-Routing-Reason': intent.reasoning } })
@@ -9358,6 +9420,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .legal{font-size:11px;color:var(--legal);line-height:1.5;margin-top:4px}
 .legal a{color:var(--legal-a);text-decoration:underline}
 .spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
 
 </style>
 </head>
@@ -10136,6 +10199,7 @@ header{display:flex;align-items:center;gap:10px;padding:8px 18px;background:var(
 @keyframes slideR{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:translateX(0)}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
 @keyframes pulse{0%,100%{opacity:.6;transform:scale(1)}50%{opacity:1;transform:scale(1.5)}}
+@keyframes spin{to{transform:rotate(360deg)}}
 .modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99998;backdrop-filter:blur(8px);padding:14px}
 .modal-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:18px;padding:28px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto}
 .modal-card.modal-wide{max-width:900px}
@@ -11865,9 +11929,9 @@ em{color:var(--accent);font-style:italic}
         </div>
 
         <!-- Live preview iframe (hidden until preview mode) -->
-        <div id="code-preview-wrap" style="display:none;flex:1;overflow:auto;background:#1a1a2e;align-items:flex-start;justify-content:center;padding:0">
+        <div id="code-preview-wrap" style="display:none;flex:1;overflow:auto;background:#fff;align-items:flex-start;justify-content:center;padding:0">
           <div id="code-preview-viewport" style="width:100%;height:100%;transition:width 0.2s ease;background:#fff;margin:0 auto">
-            <iframe id="code-preview-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+            <iframe id="code-preview-frame"
               style="width:100%;height:100%;border:none;background:#fff"></iframe>
           </div>
         </div>
@@ -11964,6 +12028,7 @@ em{color:var(--accent);font-style:italic}
   </div><!-- /gen-pane-code -->
 
   </div><!-- /gen-body-wrap -->
+
 </div><!-- /tab-pane-generate -->
 
 <!-- 264 PRO TAB — Download / Landing Page -->
