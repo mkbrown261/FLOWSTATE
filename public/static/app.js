@@ -12473,28 +12473,14 @@ function _codeBuildPreviewDoc() {
   if (!htmlEntry?.content) return '';
   let html = htmlEntry.content;
   cssFiles.forEach(cssPath => {
-    const fname = cssPath.split('/').pop();
     const cssContent = files[cssPath]?.content || '';
     if (!cssContent) return;
-    const escaped = fname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const linked = new RegExp('<link[^>]*href=["'][^"']*' + escaped + '["'][^>]*>', 'gi');
-    if (linked.test(html)) {
-      html = html.replace(new RegExp('<link[^>]*href=["'][^"']*' + escaped + '["'][^>]*>', 'gi'), '<style>' + cssContent + '</style>');
-    } else {
-      html = html.includes('</head>') ? html.replace('</head>', '<style>' + cssContent + '</style>\n</head>') : html + '<style>' + cssContent + '</style>';
-    }
+    html = html.includes('</head>') ? html.replace('</head>', '<style>' + cssContent + '</style>\n</head>') : html + '<style>' + cssContent + '</style>';
   });
   jsFiles.forEach(jsPath => {
-    const fname = jsPath.split('/').pop();
     const jsContent = files[jsPath]?.content || '';
     if (!jsContent) return;
-    const escaped = fname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const srcRef = new RegExp('<script[^>]*src=["'][^"']*' + escaped + '["'][^>]*><\/script>', 'gi');
-    if (srcRef.test(html)) {
-      html = html.replace(new RegExp('<script[^>]*src=["'][^"']*' + escaped + '["'][^>]*><\/script>', 'gi'), '<script>' + jsContent + '</script>');
-    } else {
-      html = html.includes('</body>') ? html.replace('</body>', '<script>' + jsContent + '</script>\n</body>') : html + '<script>' + jsContent + '</script>';
-    }
+    html = html.includes('</body>') ? html.replace('</body>', '<script>' + jsContent + '</script>\n</body>') : html + '<script>' + jsContent + '</script>';
   });
   return html;
 }
