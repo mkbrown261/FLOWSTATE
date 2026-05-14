@@ -5066,7 +5066,7 @@ app.get('/api/admin/user-tier', async (c) => {
       ['GET', `tier_email:${email}`],
       ['GET', `tier:${email}`],
       ['GET', `monthly_credits_used:${email}:${month}`],
-      ['GET', `credit_balance:${encodeURIComponent(email)}`],
+      ['GET', `credit_balance:${email}`],
     ]) : Promise.resolve([null, null, null, null]),
     c.env?.DB ? c.env.DB.prepare(`SELECT email, name, tier, provider, created_at FROM users WHERE email = ?`).bind(email).first().catch(() => null) : Promise.resolve(null),
   ])
@@ -9273,7 +9273,7 @@ app.get('/api/billing/balance', async (c) => {
     ['GET', `tier_email:${email}`],
     ['GET', `tier:${email}`],
     ['GET', `monthly_credits_used:${email}:${month}`],
-    ['GET', `credit_balance:${encodeURIComponent(email)}`],
+    ['GET', `credit_balance:${email}`],
   ])
   const tier         = (results[0] || results[1] || 'free') as string
   const isEnterprise = tier === 'enterprise'
@@ -12772,8 +12772,8 @@ app.get('/api/referral/claim', async (c) => {
 
     // Grant 1,000 bonus credits to new user + 500 credits to referrer via Redis
     if (url && token) {
-      const newUserKey = `credit_balance:${encodeURIComponent(session.email)}`
-      const referrerKey = `credit_balance:${encodeURIComponent(ref.referrer_email)}`
+      const newUserKey = `credit_balance:${session.email}`
+      const referrerKey = `credit_balance:${ref.referrer_email}`
       await redisPipeline(url, token, [
         ['INCRBY', newUserKey, '1000'],
         ['INCRBY', referrerKey, '500'],
